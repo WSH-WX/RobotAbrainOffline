@@ -1,0 +1,107 @@
+# 只跟踪源代码、脚本和项目元数据
+*
+!*/
+
+# 源代码和脚本
+!*.py
+!*.pyi
+!*.sh
+!*.bash
+!*.launch.py
+!*.cpp
+!*.hpp
+
+# 项目元数据、配置和文档
+!.gitignore
+!README.md
+!*.md
+!*.toml
+!project_config.json
+!kuavo_configs.json
+!pyrightconfig.json
+!*.yaml
+!*.yml
+!*.ini
+!*.cfg
+!*.conf
+!*.xml
+!requirements*.txt
+!constraints*.txt
+!Dockerfile
+!docker-compose*.yml
+!Makefile
+
+# 本地 workflow 配置
+!conf/**
+
+# Python 缓存和构建输出
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage*
+htmlcov/
+
+# 本地环境和外部依赖树
+.env
+.env.*
+.venv/
+venv/
+env/
+ENV/
+py310/
+py310.backup_*/
+py38/
+__pypackages__/
+
+# 运行输出和本地数据
+logs/
+log/
+Log/
+data/
+workspace/
+install/
+examples/
+3rdparty/
+rabbitbot/robots/image_buffer/
+**/workspace/tools/
+
+# 生成文件、媒体、归档和数据库
+*.log
+*.ans
+*.jpg
+*.jpeg
+*.png
+*.wav
+*.mp3
+*.mp4
+*.bag
+*.db
+*.sqlite
+*.sqlite3
+*.tar
+*.tar.gz
+*.zip
+*.so
+*.onnx
+*.pt
+*.pth
+*.ckpt
+
+# air 打包仓库只保留日志占位文件
+!logs/
+logs/**
+!logs/nav_workflow_control/
+!logs/nav_workflow_control/.gitkeep
+!logs/unified_runtime/
+!logs/unified_runtime/.gitkeep
+
+# 临时构思文件
+.superpowers/

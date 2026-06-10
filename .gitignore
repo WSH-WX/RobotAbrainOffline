@@ -1,0 +1,43 @@
+# 运行日志和缓存
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/logs/**
+!rabbitbot-dev-ros2-master/logs/
+!rabbitbot-dev-ros2-master/logs/nav_workflow_control/
+!rabbitbot-dev-ros2-master/logs/nav_workflow_control/.gitkeep
+!rabbitbot-dev-ros2-master/logs/unified_runtime/
+!rabbitbot-dev-ros2-master/logs/unified_runtime/.gitkeep
+unitree_slam_example_new/example/run_logs/**
+!unitree_slam_example_new/example/run_logs/
+!unitree_slam_example_new/example/run_logs/.gitkeep
+
+# 本机运行依赖保留在 air 目录，不提交到 GitHub
+models/
+rabbitbot-dev-ros2-master/py38/
+rabbitbot-dev-ros2-master/py310/
+custom_action_ws/install/
+custom_action_ws/build/
+custom_action_ws/log/
+unitree_slam_example_new/example/build/
+unitree_sdk2/
+vln/
+pyorbbecsdk-v2-py310/
+dfx_inspire_service/
+
+# 备份和临时产物
+rabbitbot-dev-ros2-master/py310.backup_*/
+*.tmp
+*.bak
+*.bak_*
+.DS_Store
+# 外部示例工程的历史构建产物和生成媒体
+unitree_slam_example_new/**/build*/
+unitree_slam_example_new/**/log/
+unitree_slam_example_new/**/*.o
+unitree_slam_example_new/**/*.a
+unitree_slam_example_new/**/*.so
+unitree_slam_example_new/**/*.png
+
