@@ -97,6 +97,7 @@ current_gate_file=""
 current_gate_ready_file=""
 current_host_gate_file=""
 current_host_gate_ready_file=""
+current_nav_log=""
 last_runtime_health_check_ms=0
 
 log_info() {
@@ -301,6 +302,26 @@ nav_bridge_group_alive() {
     [ -n "${nav_group_pid}" ] && kill -0 -- "-${nav_group_pid}" 2>/dev/null
 }
 
+nav_core_log_healthy() {
+    if [ -z "${current_nav_log}" ] || [ ! -f "${current_nav_log}" ]; then
+        log_warn "导航核心日志尚不可读：log=${current_nav_log:-未设置}"
+        return 1
+    fi
+
+    local recent_log
+    recent_log="$(tail -n 200 "${current_nav_log}" 2>/dev/null || true)"
+    if printf '%s' "${recent_log}" | grep -Eq 'does not match an available interface|DdsException|Failed to create domain|Aborted'; then
+        log_warn "导航核心健康检查失败：检测到 DDS/网卡/进程异常，log=${current_nav_log}"
+        return 1
+    fi
+    if printf '%s' "${recent_log}" | grep -Eq '\[Ready\] Navigation system ready for commands!|\[Pose\]'; then
+        return 0
+    fi
+
+    log_warn "导航核心尚未完成定位或未输出位姿：log=${current_nav_log}"
+    return 1
+}
+
 nav_bridge_health_ok() {
     local problems=()
     if ! nav_bridge_group_alive; then
@@ -314,6 +335,9 @@ nav_bridge_health_ok() {
         if [ -z "${status_response}" ]; then
             problems+=("28180状态接口无响应")
         fi
+    fi
+    if ! nav_core_log_healthy; then
+        problems+=("导航核心未就绪")
     fi
     if [ "${#problems[@]}" -gt 0 ]; then
         log_warn "导航桥接健康检查失败：$(IFS='；'; echo "${problems[*]}")"
@@ -536,6 +560,7 @@ start_nav_bridge() {
     fi
 
     local nav_log="${RUN_DIR}/nav_bridge_$(date +%Y%m%d_%H%M%S).log"
+    current_nav_log="${nav_log}"
     log_info "启动导航桥接：${NAV_BRIDGE_SCRIPT} ${NAV_INTERFACE} ${NAV_PCD_PATH}"
     log_info "导航桥接日志：${nav_log}"
     setsid bash -lc 'source "$1" && source "$2" && "$3" "$4" "$5" 2>&1 | tee -a "$6"' bash "${ROS_SETUP}" "${WS_SETUP}" "${NAV_BRIDGE_SCRIPT}" "${NAV_INTERFACE}" "${NAV_PCD_PATH}" "${nav_log}" &

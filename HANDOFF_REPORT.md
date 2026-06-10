@@ -217,3 +217,52 @@ Aaron 反馈：启动控制台后点击“开始程序”，页面很快显示�
 - “开始程序”按钮当前语义是启动 systemd 服务；如果 `rabbitbot-loop.service` 已经处于 active，systemd start 会立即返回，不会重启或清理当前流程状态。
 - 新增日志点会记录启动时清理历史 workflow 控制文件的目录和数量；控制台状态解析对忽略非活动 ready 文件使用 DEBUG 日志，避免正常轮询产生过量日志。
 - 生成时间：2026-06-10 18:22:00
+
+## 本轮补充：定位持续未成功排查
+
+### 背景和目标
+
+Aaron 反馈控制台持续显示“定位未成功：程序会持续重定位，需要遥控机器人的位姿，帮助机器人完成定位”。本轮目标是确认定位失败的实际原因，并避免控制台只因 28180 Python bridge 存活而误判导航桥接就绪。
+
+### 当前状态
+
+已完成：
+
+- 已确认最新导航日志为 `rabbitbot-dev-ros2-master/logs/nav_workflow_control/nav_bridge_20260610_182249.log`。
+- 日志显示 `goGoalNavigation66` 启动后立即异常退出：`eno1: does not match an available interface`，随后抛出 `unitree::common::DdsException` 和 `Failed to create domain`。
+- 已确认宿主网卡状态：`eno1` 为 `DOWN/NO-CARRIER`，NetworkManager 显示 `ethernet unavailable`。
+- 已修复控制台 `/api/status` 的导航桥接判断：不再只看 28180 端口；会结合最新导航日志判断导航核心是否崩溃、是否网卡不可用、是否已经 ready/有位姿输出。
+- 已修复前端导航桥接显示：现在会展示后端给出的具体原因，例如“导航核心未启动：Unitree DDS 网卡不可用，请检查 eno1 链路”。
+- 已补强 `start_nav_bridge_workflow_loop.sh` 健康检查：识别导航日志中的 DDS、网卡和进程异常，避免导航核心已崩溃时仍把导航桥接视为健康。
+- 已重启 `rabbitbot-control-console.service`，当前 API 已返回 `nav_bridge.ready=false` 和明确原因。
+
+未完成：
+
+- 本轮未重启 `rabbitbot-loop.service`，避免在现场链路未恢复时反复重启导航流程。
+- 本轮未修复物理网络链路；需要现场接好机器人/Unitree DDS 所在的 `eno1` 网络。
+
+### 已验证的事实
+
+- 当前 `ip -brief addr show dev eno1` 显示 `eno1 DOWN`。
+- 当前 `ip link show dev eno1` 显示 `NO-CARRIER`。
+- 当前 `/api/status` 中 `nav_bridge.ready=false`，message 为“导航核心未启动：Unitree DDS 网卡不可用，请检查 eno1 链路”。
+- 当前 workflow 虽然可停在 `waiting_for_go`，但导航核心未启动，不能执行真实导航。
+- `bash deploy/check_air_project.sh` 已通过；核心脚本语法、Python 编译、sudoers 模板、air 动态库解析和旧路径硬编码检查正常。
+
+### 阻塞问题
+
+物理/网络层阻塞：`eno1` 没有载波，Unitree DDS 不能创建 domain，导致 `goGoalNavigation66` 崩溃，定位和导航都不会成功。
+
+### 建议的下一步
+
+- 现场恢复机器人网络连接，确保 `eno1` 有载波并处于可用状态。
+- 确认 `ip -brief addr show dev eno1` 不再是 `DOWN`，并有正确的 Unitree 网络地址。
+- 恢复链路后重启主程序：`sudo systemctl restart rabbitbot-loop.service`。
+- 刷新控制台，等待导航桥接显示“导航核心已就绪”，定位状态显示“定位成功”后再发送 `go`。
+
+### 注意事项
+
+- 当前 28180 端口在线只代表 Humble Python bridge 还活着，不代表 Unitree 导航核心可用。
+- 新增日志点：loop 健康检查会在导航核心日志不可读、DDS/网卡/进程异常、尚未完成定位时输出 WARNING，便于区分端口在线和核心导航可用性。
+- 控制台状态解析对导航日志读取失败和核心异常使用 DEBUG 日志，避免常规状态轮询造成过量日志。
+- 生成时间：2026-06-10 18:25:00

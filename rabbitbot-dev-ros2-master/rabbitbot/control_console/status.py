@@ -234,6 +234,43 @@ def get_latest_workflow_status(control_dir: Path) -> WorkflowStatus:
     )
 
 
+def detect_nav_bridge_status(nav_log: Path | None, port_ready: bool) -> dict:
+    status = {"ready": False, "port": None, "core_ready": False, "message": "导航桥接未就绪"}
+    if not port_ready:
+        status["message"] = "28180 端口未就绪"
+        return status
+    status["message"] = "28180 就绪，等待导航核心定位"
+    if nav_log is None:
+        status["message"] = "28180 就绪，但未找到导航日志"
+        return status
+
+    try:
+        lines = nav_log.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError as exc:
+        logger.debug("读取导航日志失败：path=%s, error=%s", nav_log, exc)
+        status["message"] = "28180 就绪，但导航日志不可读"
+        return status
+
+    clean_lines = [strip_ansi(line) for line in lines]
+    recent_text = "\n".join(clean_lines[-200:])
+    if "does not match an available interface" in recent_text:
+        status["message"] = "导航核心未启动：Unitree DDS 网卡不可用，请检查 eno1 链路"
+        logger.debug("导航核心网卡不可用：log=%s", nav_log)
+        return status
+    if "DdsException" in recent_text or "Failed to create domain" in recent_text or "Aborted" in recent_text:
+        status["message"] = "导航核心异常退出，请查看导航日志"
+        logger.debug("导航核心异常退出：log=%s", nav_log)
+        return status
+    if "[Ready] Navigation system ready for commands!" in recent_text or "[Pose]" in recent_text:
+        status["ready"] = True
+        status["core_ready"] = True
+        status["message"] = "导航核心已就绪"
+        return status
+
+    status["message"] = "28180 就绪，导航核心仍在重定位"
+    return status
+
+
 def is_port_open(host: str, port: int, timeout: float = 0.25) -> bool:
     try:
         with socket.create_connection((host, port), timeout=timeout):

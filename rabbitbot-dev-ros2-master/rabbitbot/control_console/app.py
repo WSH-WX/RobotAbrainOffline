@@ -13,6 +13,7 @@ from .status import (
     detect_main_loop_running,
     get_latest_workflow_status,
     get_tail_lines,
+    detect_nav_bridge_status,
     is_port_open,
     latest_file,
     parse_latest_pose,
@@ -140,7 +141,7 @@ function renderStatus(data){
   if(!mapPathTouched&&data.map_path){document.getElementById('mapPathInput').value=data.map_path;}
   setText('overall',servicesReady(data)?'全部就绪':(data.nav_bridge.ready?'在线':'导航未就绪'));
   setText('mainLoop',data.main_loop);
-  setText('navBridge',data.nav_bridge.ready?'28180 就绪':'未就绪');
+  setText('navBridge',(data.nav_bridge&&data.nav_bridge.message)||(data.nav_bridge.ready?'28180 就绪':'未就绪'));
   setText('workflow',data.workflow.status||'unknown');
   document.getElementById('guideBtn').disabled=!servicesReady(data);
   setText('poseStatus',(data.pose&&data.pose.status_message)||(data.pose&&data.pose.localized?'定位成功':'定位未成功：程序会持续重定位，需要遥控机器人的位姿，帮助机器人完成定位'));
@@ -310,11 +311,14 @@ def create_app(config: ConsoleConfig | None = None) -> FastAPI:
         pose = parse_latest_pose(nav_log) if nav_log else parse_latest_pose(Path("/missing-nav-log"))
         workflow = get_latest_workflow_status(config.workflow_control_dir)
         current_map_path = read_map_path(config.map_env_file, config.map_path)
+        port_ready = is_port_open("127.0.0.1", config.nav_port)
+        nav_bridge = detect_nav_bridge_status(nav_log, port_ready)
+        nav_bridge["port"] = config.nav_port
         return {
             "ok": True,
             "map_path": current_map_path,
             "main_loop": detect_main_loop_running(),
-            "nav_bridge": {"ready": is_port_open("127.0.0.1", config.nav_port), "port": config.nav_port},
+            "nav_bridge": nav_bridge,
             "workflow": workflow.to_dict(),
             "pose": pose.to_dict(),
         }
