@@ -142,7 +142,7 @@ function renderStatus(data){
   setText('mainLoop',data.main_loop);
   setText('navBridge',data.nav_bridge.ready?'28180 就绪':'未就绪');
   setText('workflow',data.workflow.status||'unknown');
-  document.getElementById('guideBtn').disabled=!data.nav_bridge.ready;
+  document.getElementById('guideBtn').disabled=!servicesReady(data);
   setText('poseStatus',(data.pose&&data.pose.status_message)||(data.pose&&data.pose.localized?'定位成功':'定位未成功：程序会持续重定位，需要遥控机器人的位姿，帮助机器人完成定位'));
   if(data.pose&&data.pose.available){
     var newline=String.fromCharCode(10);

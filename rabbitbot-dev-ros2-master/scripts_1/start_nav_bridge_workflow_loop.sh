@@ -494,9 +494,28 @@ prepare_runtime() {
     require_path "${WS_SETUP}"
     require_path "${PROJECT_DIR}/scripts_1/start_unified_integration_workflow.sh"
     rm -f "${COMMAND_FILE}"
+    cleanup_stale_workflow_control_files
     log_info "控制命令文件：${COMMAND_FILE}"
     log_info "其它终端发送 go：bash ${PROJECT_DIR}/scripts_1/send_nav_workflow_command.sh go"
     log_info "其它终端发送 back：bash ${PROJECT_DIR}/scripts_1/send_nav_workflow_command.sh back"
+}
+
+cleanup_stale_workflow_control_files() {
+    local deleted_output find_status deleted_count
+    set +e
+    deleted_output="$(find "${HOST_WORKFLOW_CONTROL_DIR}" -maxdepth 1 -type f \( \
+        -name "*.status" -o -name "*.pid" -o -name "*.ready" -o -name "*.exit_code" -o \
+        -name "*.finished_at" -o -name "*.go" -o -name "workflow_runner_*.sh" \) -print -delete 2>&1)"
+    find_status=$?
+    set -e
+
+    if [ "${find_status}" -ne 0 ]; then
+        log_warn "清理历史 workflow 控制文件失败：dir=${HOST_WORKFLOW_CONTROL_DIR}, error=${deleted_output}"
+        return 0
+    fi
+
+    deleted_count="$(printf '%s\n' "${deleted_output}" | sed '/^$/d' | wc -l | tr -d ' ')"
+    log_info "已清理历史 workflow 控制文件：dir=${HOST_WORKFLOW_CONTROL_DIR}, count=${deleted_count}"
 }
 
 stop_nav_bridge() {

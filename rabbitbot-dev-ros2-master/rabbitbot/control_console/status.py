@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from pathlib import Path
+import logging
 import re
 import socket
 import time
@@ -21,6 +22,8 @@ LOCALIZATION_SUCCESS_MESSAGE = "定位成功"
 LOCALIZATION_HELP_MESSAGE = "定位未成功：程序会持续重定位，需要遥控机器人的位姿，帮助机器人完成定位"
 LOCALIZATION_UNKNOWN_MESSAGE = "当前位姿已读取，定位状态待确认"
 LOCALIZATION_STATE_WINDOW_LINES = 300
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -169,17 +172,21 @@ def parse_latest_pose(path: Path) -> PoseStatus:
         )
 
     if latest is None:
-        return PoseStatus(available=False, localized=localized, status_message=status_message, message="暂无定位位姿数据")
+        fallback_message = LOCALIZATION_SUCCESS_MESSAGE if localized else LOCALIZATION_HELP_MESSAGE
+        if status_message == LOCALIZATION_UNKNOWN_MESSAGE:
+            logger.debug("导航日志未解析到位姿，定位状态回退为未成功提示：path=%s", path)
+        return PoseStatus(available=False, localized=localized, status_message=fallback_message, message="暂无定位位姿数据")
     return latest
 
 
 def get_latest_workflow_status(control_dir: Path) -> WorkflowStatus:
     try:
         files = [path for path in control_dir.iterdir() if path.is_file()]
-    except OSError:
+    except OSError as exc:
+        logger.debug("读取 workflow 控制目录失败：control_dir=%s, error=%s", control_dir, exc)
         return WorkflowStatus(run_id=None, status="unknown", ready=False)
 
-    candidates: list[tuple[int, float, str, str]] = []
+    candidates: list[tuple[float, str, str]] = []
     for path in files:
         match = RUN_ID_RE.match(path.name)
         if not match or match.group(2) != "status":
@@ -190,29 +197,40 @@ def get_latest_workflow_status(control_dir: Path) -> WorkflowStatus:
             mtime = path.stat().st_mtime
         except OSError:
             mtime = 0.0
-        running_rank = 1 if status == "running" else 0
-        candidates.append((running_rank, mtime, run_id, status))
+        candidates.append((mtime, run_id, status))
 
     if not candidates:
+        logger.debug("workflow 控制目录没有状态文件：control_dir=%s", control_dir)
         return WorkflowStatus(run_id=None, status="unknown", ready=False)
 
     now = time.time()
-    non_future_candidates = [item for item in candidates if item[1] <= now + 300]
+    non_future_candidates = [item for item in candidates if item[0] <= now + 300]
     if non_future_candidates:
         candidates = non_future_candidates
 
-    _, _, run_id, status = max(candidates, key=lambda item: (item[0], item[1], item[2]))
-    ready = (control_dir / f"{run_id}.ready").exists()
-    if status == "running" and ready:
-        status = "waiting_for_go"
+    _, run_id, status = max(candidates, key=lambda item: (item[0], item[1]))
+    ready_file = control_dir / f"{run_id}.ready"
+    exit_code = _read_text(control_dir / f"{run_id}.exit_code")
+    finished_at = _read_text(control_dir / f"{run_id}.finished_at")
+    raw_ready = ready_file.exists()
+    ready = status == "running" and raw_ready and not exit_code and not finished_at
+    display_status = "waiting_for_go" if ready else status
+    if raw_ready and not ready:
+        logger.debug(
+            "忽略非活动 workflow ready 文件：run_id=%s, status=%s, exit_code=%s, finished_at=%s",
+            run_id,
+            status,
+            exit_code,
+            finished_at,
+        )
 
     return WorkflowStatus(
         run_id=run_id,
-        status=status,
+        status=display_status,
         ready=ready,
         pid=_read_text(control_dir / f"{run_id}.pid"),
-        exit_code=_read_text(control_dir / f"{run_id}.exit_code"),
-        finished_at=_read_text(control_dir / f"{run_id}.finished_at"),
+        exit_code=exit_code,
+        finished_at=finished_at,
     )
 
 

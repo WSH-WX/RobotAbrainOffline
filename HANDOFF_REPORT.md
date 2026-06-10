@@ -170,3 +170,50 @@ Aaron 在 HaiSong 上启动 `rabbitbot-control-console.service` 后，前端提�
 - 这次问题不是前端页面故障，而是容器复用旧挂载后，workflow 状态文件写入路径与控制台读取路径不一致。
 - 新增的挂载兼容性检查会输出具体不匹配原因，便于后续区分项目路径、模型路径和环境变量变更导致的容器重建。
 - 生成时间：2026-06-10 18:15:00
+
+## 本轮补充：控制台过快显示就绪与定位状态文案排查
+
+### 背景和目标
+
+Aaron 反馈：启动控制台后点击“开始程序”，页面很快显示就绪，但按实际启动流程不应这么快；同时定位状态长期显示“当前位姿已读取，定位状态待确认”。本轮目标是确认前端就绪判断是否读取了真实当前 workflow，并修正定位状态展示。
+
+### 当前状态
+
+已完成：
+
+- 已确认控制台 API 曾读取到旧的 workflow ready/status 文件：页面显示 `run_id=20260610_181244`、`waiting_for_go`，但最新一次实际 workflow `20260610_181551` 已在 18:16:58 结束。
+- 已确认根因是控制台状态选择逻辑优先选择历史 `running` 状态文件，导致旧 ready 文件盖过最新已结束的 run。
+- 已修复 `rabbitbot/control_console/status.py`：workflow 状态改为选择最新状态文件；只有最新 run 仍为 `running`、存在 ready 文件且没有 `exit_code/finished_at` 时，才认为 `ready=true` 并显示 `waiting_for_go`。
+- 已修复定位状态回退：没有解析到位姿时，不再显示“当前位姿已读取，定位状态待确认”，而是显示需要重定位的提示。
+- 已修复前端导览按钮启用条件：只有主循环、导航桥接和 workflow 闸门全部 ready 时才允许发送导览 go。
+- 已修复 `start_nav_bridge_workflow_loop.sh`：主循环启动准备阶段会清理历史 workflow 控制文件，防止服务启动早期被旧 ready 文件污染。
+- 已重启 `rabbitbot-control-console.service` 让新状态逻辑生效。
+
+未完成：
+
+- 本轮未发送 `back`，也未重启 `rabbitbot-loop.service`，避免在现场不明确的情况下触发返航或重新拉起导航。
+- 本轮未执行真实导览动作。
+
+### 已验证的事实
+
+- 当前 `/api/status` 返回最新 workflow：`run_id=20260610_181551`、`status=finished`、`ready=false`。
+- 当前定位返回：`available=false`，状态文案为“定位未成功：程序会持续重定位，需要遥控机器人的位姿，帮助机器人完成定位”。
+- 当前 `rabbitbot-loop.service` 仍在运行，但日志显示它停在“等待命令：back 返回起点”，因此此时点击“开始程序”只会执行 systemd start，不会新建 workflow。
+- `bash deploy/check_air_project.sh` 已通过，核心脚本语法、Python 编译、sudoers 模板、air 动态库解析和旧路径硬编码检查正常。
+
+### 阻塞问题
+
+当前没有代码层面的阻塞。流程层面需要现场决定：是发送 `back` 完成返航并进入下一轮预启动，还是重启主程序清理当前等待状态。
+
+### 建议的下一步
+
+- 刷新控制台页面，确认不再秒变“全部就绪”，导览按钮在 workflow 未 ready 时不可点。
+- 如果当前机器人应该返航，现场确认安全后发送 `back`。
+- 如果不需要执行返航，可使用控制台“一键重启”或 `sudo systemctl restart rabbitbot-loop.service` 重建主循环，等待新的 workflow 进入 `waiting_for_go`。
+- 若后续再出现秒变 ready，优先检查 `/api/status` 中 `workflow.run_id` 是否为最新控制文件，以及 `workflow.ready` 是否只在 `waiting_for_go` 阶段为 true。
+
+### 注意事项
+
+- “开始程序”按钮当前语义是启动 systemd 服务；如果 `rabbitbot-loop.service` 已经处于 active，systemd start 会立即返回，不会重启或清理当前流程状态。
+- 新增日志点会记录启动时清理历史 workflow 控制文件的目录和数量；控制台状态解析对忽略非活动 ready 文件使用 DEBUG 日志，避免正常轮询产生过量日志。
+- 生成时间：2026-06-10 18:22:00
