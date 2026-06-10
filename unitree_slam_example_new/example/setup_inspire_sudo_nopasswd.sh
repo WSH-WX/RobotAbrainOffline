@@ -2,7 +2,9 @@
 set -euo pipefail
 
 TARGET_USER="${1:-$(id -un)}"
-INSPIRE_BIN="/mnt/ssd/navgation/projects/dfx_inspire_service/build/inspire_g1"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECTS_DIR="${RABBITBOT_PROJECTS_DIR:-$(cd "${SCRIPT_DIR}/../.." && pwd)}"
+INSPIRE_BIN="${PROJECTS_DIR}/dfx_inspire_service/build/inspire_g1"
 SUDOERS_FILE="/etc/sudoers.d/inspire_g1_nopasswd"
 RULE_LINE="$TARGET_USER ALL=(root) NOPASSWD: $INSPIRE_BIN"
 

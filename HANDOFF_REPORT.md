@@ -113,3 +113,14 @@
 - 已补充顶层 `.gitignore`，排除 `unitree_slam_example_new/**/build*/`、`unitree_slam_example_new/**/log/`、生成的目标文件、静态库、动态库和 PNG 图片。
 - 已使用 `git rm --cached` 仅从 Git 索引移除这些文件，磁盘上的运行依赖和构建产物仍保留在 air 目录中。
 - 已补充 `*.bak_*` 忽略规则，并从 Git 索引移除外部示例工程中的历史备份脚本。
+
+## 本轮补充：air 自包含运行复核
+
+- 已复核 `workflow loop` 和控制台服务的 systemd 配置，`WorkingDirectory`、`ExecStart`、`EnvironmentFile` 均指向 `/mnt/ssd/navgation/projects/air_robot_gt_projects`。
+- 已发现并修正 `custom_action_ws/install/setup.bash` 生成前缀问题：`start_nav_arm_bridge.sh` 和 `one_click_start.sh` 现在会显式设置 `COLCON_CURRENT_PREFIX` 到 air 目录，避免回退到旧 `/mnt/ssd/navgation/projects/custom_action_ws/install`。
+- 已将 `one_click_start.sh` 额外需要的 `unitree_sdk2/build/bin/g1_loco_client` 和 `dfx_inspire_service/build/inspire_g1` 补入 air 目录，并修正 `setup_inspire_sudo_nopasswd.sh` 从 air 根目录推导 inspire 路径。
+- 已补强 `deploy/check_air_project.sh`：新增 one-click 依赖检查、unitree 示例脚本语法检查、air ROS 工作区动态库解析检查、运行脚本旧路径硬编码检查。
+- 已验证 `goGoalNavigation66` 在 source air 工作区后，`libcustom_action_interfaces__rosidl_typesupport_cpp.so` 解析到 `/mnt/ssd/navgation/projects/air_robot_gt_projects/custom_action_ws/install/custom_action_interfaces/lib/`。
+- 当前控制台服务可访问 `http://127.0.0.1:8080/api/status`；`rabbitbot-loop.service` 保持 disabled，未设置开机自启。
+- 仍需注意：完整实机导航验证依赖机器人网络口 `eno1` 可用，当前 `eno1` 显示 DOWN/unavailable 时不能完成导航 DDS 实机验证。
+

@@ -9,6 +9,7 @@ PROJECTS_DIR="${RABBITBOT_PROJECTS_DIR:-$(cd "${SCRIPT_DIR}/../.." && pwd)}"
 EXAMPLE_DIR="${NAV_EXAMPLE_DIR:-${SCRIPT_DIR}}"
 ROS_SETUP="${ROS_SETUP:-/opt/ros/humble/setup.bash}"
 WS_SETUP="${WS_SETUP:-${PROJECTS_DIR}/custom_action_ws/install/setup.bash}"
+WS_PREFIX="$(cd "$(dirname "$WS_SETUP")" && pwd)"
 BRIDGE_APP="humble_robot_agent_bridge:app"
 RUN_DIR="$EXAMPLE_DIR/run_logs/nav_arm_bridge_$(date +%Y%m%d_%H%M%S)"
 LATEST_LINK="$EXAMPLE_DIR/run_logs/latest_nav_arm_bridge"
@@ -73,7 +74,7 @@ if ss -ltnp | grep -q ':28180'; then
   exit 1
 fi
 
-COMMON_ENV="set +u; source '$ROS_SETUP'; source '$WS_SETUP'; set -u"
+COMMON_ENV="set +u; source '$ROS_SETUP'; export COLCON_CURRENT_PREFIX='$WS_PREFIX'; source '$WS_SETUP'; set -u"
 CMD_NAV="$COMMON_ENV; cd '$EXAMPLE_DIR' && ./build/goGoalNavigation66 '$NETWORK_INTERFACE' '$PCD_PATH'"
 CMD_ARM="$COMMON_ENV; cd '$EXAMPLE_DIR' && ./build/g1ArmOfficialActionServer '$NETWORK_INTERFACE'"
 CMD_BRIDGE="$COMMON_ENV; cd '$PROJECTS_DIR' && python3 -m uvicorn $BRIDGE_APP --host 0.0.0.0 --port 28180 --log-level info"
@@ -86,6 +87,7 @@ echo "  pcd       : $PCD_PATH"
 echo "  logs      : $RUN_DIR"
 echo "  ros setup : $ROS_SETUP"
 echo "  ws setup  : $WS_SETUP"
+echo "  ws prefix : $WS_PREFIX"
 echo
 
 # 1. 启动导航节点
@@ -105,6 +107,7 @@ echo
 cd "$PROJECTS_DIR"
 set +u
 source "$ROS_SETUP"
+export COLCON_CURRENT_PREFIX="$WS_PREFIX"
 source "$WS_SETUP"
 set -u
 python3 -m uvicorn "$BRIDGE_APP" --host 0.0.0.0 --port 28180 --log-level info 2>&1 | tee "$RUN_DIR/03_humble_robot_agent_bridge.log"
