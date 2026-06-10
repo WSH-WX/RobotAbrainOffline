@@ -124,3 +124,49 @@
 - 当前控制台服务可访问 `http://127.0.0.1:8080/api/status`；`rabbitbot-loop.service` 保持 disabled，未设置开机自启。
 - 仍需注意：完整实机导航验证依赖机器人网络口 `eno1` 可用，当前 `eno1` 显示 DOWN/unavailable 时不能完成导航 DDS 实机验证。
 
+
+## 本轮补充：控制台显示服务未全部就绪排查
+
+### 背景和目标
+
+Aaron 在 HaiSong 上启动 `rabbitbot-control-console.service` 后，前端提示“服务仍未全部就绪，请查看状态或打开日志排查”。本轮目标是确认控制台、导航桥接和 workflow loop 的实际状态，并修复 air 项目启动链路中导致前端误报未就绪的问题。
+
+### 当前状态
+
+已完成：
+
+- 已确认控制台服务本身可访问，`http://127.0.0.1:8080/api/status` 能返回状态。
+- 已确认前端就绪条件包括主循环运行、28180 导航桥接端口就绪、workflow ready 文件存在且状态可读。
+- 已定位根因：`rabbitbot-unified-runtime` 曾复用旧容器挂载，容器内 `/workspace/projects` 指向旧 `/mnt/ssd/navgation/projects`，导致 workflow 的 ready/status 文件写到旧路径，而 air 控制台读取 air 项目路径，因此前端持续显示服务未全部就绪。
+- 已修复 `rabbitbot-dev-ros2-master/scripts_1/start_unified_integration_workflow.sh`：启动前检查既有统一容器的 `/workspace/projects` 和 `/models` 挂载源；若与当前 air 根目录不一致，则记录具体原因并重建容器。
+- 已进一步修正 Docker 挂载解析方式，从 `println` 改为 `printf`，避免制表符两侧空格导致后续重启误判。
+- 已重启 `rabbitbot-loop.service`，统一容器已按 air 根目录重建。
+
+未完成：
+
+- 本轮未发送 `go`，未执行真实导览动作。
+- 本轮未停止 Aaron 已启动的 loop；当前 workflow 停在 `waiting_for_go` 闸门，等待现场操作。
+
+### 已验证的事实
+
+- 当前容器挂载为 `/mnt/ssd/navgation/projects/air_robot_gt_projects -> /workspace/projects`。
+- 当前模型挂载为 `/mnt/ssd/navgation/projects/air_robot_gt_projects/models -> /models`。
+- 当前控制台 API 返回 `main_loop=running`、`nav_bridge.ready=true`、`workflow.ready=true`、`workflow.status=waiting_for_go`。
+- 当前定位状态为 `localized=true`，pose 来源为导航桥接日志。
+- `bash deploy/check_air_project.sh` 通过，核心脚本语法、Python 编译、sudoers 模板、air 动态库解析和旧路径硬编码检查均正常。
+
+### 阻塞问题
+
+无当前前端就绪层面的阻塞。真实导览动作仍需现场确认机器人周围安全后再发送 `go`。
+
+### 建议的下一步
+
+- 浏览器刷新控制台页面，确认顶部状态不再提示服务未全部就绪。
+- 如需开始导览，在现场安全确认后点击控制台的导览/开始流程按钮或发送 `go`。
+- 若后续再次出现未就绪，优先查看 `rabbitbot-loop.service` 日志中是否出现“已有统一容器配置不匹配，将重建”以及 `/api/status` 的 `workflow.ready` 字段。
+
+### 注意事项
+
+- 这次问题不是前端页面故障，而是容器复用旧挂载后，workflow 状态文件写入路径与控制台读取路径不一致。
+- 新增的挂载兼容性检查会输出具体不匹配原因，便于后续区分项目路径、模型路径和环境变量变更导致的容器重建。
+- 生成时间：2026-06-10 18:15:00

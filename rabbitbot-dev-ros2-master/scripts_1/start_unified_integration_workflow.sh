@@ -115,6 +115,13 @@ container_env_value() {
         | tail -n 1
 }
 
+container_mount_source() {
+    local container="$1"
+    local destination="$2"
+    docker inspect "${container}" --format '{{range .Mounts}}{{printf "%s\t%s\n" .Destination .Source}}{{end}}' 2>/dev/null \
+        | awk -F '	' -v dest="${destination}" '$1 == dest {print $2; exit}'
+}
+
 port_open() {
     local port="$1"
     timeout 2 bash -lc "</dev/tcp/127.0.0.1/${port}" >/dev/null 2>&1
@@ -199,8 +206,20 @@ ensure_compatible_container() {
     container_unitree_interface="$(container_env_value "${CONTAINER_NAME}" RABBITBOT_UNITREE_TTS_INTERFACE || true)"
     local container_unitree_volume
     container_unitree_volume="$(container_env_value "${CONTAINER_NAME}" RABBITBOT_UNITREE_TTS_VOLUME || true)"
+    local container_project_mount
+    container_project_mount="$(container_mount_source "${CONTAINER_NAME}" "${CONTAINER_PROJECT_ROOT}" || true)"
+    local container_models_mount
+    container_models_mount="$(container_mount_source "${CONTAINER_NAME}" "/models" || true)"
+    local expected_project_mount
+    expected_project_mount="$(cd "${PROJECT_ROOT}" && pwd)"
+    local expected_models_mount
+    expected_models_mount="$(cd "${MODELS_DIR}" && pwd)"
     local incompatible_reason=""
-    if [ "${container_auto_start}" != "0" ]; then
+    if [ "${container_project_mount}" != "${expected_project_mount}" ]; then
+        incompatible_reason="项目挂载路径变化：container=${container_project_mount:-未设置}, expected=${expected_project_mount}"
+    elif [ "${container_models_mount}" != "${expected_models_mount}" ]; then
+        incompatible_reason="模型挂载路径变化：container=${container_models_mount:-未设置}, expected=${expected_models_mount}"
+    elif [ "${container_auto_start}" != "0" ]; then
         incompatible_reason="旧的自启动 workflow 模式"
     elif [ "${container_start_vlm:-未设置}" != "${RABBITBOT_UNIFIED_START_VLM}" ]; then
         incompatible_reason="VLM 启动配置变化：container=${container_start_vlm:-未设置}, expected=${RABBITBOT_UNIFIED_START_VLM}"
