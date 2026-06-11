@@ -77,7 +77,7 @@ IMAGE_NAME="${IMAGE_NAME:-rabbitbot-unified-runtime:20260518}"
 CONTAINER_NAME="${CONTAINER_NAME:-rabbitbot-unified-runtime}"
 PROJECT_ROOT="${PROJECT_ROOT:-${DEFAULT_PROJECT_ROOT}}"
 CONTAINER_PROJECT_ROOT="${CONTAINER_PROJECT_ROOT:-/workspace/projects}"
-MODELS_DIR="${MODELS_DIR:-${PROJECT_ROOT}/models}"
+MODELS_DIR="${MODELS_DIR:-${RABBITBOT_MODELS_CACHE_DIR:-${PROJECT_ROOT}/models}}"
 CONTAINER_RABBITBOT_DIR="${CONTAINER_RABBITBOT_DIR:-${CONTAINER_PROJECT_ROOT}/rabbitbot-dev-ros2-master}"
 CONTAINER_LOG_DIR="${CONTAINER_LOG_DIR:-${CONTAINER_RABBITBOT_DIR}/logs/unified_runtime}"
 RECREATE_CONTAINER="${RECREATE_CONTAINER:-0}"
@@ -145,6 +145,34 @@ require_dir() {
         log_error "目录不存在：$1"
         exit 1
     fi
+}
+
+model_services_enabled() {
+    [ "${RABBITBOT_UNIFIED_START_VLM}" = "1" ] \
+        || [ "${RABBITBOT_UNIFIED_START_EMBEDDING}" = "1" ] \
+        || [ "${RABBITBOT_UNIFIED_START_STT}" = "1" ]
+}
+
+prepare_models_dir() {
+    if [ -d "${MODELS_DIR}" ]; then
+        log_info "模型目录可用：${MODELS_DIR}"
+        return 0
+    fi
+
+    if model_services_enabled; then
+        log_error "模型目录不存在：${MODELS_DIR}。当前已启用 VLM/Embedding/STT 之一，请先执行 deploy/ensure_models.sh 下载模型，或在 runtime/portable.env 设置 RABBITBOT_MODELS_CACHE_DIR / MODELS_DIR 指向已有模型目录。"
+        exit 1
+    fi
+
+    if [ "${RABBITBOT_RUNTIME_MODE}" = "portable" ]; then
+        MODELS_DIR="${RABBITBOT_EMPTY_MODELS_DIR:-${RABBITBOT_REPO_DIR}/runtime/empty_models}"
+        mkdir -p "${MODELS_DIR}"
+        log_warn "模型能力均未启用，原模型目录不存在；portable 模式改用空模型挂载点：${MODELS_DIR}"
+        return 0
+    fi
+
+    log_error "目录不存在：${MODELS_DIR}"
+    exit 1
 }
 
 container_exists() {
@@ -495,7 +523,7 @@ if ! docker image inspect "${IMAGE_NAME}" >/dev/null 2>&1; then
 fi
 
 require_dir "${PROJECT_ROOT}"
-require_dir "${MODELS_DIR}"
+prepare_models_dir
 
 ensure_compatible_container
 create_container_if_needed

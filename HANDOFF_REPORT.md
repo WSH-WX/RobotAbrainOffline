@@ -707,3 +707,42 @@ Aaron 这轮要求先为“全新 Orin 仅靠 GitHub 源码 + 镜像 + 最小宿
 - `unitree_slam_example_new` 在 portable 路径中应由 nav 镜像内置，GitHub 源码中的宿主目录不是新 Orin 运行前置条件。
 - 本轮新增/调整日志点：控制台状态解析在未读到位姿时记录日志来源、定位状态和状态消息；自检新增状态解析运行时回归输出，用于定位控制台状态接口运行期异常。
 - 生成时间：2026-06-11 17:15:00
+
+
+## 本轮补充：ShuHao 主循环因宿主 models 目录缺失反复重启
+
+### 背景和目标
+
+ShuHao-orin 上点击开始程序后，前端定位状态在“定位成功”和“导航未就绪”之间周期性切换，且 `logs` 下没有 workflow 日志。排查确认导航容器可以成功定位并输出 `[Ready]`，但主循环随后在确认 unified 基础服务时因 `/mnt/disk1/gt/air_robot_gt_projects/models` 不存在退出，systemd 自动重启导致 nav 容器不断被重建。
+
+### 当前状态
+
+已完成：
+
+- 修复 `scripts_1/start_unified_integration_workflow.sh` 的 portable 模型目录处理逻辑。
+- `MODELS_DIR` 现在优先接受 `RABBITBOT_MODELS_CACHE_DIR` / `MODELS_DIR` 显式配置。
+- 当 portable 模式且 VLM/Embedding/STT 均未启用时，不再要求宿主仓库根目录存在 `models/`，而是自动创建并使用 `runtime/empty_models` 作为空模型挂载点。
+- 当 VLM/Embedding/STT 任一启用时，仍会明确报错要求先执行 `deploy/ensure_models.sh` 或配置已有模型目录，避免静默缺模型。
+
+### 已验证的事实
+
+- ShuHao-orin 日志显示 nav 容器内 `unitree_slam_example_new` 已成功读取机器人侧地图路径 `/home/unitree/test9.pcd`，并输出定位成功与 Ready。
+- ShuHao-orin 的失败点不是 `unitree_slam_example_new` 宿主目录未配置，而是 unified core 启动前的宿主 `models` 目录误依赖。
+- workflow 日志未出现，是因为主循环在启动 workflow 前已退出。
+
+### 阻塞问题
+
+- 需要在 ShuHao-orin 拉取本提交后重启 `rabbitbot-loop.service`，验证 unified core 是否能越过 models 目录检查并进入 workflow 预启动。
+- 若继续失败，下一步应查看 `rabbitbot-unified-runtime` 容器日志、基础服务端口 7687/28182/28185，以及 workflow 控制目录。
+
+### 建议的下一步
+
+- 在 ShuHao-orin 执行 `git pull`。
+- 执行 `PORTABLE_CHECK_MODE=clean_orin bash deploy/check_air_project.sh`。
+- 重启 `rabbitbot-loop.service`，观察 `NRestarts` 是否停止增长，并确认 `logs/nav_workflow_control/workflow_control` 下出现 workflow 状态文件。
+
+### 注意事项
+
+- `runtime/empty_models` 是本机运行态目录，不应进入 Git。
+- 本轮新增/调整日志点：unified 启动脚本会记录模型目录是否可用、是否因模型能力关闭而使用空模型挂载点，以及启用模型能力但目录缺失时的明确修复提示。
+- 生成时间：2026-06-11 17:45:00

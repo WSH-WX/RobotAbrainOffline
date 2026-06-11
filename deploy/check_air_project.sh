@@ -147,6 +147,24 @@ check_core_skips_internal_28180() {
     log_ok "core 启动链路支持 portable 模式跳过内部 Robot Agent (28180)"
 }
 
+check_portable_models_policy() {
+    # portable 冷启动默认关闭 VLM/Embedding/STT，不能因为宿主没有 models/ 目录而阻断 core 基础服务。
+    local integration_script="${REPO_DIR}/scripts_1/start_unified_integration_workflow.sh"
+    if ! grep -q 'prepare_models_dir' "${integration_script}"; then
+        log_error "core 启动脚本缺少按需模型目录策略：${integration_script}"
+        exit 1
+    fi
+    if grep -q 'require_dir "${MODELS_DIR}"' "${integration_script}"; then
+        log_error "core 启动脚本仍强制要求宿主 models 目录，破坏 clean_orin 冷启动：${integration_script}"
+        exit 1
+    fi
+    if ! grep -q 'RABBITBOT_EMPTY_MODELS_DIR' "${integration_script}"; then
+        log_error "core 启动脚本缺少 portable 空模型挂载点兜底：${integration_script}"
+        exit 1
+    fi
+    log_ok "portable core 模型目录策略正确：模型能力关闭时不要求宿主 models/"
+}
+
 check_python_venv_capability() {
     # 功能性探测 python3 -m venv：缺 python3-venv 时 venv 模块仍在，但 ensurepip 缺失导致创建失败。
     # 判定：venv 可用 → 通过；不可用但存在 apt-get（可经 INSTALL_HOST_PACKAGES=1 自动安装）→ 可解释告警放行；
@@ -284,6 +302,7 @@ log_ok "依赖清单检查通过：${manifest_result}"
 check_portable_env_keys
 check_dockerignore_rules
 check_core_skips_internal_28180
+check_portable_models_policy
 check_port_topology_runtime
 
 log_info "检查脚本语法"
