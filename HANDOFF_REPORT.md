@@ -389,3 +389,59 @@ Aaron 这轮要求先为“全新 Orin 仅靠 GitHub 源码 + 镜像 + 最小宿
 - 本轮新增/调整的日志主要集中在 portable 脚本与检查链路：镜像准备、模型下载、宿主初始化、网络配置、compose 启动和导航入口都会记录开始、关键参数、完成状态和失败原因，便于后续在新 Orin 上排查冷启动问题。
 - `.dockerignore` 仅用于镜像构建上下文治理，不影响 Git 跟踪规则；Git 侧是否提交仍以顶层 `.gitignore` 为准。
 - 生成时间：2026-06-11 11:30:00
+
+## 本轮补充：portable 自包含镜像化冷启动落地
+
+### 背景和目标
+
+按 Aaron 的「全新 Orin 镜像化冷启动」计划，把 `core` 与 `nav` 做成包含全部运行时依赖的本地自包含镜像，使全新 Orin 只需 GitHub 拉源码、导入镜像、最小宿主初始化即可冷启动，运行期不再要求宿主存在 `py38/py310/vln/pyorbbecsdk/unitree_sdk2` 等目录。
+
+### 关键现实约束（已核实）
+
+- 本机现存镜像中，`unified_runtime/Dockerfile` 引用的四个上游镜像里**只剩 `neo4j:5.26-community`**；`navid-rabbitbot:stt-tts-audio-ct2cuda-20260511`、`rabbitbot-vllm:20260511`、`foxy-ros-cam-orb-ubuntu20:rabbitbot-20260511` 这三个 tag 已不在本机。因此**无法在本机从零重建 core**。
+- `rabbitbot-unified-runtime:20260518`（49.8GB）本身即这四个镜像的合并产物，已包含 Neo4j/Java/ROS Foxy/Python3.8/STT/TTS/VLM venv。
+- 结论：core 只能以 unified-runtime 为基础镜像，再把宿主 gitignore 的重型依赖与源码烤进镜像。该折中已在 `third_party/manifest.lock` 的 `images.portable_core.notes` 与 README 中如实记录。
+
+### 当前状态
+
+已完成：
+
+- **改写 `docker/portable/core.Dockerfile` 为自包含镜像**：`FROM rabbitbot-unified-runtime:20260518`，烤入 `rabbitbot-dev-ros2-master`（含 `py38/py310`）、`vln`、`pyorbbecsdk-v2-py310`、`humble_robot_agent_bridge.py` 到 `/workspace/projects/...`，并从烤入源码安装统一入口与冒烟脚本到 `/usr/local/bin`。
+- **改写 `deploy/build_or_pull_images.sh`**：
+  - 新增 `MODE=build|check|none`（保留 `pull|both`）；`RABBITBOT_IMAGE_SOURCE=local` 时默认 `check`。
+  - core 构建使用 `rsync` 生成的专用上下文 `.portable_core_ctx`，绕过顶层 `.dockerignore` 对 `py38/py310/vln/pyorbbecsdk` 的排除（早期 `cp -al` 方案因宿主 root 文件触发 `protected_hardlinks` 失败，已弃用）。
+  - 记录镜像 tag、image id、耗时。
+- **新增 `deploy/export_portable_images.sh` / `deploy/import_portable_images.sh`**：以 `docker save/load` 离线交付，导出 `*.tar`、`images.sha256`、`images.lock.json`；导入前校验 sha256，并确认 load 后 tag 与 `runtime/portable.env` 一致；均记录 tag、id、路径、sha256、耗时。
+- **改写 `scripts_1/start_unified_integration_workflow.sh`**：portable 模式（`RABBITBOT_RUNTIME_MODE=portable`）新建容器时，为 `py38/py310/vln/pyorbbecsdk` 注入从 core 镜像 seed 的 named volume（`rabbitbot_portable_*`）；新建前重置这些卷以从当前镜像重新 seed；并新增「容器镜像与期望镜像不一致即重建」判定，保证导入新镜像后重启即生效。
+- **改写 `deploy/check_air_project.sh` 为两模式**：`PORTABLE_CHECK_MODE=builder|clean_orin`。`clean_orin` 允许外部构建目录缺失，转而要求已导入的 core/nav 镜像、控制台 venv、`RABBITBOT_NAV_MAP_PATH` 配置；manifest 检查新增「无未解决 blocker」。
+- **更新 `third_party/manifest.lock`**：`unitree_sdk2`/`custom_action_ws_install` → `baked_into_image`(nav)；`vln`/`pyorbbecsdk-v2-py310` → `baked_into_image`(core)；`legacy_python_envs` → `not_required_for_portable`；`dfx_inspire_service` 保持 `legacy_optional`；`blockers` 清空并移入 `resolved_blockers`；新增 `image_source=local`、`image_delivery=offline_docker_save_load`。
+- **更新 `runtime/portable.env`**：`RABBITBOT_PORTABLE_BUILD_CORE=1`、新增 `RABBITBOT_IMAGE_SOURCE=local`、`RABBITBOT_PORTABLE_INJECT_DEPS=1`；并在 `rabbitbot-dev-ros2-master/.gitignore` 增加 `!runtime/portable.env`，使该模板能随仓库迁移（此前被 `*` 规则忽略）。
+- **更新 `start_portable_stack.sh`**：以 portable 模式启动，默认走 `check`（不访问远端仓库）。
+- **更新 `README.md`**：拆为「流程 A 构建机生成镜像」「流程 B 全新 Orin 导入镜像冷启动」两条明确流程，并更新自检/注意事项。
+
+### 已验证的事实（本机实测）
+
+- `PORTABLE_CHECK_MODE=builder bash deploy/check_air_project.sh` 通过。
+- `MODE=build bash deploy/build_or_pull_images.sh` 成功：`ghcr.io/aaronai/rabbitbot-core-portable:20260611`（id `sha256:683425716fd5...`，50.8GB，耗时 29s）；nav 命中缓存（id `d25e6527186e`）。
+- **自包含冒烟（无任何挂载）通过**：`docker run --rm --entrypoint rabbitbot-unified-smoke-check` 返回 `audio_runtime_ok / vllm_runtime_ok / workflow_runtime_ok / robot_python38_runtime_ok / neo4j_java_runtime_ok`，exit=0。证明 workflow(py310)、Robot Agent(系统 py3.8 + 烤入 py38 site-packages)、VLM、音频、Neo4j Java 全部在镜像内可用。
+- **干净 Orin 运行链路通过（throwaway 容器模拟）**：用 `git archive HEAD` 生成只含 git 跟踪文件、缺 `py38/py310/vln/pyorbbecsdk` 的源码树 bind 到 `/workspace/projects`，再挂 4 个新建 named volume；容器内这 4 个依赖均从 core 镜像 seed 出来并在 bind mount 之上可见，`py310/bin/python` 成功 `import agno` 与 `from rabbitbot.agno_agents.workflow import create_main_workflow`（exit=0）。证明「named volume 在父 bind mount 之下仍能从镜像 seed」这一关键机制成立。
+- `PORTABLE_CHECK_MODE=clean_orin bash deploy/check_air_project.sh` 通过（exit=0）；两个 WARN 为预期：本机尚无 `control_console_venv`、地图文件为机器人本体侧路径。
+
+### 未完成 / 阻塞
+
+- **未切换正在服务的 live core 容器**：当前 `rabbitbot-unified-runtime` 容器已运行约 16h、控制台 active、workflow 停在 `waiting_for_go`。因 `eno1` 当前为 DOWN，Unitree TTS / Robot Agent 基础服务在全新容器中无法完整初始化，此时执行 `start_portable_stack.sh` 重建会用「不可验证的新容器」替换「当前可用的待命容器」且不易回滚。已通过 throwaway 容器完整验证镜像与 seed 机制，**实际 live 切换建议在 `eno1` 恢复的维护窗口执行**。
+- **未在真正的「干净新 Orin」整机演练**：本机仍是构建机；干净链路已用容器级模拟覆盖，但端到端整机冷启动（导入 tar → bootstrap → start_portable_stack → 控制台/28180/waiting_for_go）需在另一台干净 Orin 上完成。
+- 离线导出 `deploy/export_portable_images.sh` 正在后台运行生成 `outputs/portable-images/`（core ~50GB tar + nav + sha256 + lock）；本报告生成时可能尚未结束，结果以 `outputs/portable-images/images.lock.json` 与 `/tmp/export.log` 为准。
+
+### 建议的下一步
+
+- `eno1` 恢复后，在维护窗口执行：`bash deploy/start_portable_stack.sh`（portable 模式会自动检测镜像变化并以 core-portable 镜像 + 依赖卷重建 core 容器），等待基础服务就绪后再验证控制台、28180 与 `waiting_for_go`。
+- 准备一台干净 Orin，按 README「流程 B」整机演练：导入镜像 → `bootstrap_host.sh` → `PORTABLE_CHECK_MODE=clean_orin` 自检 → `MODE=check` 校验 → `start_portable_stack.sh`。
+- 将 `outputs/portable-images/` 整目录交付到目标 Orin 作为离线镜像来源。
+
+### 注意事项
+
+- core 镜像 50.8GB，`docker save` tar 约同量级；导出/导入耗时较长，`outputs/` 已被 `.gitignore` 排除，不进入提交。
+- portable 依赖卷 `rabbitbot_portable_{py38,py310,vln,pyorbbecsdk}` 在「新建 core 容器」时会被重置并从当前 core 镜像重新 seed；导入新版 core 镜像后首次 `start_portable_stack.sh` 即会刷新它们。
+- 本轮新增/调整的日志点：core 构建（上下文准备、镜像 id、耗时）、镜像 check/none 分支、导出/导入（tag/id/路径/sha256/耗时）、portable 依赖卷重置与注入、容器镜像不一致重建原因、clean_orin 自检的镜像/初始化/地图校验，均覆盖关键阶段、输入摘要、状态变化、失败原因。
+- 生成时间：2026-06-11 11:05:00

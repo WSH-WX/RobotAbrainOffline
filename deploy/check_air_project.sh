@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
 # 检查 air_robot_gt_projects 在 legacy / portable 两条路径下的关键文件、环境、路径和语法。
+#
+# PORTABLE_CHECK_MODE：
+#   builder    构建机模式（默认）：要求宿主存在 unitree_sdk2 / vln / pyorbbecsdk / py38 / py310 /
+#              custom_action_ws/install / 导航构建产物 / dfx 等外部构建源；用于生成 portable 镜像前的自检。
+#   clean_orin 全新 Orin 模式：不要求上述宿主外部目录与 legacy Python 虚拟环境存在；改为要求 GitHub 源码、
+#              已导入的 portable core/nav 镜像、portable env、compose、宿主初始化结果和地图路径配置存在。
 
 set -euo pipefail
 
@@ -10,10 +16,31 @@ PORTABLE_ENV_FILE="${REPO_DIR}/runtime/portable.env"
 MANIFEST_FILE="${AIR_ROOT}/third_party/manifest.lock"
 DOCKERIGNORE_FILE="${AIR_ROOT}/.dockerignore"
 
+PORTABLE_CHECK_MODE="${PORTABLE_CHECK_MODE:-builder}"
+
+if [ -f "${PORTABLE_ENV_FILE}" ]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "${PORTABLE_ENV_FILE}"
+    set +a
+fi
+
+CORE_IMAGE="${RABBITBOT_PORTABLE_CORE_IMAGE:-ghcr.io/aaronai/rabbitbot-core-portable:20260611}"
+NAV_IMAGE="${RABBITBOT_PORTABLE_NAV_IMAGE:-ghcr.io/aaronai/rabbitbot-nav-portable:20260611}"
+
 log_info() { echo "[INFO] $1"; }
 log_ok() { echo "[OK] $1"; }
 log_warn() { echo "[WARN] $1"; }
 log_error() { echo "[ERROR] $1" >&2; }
+
+case "${PORTABLE_CHECK_MODE}" in
+    builder|clean_orin) ;;
+    *)
+        log_error "不支持的 PORTABLE_CHECK_MODE：${PORTABLE_CHECK_MODE}，仅支持 builder / clean_orin"
+        exit 1
+        ;;
+esac
+log_info "portable 自检模式：PORTABLE_CHECK_MODE=${PORTABLE_CHECK_MODE}"
 
 require_path() {
     if [ ! -e "$1" ]; then
@@ -21,6 +48,15 @@ require_path() {
         exit 1
     fi
     log_ok "存在：$1"
+}
+
+info_optional_absent() {
+    # clean_orin 模式下，外部构建目录“不存在”是预期的，记录为信息而非错误。
+    if [ -e "$1" ]; then
+        log_ok "存在（clean_orin 下非必需）：$1"
+    else
+        log_info "外部构建目录不存在，clean_orin 模式下符合预期：$1"
+    fi
 }
 
 check_manifest() {
@@ -46,6 +82,9 @@ missing.extend(sorted(required_images - set(data.get('images', {}))))
 missing.extend(sorted(required_models - set(data.get('models', {}))))
 if missing:
     raise SystemExit('manifest_missing=' + ','.join(missing))
+# portable 阶段不应再保留未解决的阻塞项。
+if data.get('blockers'):
+    raise SystemExit('manifest_unresolved_blockers=' + ','.join(b.get('id', '?') for b in data['blockers']))
 print('manifest-ok')
 PY
 }
@@ -56,6 +95,7 @@ check_portable_env_keys() {
         RABBITBOT_NAV_RUNTIME
         RABBITBOT_PORTABLE_CORE_IMAGE
         RABBITBOT_PORTABLE_NAV_IMAGE
+        RABBITBOT_IMAGE_SOURCE
         RABBITBOT_DDS_INTERFACE
         RABBITBOT_DDS_HOST_CIDR
         RABBITBOT_NAV_MAP_PATH
@@ -105,13 +145,15 @@ check_no_naked_runtime_hardcode() {
         "${PROJECTS_DIR}/unitree_slam_example_new/example/start_nav_arm_bridge.sh"
     )
     local patterns=(
-        'export ROS_MASTER_URI=http://192\\.168\\.26\\.1:11311'
-        'export ROS_IP=192\\.168\\.26\\.13'
-        'NAV_INTERFACE="\\$\\{NAV_INTERFACE:-eno1\\}"'
-        'NETWORK_INTERFACE="\\$\\{1:-eno1\\}"'
+        'export ROS_MASTER_URI=http://192\.168\.26\.1:11311'
+        'export ROS_IP=192\.168\.26\.13'
+        'NAV_INTERFACE="\$\{NAV_INTERFACE:-eno1\}"'
+        'NETWORK_INTERFACE="\$\{1:-eno1\}"'
     )
     local matched=0
+    local file pattern
     for file in "${files[@]}"; do
+        [ -f "${file}" ] || continue
         for pattern in "${patterns[@]}"; do
             if grep -Eq "${pattern}" "${file}"; then
                 log_error "检测到未环境变量化的运行时硬编码：file=${file}, pattern=${pattern}"
@@ -125,29 +167,20 @@ check_no_naked_runtime_hardcode() {
     log_ok "关键运行脚本未发现未环境变量化的固定 IP / 网卡硬编码"
 }
 
-log_info "检查目录结构"
+# ---------------------------------------------------------------------------
+# 1. 共享检查：目录结构、清单、env、dockerignore、portable docker 文件、部署脚本
+# ---------------------------------------------------------------------------
+log_info "检查共享目录结构与文件"
 require_path "${REPO_DIR}"
-require_path "${PROJECTS_DIR}/models"
-require_path "${PROJECTS_DIR}/custom_action_ws/install/setup.bash"
-require_path "${PROJECTS_DIR}/unitree_slam_example_new/example/build/goGoalNavigation66"
-require_path "${PROJECTS_DIR}/unitree_slam_example_new/example/build/g1ArmOfficialActionServer"
-require_path "${PROJECTS_DIR}/unitree_slam_example_new/example/build/goGoalNavigation"
-require_path "${PROJECTS_DIR}/unitree_slam_example_new/example/build/gestureTopicBridge"
-require_path "${PROJECTS_DIR}/unitree_sdk2/build/bin/g1_loco_client"
-require_path "${PROJECTS_DIR}/dfx_inspire_service/build/inspire_g1"
-require_path "${PROJECTS_DIR}/unitree_sdk2"
-require_path "${PROJECTS_DIR}/vln/ros2_ws/install/setup.bash"
-require_path "${PROJECTS_DIR}/pyorbbecsdk-v2-py310/install/lib"
 require_path "${PROJECTS_DIR}/humble_robot_agent_bridge.py"
-require_path "${REPO_DIR}/py38/bin/python"
-require_path "${REPO_DIR}/py310/bin/python"
-require_path "/opt/ros/humble/setup.bash"
+require_path "${PROJECTS_DIR}/custom_action_ws/src/custom_action_interfaces"
 require_path "${MANIFEST_FILE}"
 require_path "${PORTABLE_ENV_FILE}"
 require_path "${DOCKERIGNORE_FILE}"
 require_path "${REPO_DIR}/docker/portable/compose.yaml"
 require_path "${REPO_DIR}/docker/portable/core.Dockerfile"
 require_path "${REPO_DIR}/docker/portable/nav.Dockerfile"
+require_path "${REPO_DIR}/docker/portable/nav_entrypoint.sh"
 require_path "${REPO_DIR}/scripts_1/start_loop_entry.sh"
 require_path "${REPO_DIR}/scripts_1/start_nav_bridge_portable.sh"
 require_path "${PROJECTS_DIR}/deploy/bootstrap_host.sh"
@@ -155,13 +188,8 @@ require_path "${PROJECTS_DIR}/deploy/ensure_models.sh"
 require_path "${PROJECTS_DIR}/deploy/build_or_pull_images.sh"
 require_path "${PROJECTS_DIR}/deploy/start_portable_stack.sh"
 require_path "${PROJECTS_DIR}/deploy/setup_robot_network.sh"
-
-log_info "检查 Docker 镜像"
-if docker image inspect rabbitbot-unified-runtime:20260518 >/dev/null 2>&1; then
-    log_ok "legacy unified 基础镜像存在：rabbitbot-unified-runtime:20260518"
-else
-    log_warn "当前宿主缺少 legacy unified 基础镜像：rabbitbot-unified-runtime:20260518；若后续只走可拉取的 portable core 成品镜像，可忽略本告警。"
-fi
+require_path "${PROJECTS_DIR}/deploy/export_portable_images.sh"
+require_path "${PROJECTS_DIR}/deploy/import_portable_images.sh"
 
 log_info "检查依赖清单"
 manifest_result="$(check_manifest)"
@@ -179,15 +207,13 @@ scripts=(
     "${REPO_DIR}/scripts_1/start_loop_entry.sh"
     "${REPO_DIR}/scripts_1/start_control_console.sh"
     "${REPO_DIR}/scripts/build_unitree_g1_tts_bridge.sh"
-    "${PROJECTS_DIR}/unitree_slam_example_new/example/start_nav_arm_bridge.sh"
-    "${PROJECTS_DIR}/unitree_slam_example_new/example/one_click_start.sh"
-    "${PROJECTS_DIR}/unitree_slam_example_new/example/start_robot_stack_host.sh"
-    "${PROJECTS_DIR}/unitree_slam_example_new/example/setup_inspire_sudo_nopasswd.sh"
     "${PROJECTS_DIR}/deploy/bootstrap_host.sh"
     "${PROJECTS_DIR}/deploy/setup_robot_network.sh"
     "${PROJECTS_DIR}/deploy/ensure_models.sh"
     "${PROJECTS_DIR}/deploy/build_or_pull_images.sh"
     "${PROJECTS_DIR}/deploy/start_portable_stack.sh"
+    "${PROJECTS_DIR}/deploy/export_portable_images.sh"
+    "${PROJECTS_DIR}/deploy/import_portable_images.sh"
 )
 for script in "${scripts[@]}"; do
     bash -n "$script"
@@ -211,36 +237,7 @@ log_info "检查 sudoers 模板"
 visudo -cf "${REPO_DIR}/scripts_1/systemd/rabbitbot-control-console.sudoers"
 log_ok "sudoers 模板语法通过"
 
-log_info "检查 air ROS 工作区解析"
-custom_lib="$({
-    bash -lc "set +u; source /opt/ros/humble/setup.bash; export COLCON_CURRENT_PREFIX='${PROJECTS_DIR}/custom_action_ws/install'; source '${PROJECTS_DIR}/custom_action_ws/install/setup.bash'; set -u; ldd '${PROJECTS_DIR}/unitree_slam_example_new/example/build/goGoalNavigation66' | awk '/libcustom_action_interfaces__rosidl_typesupport_cpp.so/ {print \$3; exit}'"
-})"
-case "$custom_lib" in
-    "${PROJECTS_DIR}/custom_action_ws/install"/*)
-        log_ok "custom_action_interfaces 动态库解析到 air 目录：$custom_lib"
-        ;;
-    *)
-        log_error "custom_action_interfaces 动态库未解析到 air 目录：${custom_lib:-未找到}"
-        exit 1
-        ;;
-esac
-
-log_info "检查旧路径硬编码"
-if grep -RIn "/mnt/ssd/navgation/projects/rabbitbot-dev-ros2-master" \
-    "${REPO_DIR}/rabbitbot" "${REPO_DIR}/scripts" "${REPO_DIR}/scripts_1" "${REPO_DIR}/deploy" \
-    --exclude-dir=__pycache__ --exclude='*.pyc'; then
-    log_error "仍存在旧项目根硬编码，请先处理。"
-    exit 1
-fi
-if grep -RIn "/mnt/ssd/navgation/projects/" \
-    "${PROJECTS_DIR}/unitree_slam_example_new/example"/*.sh \
-    --exclude='*.bak' --exclude='*.bak_*' | grep -v "/mnt/ssd/navgation/projects/air_robot_gt_projects"; then
-    log_error "unitree_slam 示例运行脚本仍存在旧 projects 路径硬编码，请先处理。"
-    exit 1
-fi
-log_ok "未发现运行脚本旧项目根硬编码"
-
-log_info "检查 portable 运行时关键配置"
+log_info "检查 portable 运行时关键配置（共享）"
 check_no_naked_runtime_hardcode
 if ! grep -Eq '^RABBITBOT_RUNTIME_MODE=portable$' "${PORTABLE_ENV_FILE}"; then
     log_warn "portable env 当前未默认启用 portable 模式；若准备在新 Orin 冷启动，请先执行 bootstrap_host.sh 或手动确认 runtime/portable.env。"
@@ -248,4 +245,138 @@ else
     log_ok "portable env 默认模式为 portable"
 fi
 
-log_ok "air_robot_gt_projects 自检完成"
+log_info "检查旧路径硬编码（共享）"
+if grep -RIn "/mnt/ssd/navgation/projects/rabbitbot-dev-ros2-master" \
+    "${REPO_DIR}/rabbitbot" "${REPO_DIR}/scripts" "${REPO_DIR}/scripts_1" "${REPO_DIR}/deploy" \
+    --exclude-dir=__pycache__ --exclude='*.pyc'; then
+    log_error "仍存在旧项目根硬编码，请先处理。"
+    exit 1
+fi
+log_ok "未发现核心源码旧项目根硬编码"
+
+# ---------------------------------------------------------------------------
+# 2. 构建机模式专属检查：要求外部构建源存在
+# ---------------------------------------------------------------------------
+run_builder_checks() {
+    log_info "构建机模式：检查外部构建源是否存在"
+    require_path "${PROJECTS_DIR}/models"
+    require_path "${PROJECTS_DIR}/custom_action_ws/install/setup.bash"
+    require_path "${PROJECTS_DIR}/unitree_slam_example_new/example/build/goGoalNavigation66"
+    require_path "${PROJECTS_DIR}/unitree_slam_example_new/example/build/g1ArmOfficialActionServer"
+    require_path "${PROJECTS_DIR}/unitree_slam_example_new/example/build/goGoalNavigation"
+    require_path "${PROJECTS_DIR}/unitree_slam_example_new/example/build/gestureTopicBridge"
+    require_path "${PROJECTS_DIR}/unitree_sdk2/build/bin/g1_loco_client"
+    require_path "${PROJECTS_DIR}/dfx_inspire_service/build/inspire_g1"
+    require_path "${PROJECTS_DIR}/unitree_sdk2"
+    require_path "${PROJECTS_DIR}/vln/ros2_ws/install/setup.bash"
+    require_path "${PROJECTS_DIR}/pyorbbecsdk-v2-py310/install/lib"
+    require_path "${REPO_DIR}/py38/bin/python"
+    require_path "${REPO_DIR}/py310/bin/python"
+    require_path "/opt/ros/humble/setup.bash"
+
+    log_info "构建机模式：检查 portable core 基础镜像"
+    if docker image inspect "${RABBITBOT_PORTABLE_CORE_BASE_IMAGE:-rabbitbot-unified-runtime:20260518}" >/dev/null 2>&1; then
+        log_ok "portable core 基础镜像存在：${RABBITBOT_PORTABLE_CORE_BASE_IMAGE:-rabbitbot-unified-runtime:20260518}"
+    else
+        log_error "构建机缺少 portable core 基础镜像：${RABBITBOT_PORTABLE_CORE_BASE_IMAGE:-rabbitbot-unified-runtime:20260518}，无法构建自包含 core 镜像。"
+        exit 1
+    fi
+
+    log_info "构建机模式：检查 example 运行脚本语法"
+    local example_scripts=(
+        "${PROJECTS_DIR}/unitree_slam_example_new/example/start_nav_arm_bridge.sh"
+        "${PROJECTS_DIR}/unitree_slam_example_new/example/one_click_start.sh"
+        "${PROJECTS_DIR}/unitree_slam_example_new/example/start_robot_stack_host.sh"
+        "${PROJECTS_DIR}/unitree_slam_example_new/example/setup_inspire_sudo_nopasswd.sh"
+    )
+    local s
+    for s in "${example_scripts[@]}"; do
+        bash -n "${s}"
+        log_ok "bash -n 通过：${s}"
+    done
+
+    log_info "构建机模式：检查 air ROS 工作区动态库解析"
+    local custom_lib
+    custom_lib="$({
+        bash -lc "set +u; source /opt/ros/humble/setup.bash; export COLCON_CURRENT_PREFIX='${PROJECTS_DIR}/custom_action_ws/install'; source '${PROJECTS_DIR}/custom_action_ws/install/setup.bash'; set -u; ldd '${PROJECTS_DIR}/unitree_slam_example_new/example/build/goGoalNavigation66' | awk '/libcustom_action_interfaces__rosidl_typesupport_cpp.so/ {print \$3; exit}'"
+    })"
+    case "$custom_lib" in
+        "${PROJECTS_DIR}/custom_action_ws/install"/*)
+            log_ok "custom_action_interfaces 动态库解析到 air 目录：$custom_lib"
+            ;;
+        *)
+            log_error "custom_action_interfaces 动态库未解析到 air 目录：${custom_lib:-未找到}"
+            exit 1
+            ;;
+    esac
+
+    log_info "构建机模式：检查 example 运行脚本旧 projects 路径硬编码"
+    if grep -RIn "/mnt/ssd/navgation/projects/" \
+        "${PROJECTS_DIR}/unitree_slam_example_new/example"/*.sh \
+        --exclude='*.bak' --exclude='*.bak_*' | grep -v "/mnt/ssd/navgation/projects/air_robot_gt_projects"; then
+        log_error "unitree_slam 示例运行脚本仍存在旧 projects 路径硬编码，请先处理。"
+        exit 1
+    fi
+    log_ok "未发现 example 运行脚本旧项目根硬编码"
+}
+
+# ---------------------------------------------------------------------------
+# 3. 全新 Orin 模式专属检查：外部目录可缺失，转而要求镜像/初始化结果
+# ---------------------------------------------------------------------------
+run_clean_orin_checks() {
+    log_info "全新 Orin 模式：确认外部构建目录缺失时仍可通过（这些目录已固化进 portable 镜像）"
+    info_optional_absent "${REPO_DIR}/py38"
+    info_optional_absent "${REPO_DIR}/py310"
+    info_optional_absent "${PROJECTS_DIR}/vln"
+    info_optional_absent "${PROJECTS_DIR}/pyorbbecsdk-v2-py310"
+    info_optional_absent "${PROJECTS_DIR}/unitree_sdk2"
+    info_optional_absent "${PROJECTS_DIR}/custom_action_ws/install"
+    info_optional_absent "${PROJECTS_DIR}/dfx_inspire_service"
+
+    log_info "全新 Orin 模式：校验已导入的 portable 镜像"
+    if ! command -v docker >/dev/null 2>&1; then
+        log_error "全新 Orin 缺少 docker，无法校验 portable 镜像。"
+        exit 1
+    fi
+    local img label rc=0
+    for pair in "${CORE_IMAGE}|portable_core" "${NAV_IMAGE}|portable_nav"; do
+        img="${pair%%|*}"
+        label="${pair##*|}"
+        if docker image inspect "${img}" >/dev/null 2>&1; then
+            log_ok "portable 镜像已存在：label=${label}, image=${img}"
+        else
+            log_error "全新 Orin 缺少 portable 镜像：label=${label}, image=${img}。请先用 deploy/import_portable_images.sh 导入离线镜像。"
+            rc=1
+        fi
+    done
+    if [ "${rc}" -ne 0 ]; then
+        exit 1
+    fi
+
+    log_info "全新 Orin 模式：校验宿主初始化结果与地图路径配置"
+    if [ -x "${REPO_DIR}/runtime/control_console_venv/bin/python" ]; then
+        log_ok "控制台轻量虚拟环境已就绪：${REPO_DIR}/runtime/control_console_venv"
+    else
+        log_warn "未发现控制台轻量虚拟环境：${REPO_DIR}/runtime/control_console_venv；请先执行 deploy/bootstrap_host.sh。"
+    fi
+
+    local map_path="${RABBITBOT_NAV_MAP_PATH:-}"
+    if [ -z "${map_path}" ]; then
+        log_error "未配置导航地图路径，请在 runtime/portable.env 设置 RABBITBOT_NAV_MAP_PATH。"
+        exit 1
+    fi
+    if [ -e "${map_path}" ]; then
+        log_ok "导航地图文件存在：RABBITBOT_NAV_MAP_PATH=${map_path}"
+    else
+        log_warn "导航地图文件当前不存在：RABBITBOT_NAV_MAP_PATH=${map_path}；地图不随仓库迁移，请确认机器人本体侧地图路径，缺失会导致导航无法定位。"
+    fi
+    log_ok "全新 Orin 模式专属检查完成"
+}
+
+if [ "${PORTABLE_CHECK_MODE}" = "builder" ]; then
+    run_builder_checks
+else
+    run_clean_orin_checks
+fi
+
+log_ok "air_robot_gt_projects 自检完成：PORTABLE_CHECK_MODE=${PORTABLE_CHECK_MODE}"

@@ -49,6 +49,16 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RABBITBOT_REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 DEFAULT_PROJECT_ROOT="$(cd "${RABBITBOT_REPO_DIR}/.." && pwd)"
+
+# 加载 portable 运行模式配置（若存在），以便在 portable 模式下注入自包含镜像的重型依赖卷。
+PORTABLE_ENV_FILE="${RABBITBOT_PORTABLE_ENV_FILE:-${RABBITBOT_REPO_DIR}/runtime/portable.env}"
+if [ -f "${PORTABLE_ENV_FILE}" ]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "${PORTABLE_ENV_FILE}"
+    set +a
+fi
+
 IMAGE_NAME="${IMAGE_NAME:-rabbitbot-unified-runtime:20260518}"
 CONTAINER_NAME="${CONTAINER_NAME:-rabbitbot-unified-runtime}"
 PROJECT_ROOT="${PROJECT_ROOT:-${DEFAULT_PROJECT_ROOT}}"
@@ -75,6 +85,14 @@ RABBITBOT_UNITREE_TTS_INTERFACE="${RABBITBOT_UNITREE_TTS_INTERFACE:-eno1}"
 RABBITBOT_UNITREE_TTS_VOLUME="${RABBITBOT_UNITREE_TTS_VOLUME:-100}"
 RABBITBOT_UNITREE_TTS_SPEAKER_ID="${RABBITBOT_UNITREE_TTS_SPEAKER_ID:-0}"
 RABBITBOT_UNITREE_TTS_TIMEOUT="${RABBITBOT_UNITREE_TTS_TIMEOUT:-10}"
+
+# portable 自包含运行模式：
+#   当 RABBITBOT_RUNTIME_MODE=portable 且 RABBITBOT_PORTABLE_INJECT_DEPS!=0 时，
+#   为 4 个宿主 gitignore 的重型依赖目录注入 named volume；这些卷在首次使用时会从自包含 core
+#   镜像 seed 出 py38/py310/vln/pyorbbecsdk，从而即使宿主源码目录缺这些子目录也能正常运行。
+#   宿主源码目录仍 bind mount 到 /workspace/projects 以提供 GitHub 源码、conf 与日志可见性。
+RABBITBOT_RUNTIME_MODE="${RABBITBOT_RUNTIME_MODE:-legacy}"
+RABBITBOT_PORTABLE_INJECT_DEPS="${RABBITBOT_PORTABLE_INJECT_DEPS:-1}"
 
 log_info() {
     echo -e "\033[32m[INFO]\033[0m $1"
@@ -206,6 +224,8 @@ ensure_compatible_container() {
     container_unitree_interface="$(container_env_value "${CONTAINER_NAME}" RABBITBOT_UNITREE_TTS_INTERFACE || true)"
     local container_unitree_volume
     container_unitree_volume="$(container_env_value "${CONTAINER_NAME}" RABBITBOT_UNITREE_TTS_VOLUME || true)"
+    local container_image
+    container_image="$(docker inspect "${CONTAINER_NAME}" --format '{{.Config.Image}}' 2>/dev/null || true)"
     local container_project_mount
     container_project_mount="$(container_mount_source "${CONTAINER_NAME}" "${CONTAINER_PROJECT_ROOT}" || true)"
     local container_models_mount
@@ -215,7 +235,9 @@ ensure_compatible_container() {
     local expected_models_mount
     expected_models_mount="$(cd "${MODELS_DIR}" && pwd)"
     local incompatible_reason=""
-    if [ "${container_project_mount}" != "${expected_project_mount}" ]; then
+    if [ -n "${container_image}" ] && [ "${container_image}" != "${IMAGE_NAME}" ]; then
+        incompatible_reason="镜像变化：container=${container_image}, expected=${IMAGE_NAME}（如刚导入新的 portable core 镜像，会据此重建容器以生效）"
+    elif [ "${container_project_mount}" != "${expected_project_mount}" ]; then
         incompatible_reason="项目挂载路径变化：container=${container_project_mount:-未设置}, expected=${expected_project_mount}"
     elif [ "${container_models_mount}" != "${expected_models_mount}" ]; then
         incompatible_reason="模型挂载路径变化：container=${container_models_mount:-未设置}, expected=${expected_models_mount}"
@@ -247,6 +269,44 @@ ensure_compatible_container() {
     fi
 }
 
+portable_dep_enabled() {
+    [ "${RABBITBOT_RUNTIME_MODE}" = "portable" ] && [ "${RABBITBOT_PORTABLE_INJECT_DEPS}" != "0" ]
+}
+
+# 4 个宿主 gitignore 的重型依赖目录；portable 模式下用从 core 镜像 seed 的 named volume 顶替。
+PORTABLE_DEP_NAMES=(py38 py310 vln pyorbbecsdk-v2-py310)
+
+portable_dep_volume() {
+    case "$1" in
+        py38) echo "rabbitbot_portable_py38" ;;
+        py310) echo "rabbitbot_portable_py310" ;;
+        vln) echo "rabbitbot_portable_vln" ;;
+        pyorbbecsdk-v2-py310) echo "rabbitbot_portable_pyorbbecsdk" ;;
+    esac
+}
+
+portable_dep_dest() {
+    case "$1" in
+        py38) echo "${CONTAINER_RABBITBOT_DIR}/py38" ;;
+        py310) echo "${CONTAINER_RABBITBOT_DIR}/py310" ;;
+        vln) echo "${CONTAINER_PROJECT_ROOT}/vln" ;;
+        pyorbbecsdk-v2-py310) echo "${CONTAINER_PROJECT_ROOT}/pyorbbecsdk-v2-py310" ;;
+    esac
+}
+
+reset_portable_dep_volumes() {
+    # 新建容器前重置依赖卷，确保从当前 core 镜像重新 seed，避免旧镜像版本残留。
+    local name vol
+    for name in "${PORTABLE_DEP_NAMES[@]}"; do
+        vol="$(portable_dep_volume "${name}")"
+        if docker volume inspect "${vol}" >/dev/null 2>&1; then
+            docker volume rm "${vol}" >/dev/null 2>&1 || log_warn "依赖卷删除失败（可能正被占用），将复用现有卷：${vol}"
+        fi
+        docker volume create "${vol}" >/dev/null
+    done
+    log_info "已重置 portable 重型依赖卷，将在容器创建时从 core 镜像重新 seed：count=${#PORTABLE_DEP_NAMES[@]}"
+}
+
 create_container_if_needed() {
     if container_exists "${CONTAINER_NAME}"; then
         log_info "复用已有统一容器：${CONTAINER_NAME}"
@@ -264,6 +324,16 @@ create_container_if_needed() {
         )
     fi
 
+    dep_args=()
+    if portable_dep_enabled; then
+        reset_portable_dep_volumes
+        local dep_name
+        for dep_name in "${PORTABLE_DEP_NAMES[@]}"; do
+            dep_args+=( -v "$(portable_dep_volume "${dep_name}"):$(portable_dep_dest "${dep_name}")" )
+        done
+        log_info "portable 模式：注入 ${#PORTABLE_DEP_NAMES[@]} 个重型依赖卷（py38/py310/vln/pyorbbecsdk），运行期不再要求宿主提供这些目录"
+    fi
+
     log_info "创建统一容器基础服务底座：${CONTAINER_NAME}"
     log_info "TTS 默认后端：${RABBITBOT_TTS_BACKEND}，Unitree 网卡：${RABBITBOT_UNITREE_TTS_INTERFACE}，音量：${RABBITBOT_UNITREE_TTS_VOLUME}"
     docker create \
@@ -272,6 +342,7 @@ create_container_if_needed() {
         --ipc host \
         --runtime nvidia \
         "${audio_args[@]}" \
+        "${dep_args[@]}" \
         -e RABBITBOT_DIR="${CONTAINER_RABBITBOT_DIR}" \
         -e RABBITBOT_LOG_DIR="${CONTAINER_LOG_DIR}" \
         -e RABBITBOT_TTS_ALLOW_BUILTIN="${RABBITBOT_TTS_ALLOW_BUILTIN:-0}" \

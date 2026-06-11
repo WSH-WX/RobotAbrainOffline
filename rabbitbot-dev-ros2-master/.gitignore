@@ -28,6 +28,7 @@
 !requirements*.txt
 !constraints*.txt
 !Dockerfile
+!*.Dockerfile
 !docker-compose*.yml
 !Makefile
 
@@ -105,3 +106,6 @@ logs/**
 
 # 临时构思文件
 .superpowers/
+
+# portable 运行模式模板：必须随仓库迁移到新 Orin，由 bootstrap_host.sh 在保留键名前提下更新值
+!runtime/portable.env

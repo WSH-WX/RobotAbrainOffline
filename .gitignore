@@ -27,6 +27,10 @@ vln/
 pyorbbecsdk-v2-py310/
 dfx_inspire_service/
 
+# portable 离线镜像导出产物与 core 构建暂存上下文（体积大，不进入 Git）
+outputs/
+.portable_core_ctx/
+
 # 备份和临时产物
 rabbitbot-dev-ros2-master/py310.backup_*/
 *.tmp
