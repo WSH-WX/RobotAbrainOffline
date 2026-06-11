@@ -37,7 +37,7 @@ class ConsoleConfig:
             host=os.environ.get("RABBITBOT_CONSOLE_HOST", "0.0.0.0"),
             port=int(os.environ.get("RABBITBOT_CONSOLE_PORT", "8080")),
             nav_port=int(os.environ.get("RABBITBOT_NAV_PORT", "28180")),
-            map_path=os.environ.get("NAV_PCD_PATH", "/home/unitree/test9.pcd"),
+            map_path=os.environ.get("NAV_PCD_PATH", os.environ.get("RABBITBOT_NAV_MAP_PATH", "/home/unitree/test9.pcd")),
             command_script=project_root / "scripts_1" / "send_nav_workflow_command.sh",
             workflow_control_dir=project_root / "logs" / "nav_workflow_control" / "workflow_control",
             nav_log_dir=project_root / "logs" / "nav_workflow_control",

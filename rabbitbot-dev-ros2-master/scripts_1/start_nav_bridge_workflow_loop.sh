@@ -28,15 +28,20 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 PROJECTS_DIR="${RABBITBOT_PROJECTS_DIR:-$(cd "${PROJECT_DIR}/.." && pwd)}"
 NAV_EXAMPLE_DIR="${NAV_EXAMPLE_DIR:-${PROJECTS_DIR}/unitree_slam_example_new/example}"
-NAV_BRIDGE_SCRIPT="${NAV_BRIDGE_SCRIPT:-${NAV_EXAMPLE_DIR}/start_nav_arm_bridge.sh}"
-NAV_INTERFACE="${NAV_INTERFACE:-eno1}"
+NAV_BRIDGE_RUNTIME="${RABBITBOT_NAV_RUNTIME:-host}"
+NAV_BRIDGE_SCRIPT_DEFAULT="${NAV_EXAMPLE_DIR}/start_nav_arm_bridge.sh"
+if [ "${NAV_BRIDGE_RUNTIME}" = "compose" ]; then
+    NAV_BRIDGE_SCRIPT_DEFAULT="${PROJECT_DIR}/scripts_1/start_nav_bridge_portable.sh"
+fi
+NAV_BRIDGE_SCRIPT="${NAV_BRIDGE_SCRIPT:-${NAV_BRIDGE_SCRIPT_DEFAULT}}"
+NAV_INTERFACE="${NAV_INTERFACE:-${RABBITBOT_DDS_INTERFACE:-eno1}}"
 NAV_PCD_PATH_WAS_EXPLICIT=0
 if [ -n "${NAV_PCD_PATH+x}" ] && [ -n "${NAV_PCD_PATH}" ]; then
     NAV_PCD_PATH_WAS_EXPLICIT=1
 else
     NAV_PCD_PATH=""
 fi
-DEFAULT_NAV_PCD_PATH="${DEFAULT_NAV_PCD_PATH:-/home/unitree/test1.pcd}"
+DEFAULT_NAV_PCD_PATH="${DEFAULT_NAV_PCD_PATH:-${RABBITBOT_NAV_MAP_PATH:-/home/unitree/test1.pcd}}"
 NAV_MAP_BASE_DIR="${NAV_MAP_BASE_DIR:-/home/unitree}"
 ROS_SETUP="${ROS_SETUP:-/opt/ros/humble/setup.bash}"
 WS_SETUP="${WS_SETUP:-${PROJECTS_DIR}/custom_action_ws/install/setup.bash}"
@@ -514,8 +519,10 @@ prepare_runtime() {
     mkdir -p "${CONTROL_DIR}" "${RUN_DIR}" "${HOST_LOG_DIR}" "${HOST_WORKFLOW_RUN_DIR}" "${HOST_WORKFLOW_CONTROL_DIR}"
     resolve_nav_pcd_path
     require_path "${NAV_BRIDGE_SCRIPT}"
-    require_path "${ROS_SETUP}"
-    require_path "${WS_SETUP}"
+    if [ "${NAV_BRIDGE_RUNTIME}" != "compose" ]; then
+        require_path "${ROS_SETUP}"
+        require_path "${WS_SETUP}"
+    fi
     require_path "${PROJECT_DIR}/scripts_1/start_unified_integration_workflow.sh"
     rm -f "${COMMAND_FILE}"
     cleanup_stale_workflow_control_files
@@ -561,9 +568,13 @@ start_nav_bridge() {
 
     local nav_log="${RUN_DIR}/nav_bridge_$(date +%Y%m%d_%H%M%S).log"
     current_nav_log="${nav_log}"
-    log_info "启动导航桥接：${NAV_BRIDGE_SCRIPT} ${NAV_INTERFACE} ${NAV_PCD_PATH}"
+    log_info "启动导航桥接：runtime=${NAV_BRIDGE_RUNTIME}, script=${NAV_BRIDGE_SCRIPT}, interface=${NAV_INTERFACE}, map=${NAV_PCD_PATH}"
     log_info "导航桥接日志：${nav_log}"
-    setsid bash -lc 'source "$1" && source "$2" && "$3" "$4" "$5" 2>&1 | tee -a "$6"' bash "${ROS_SETUP}" "${WS_SETUP}" "${NAV_BRIDGE_SCRIPT}" "${NAV_INTERFACE}" "${NAV_PCD_PATH}" "${nav_log}" &
+    if [ "${NAV_BRIDGE_RUNTIME}" = "compose" ]; then
+        setsid bash -lc '"$1" "$2" "$3" 2>&1 | tee -a "$4"' bash "${NAV_BRIDGE_SCRIPT}" "${NAV_INTERFACE}" "${NAV_PCD_PATH}" "${nav_log}" &
+    else
+        setsid bash -lc 'source "$1" && source "$2" && "$3" "$4" "$5" 2>&1 | tee -a "$6"' bash "${ROS_SETUP}" "${WS_SETUP}" "${NAV_BRIDGE_SCRIPT}" "${NAV_INTERFACE}" "${NAV_PCD_PATH}" "${nav_log}" &
+    fi
     nav_group_pid=$!
     log_info "导航桥接进程组已启动：pgid=${nav_group_pid}"
     wait_port 28180 60

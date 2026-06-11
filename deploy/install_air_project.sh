@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # 安装 air_robot_gt_projects 的 systemd 服务和控制台 sudoers 授权。
-# 本脚本不会启动导航主程序，也不会启用开机自启。
+# 本脚本不会启动导航主程序，也不会启用开机自启；portable / legacy 两条路径共用相同服务名，具体由 runtime/portable.env 控制。
 
 set -euo pipefail
 
 AIR_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO_DIR="${AIR_ROOT}/rabbitbot-dev-ros2-master"
 RESTART_CONTROL_CONSOLE="${RESTART_CONTROL_CONSOLE:-1}"
+PORTABLE_ENV_FILE="${REPO_DIR}/runtime/portable.env"
 
 if [ "$(id -u)" -eq 0 ]; then
     SUDO=()
@@ -16,6 +17,7 @@ fi
 
 log_info() { echo "[INFO] $1"; }
 log_ok() { echo "[OK] $1"; }
+log_warn() { echo "[WARN] $1"; }
 log_error() { echo "[ERROR] $1" >&2; }
 
 require_path() {
@@ -25,20 +27,26 @@ require_path() {
     fi
 }
 
+require_path "${REPO_DIR}/scripts_1/start_loop_entry.sh"
 require_path "${REPO_DIR}/scripts_1/start_nav_bridge_workflow_loop.sh"
+require_path "${REPO_DIR}/scripts_1/start_nav_bridge_portable.sh"
+require_path "${REPO_DIR}/scripts_1/start_control_console.sh"
 require_path "${REPO_DIR}/deploy/rabbitbot-control-console.service"
 require_path "${REPO_DIR}/scripts_1/systemd/rabbitbot-loop.service"
 require_path "${REPO_DIR}/scripts_1/systemd/rabbitbot-control-console.sudoers"
+require_path "${PORTABLE_ENV_FILE}"
 require_path "${AIR_ROOT}/models"
 require_path "${AIR_ROOT}/custom_action_ws/install/setup.bash"
 require_path "${AIR_ROOT}/unitree_slam_example_new/example/start_nav_arm_bridge.sh"
-
-if ! docker image inspect rabbitbot-unified-runtime:20260518 >/dev/null 2>&1; then
-    log_error "Docker 镜像不存在：rabbitbot-unified-runtime:20260518"
-    exit 1
-fi
+require_path "${AIR_ROOT}/deploy/bootstrap_host.sh"
 
 visudo -cf "${REPO_DIR}/scripts_1/systemd/rabbitbot-control-console.sudoers"
+
+runtime_mode="$(sed -n 's/^RABBITBOT_RUNTIME_MODE=//p' "${PORTABLE_ENV_FILE}" | tail -n 1)"
+log_info "准备安装 systemd 服务：runtime_mode=${runtime_mode:-未设置}"
+if [ "${runtime_mode:-}" = "portable" ]; then
+    log_info "当前将通过 runtime/portable.env 让 rabbitbot-loop.service 使用 portable 入口。"
+fi
 
 log_info "停止旧的 rabbitbot-loop.service（如正在运行）"
 "${SUDO[@]}" systemctl stop rabbitbot-loop.service 2>/dev/null || true
@@ -56,7 +64,7 @@ log_info "刷新 systemd 并保持服务非开机自启"
 "${SUDO[@]}" systemctl disable rabbitbot-loop.service rabbitbot-control-console.service >/dev/null 2>&1 || true
 
 if [ "${RESTART_CONTROL_CONSOLE}" = "1" ]; then
-    log_info "重启控制台服务，使其加载 air 项目路径"
+    log_info "重启控制台服务，使其加载最新 portable / legacy 配置"
     "${SUDO[@]}" systemctl restart rabbitbot-control-console.service
 else
     log_info "RESTART_CONTROL_CONSOLE=${RESTART_CONTROL_CONSOLE}，不重启控制台服务"

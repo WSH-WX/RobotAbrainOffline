@@ -1,0 +1,128 @@
+{
+  "schema_version": 1,
+  "generated_for_branch": "feature/portable-deploy",
+  "summary": {
+    "goal": "让全新 Orin 通过 GitHub 源码、最小宿主初始化和可拉取/可构建镜像完成 RabbitBot 冷启动",
+    "default_runtime_mode": "portable",
+    "default_vlm_enabled": false,
+    "notes": [
+      "本清单记录所有 Git 之外的运行依赖、镜像来源和模型下载策略。",
+      "凡是被 .gitignore 排除但主流程必需的内容，都必须在本清单中有来源。",
+      "当前 portable 路径优先依赖可拉取的 portable 镜像；legacy 路径继续保留现场回退能力。"
+    ]
+  },
+  "dependencies": {
+    "unitree_sdk2": {
+      "required_for": ["portable_nav_build", "legacy_runtime"],
+      "source_type": "local_directory_or_artifact",
+      "tracked_in_git": false,
+      "default_path": "unitree_sdk2",
+      "acquire_strategy": "从离线依赖包或制品仓恢复到项目根目录，再参与 portable nav 镜像构建。",
+      "status": "required",
+      "blocker": false
+    },
+    "dfx_inspire_service": {
+      "required_for": ["legacy_one_click_start"],
+      "source_type": "local_directory_or_artifact",
+      "tracked_in_git": false,
+      "default_path": "dfx_inspire_service",
+      "acquire_strategy": "当前 portable 冷启动主流程不依赖该目录；若启用 legacy 一键启动，需要从离线依赖包恢复。",
+      "status": "legacy_optional",
+      "blocker": false
+    },
+    "pyorbbecsdk-v2-py310": {
+      "required_for": ["workflow", "robot_agent"],
+      "source_type": "local_directory_or_artifact",
+      "tracked_in_git": false,
+      "default_path": "pyorbbecsdk-v2-py310",
+      "acquire_strategy": "从离线依赖包恢复，或在后续版本中改为容器内预置。",
+      "status": "required",
+      "blocker": false
+    },
+    "vln": {
+      "required_for": ["workflow", "robot_agent"],
+      "source_type": "local_directory_or_artifact",
+      "tracked_in_git": false,
+      "default_path": "vln",
+      "acquire_strategy": "从离线依赖包恢复，或在后续版本中改为容器内预置。",
+      "status": "required",
+      "blocker": false
+    },
+    "custom_action_ws_install": {
+      "required_for": ["legacy_runtime"],
+      "source_type": "build_output",
+      "tracked_in_git": false,
+      "default_path": "custom_action_ws/install",
+      "acquire_strategy": "portable nav 镜像改为在容器内从 custom_action_ws/src 重新构建；legacy 路径继续使用宿主 install 目录。",
+      "status": "portable_rebuild",
+      "blocker": false
+    },
+    "legacy_python_envs": {
+      "required_for": ["legacy_runtime"],
+      "source_type": "local_virtualenv",
+      "tracked_in_git": false,
+      "default_path": "rabbitbot-dev-ros2-master/py38 + rabbitbot-dev-ros2-master/py310",
+      "acquire_strategy": "portable 路径不再要求从 Git 恢复这两个虚拟环境，改由 portable core 镜像与轻量宿主控制台 venv 提供运行时。",
+      "status": "portable_replaced",
+      "blocker": false
+    }
+  },
+  "images": {
+    "portable_core": {
+      "default_image": "ghcr.io/aaronai/rabbitbot-core-portable:20260611",
+      "build_recipe": "rabbitbot-dev-ros2-master/docker/portable/core.Dockerfile",
+      "pull_or_build": "prefer_pull_then_build",
+      "notes": [
+        "当前构建仍依赖 rabbitbot-unified-runtime:20260518 作为单一基础镜像。",
+        "相比 legacy 方案，portable core 不再直接依赖四个仓库外镜像作为唯一入口。"
+      ],
+      "blocker": false
+    },
+    "portable_nav": {
+      "default_image": "ghcr.io/aaronai/rabbitbot-nav-portable:20260611",
+      "build_recipe": "rabbitbot-dev-ros2-master/docker/portable/nav.Dockerfile",
+      "pull_or_build": "prefer_build_then_pull",
+      "notes": [
+        "portable nav 镜像使用项目根目录中的 unitree_sdk2、custom_action_ws 源码和导航示例构建。",
+        "如本地缺少这些目录，必须先按清单恢复依赖，再执行构建。"
+      ],
+      "blocker": false
+    },
+    "legacy_unified_core_base": {
+      "default_image": "rabbitbot-unified-runtime:20260518",
+      "source_type": "prebuilt_local_image",
+      "notes": [
+        "当前现场镜像仍作为 portable core 的可复用基础镜像。",
+        "后续若补齐四个上游镜像的公开 Dockerfile，可继续把该条目标记为可完全重建。"
+      ],
+      "blocker": false
+    }
+  },
+  "models": {
+    "qwen_vlm": {
+      "enabled_by_default": false,
+      "download_mode": "on_demand",
+      "hf_repo": "Qwen/Qwen2.5-VL-7B-Instruct-GPTQ-Int4",
+      "target_dir": "models/Qwen2.5-VL-7B-Instruct-GPTQ-Int4"
+    },
+    "qwen_embedding": {
+      "enabled_by_default": false,
+      "download_mode": "on_demand",
+      "hf_repo": "Qwen/Qwen3-Embedding-0.6B",
+      "target_dir": "models/Qwen3-Embedding-0.6B"
+    },
+    "sensevoice": {
+      "enabled_by_default": false,
+      "download_mode": "on_demand",
+      "hf_repo": "iic/SenseVoiceSmall",
+      "target_dir": "models/SenseVoiceSmall"
+    }
+  },
+  "blockers": [
+    {
+      "id": "portable_core_full_rebuild_not_complete",
+      "level": "warning",
+      "message": "portable core 当前仍以 rabbitbot-unified-runtime:20260518 作为基础镜像，尚未完全替代其历史构建链。"
+    }
+  ]
+}

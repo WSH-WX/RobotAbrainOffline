@@ -266,3 +266,126 @@ Aaron 反馈控制台持续显示“定位未成功：程序会持续重定位�
 - 新增日志点：loop 健康检查会在导航核心日志不可读、DDS/网卡/进程异常、尚未完成定位时输出 WARNING，便于区分端口在线和核心导航可用性。
 - 控制台状态解析对导航日志读取失败和核心异常使用 DEBUG 日志，避免常规状态轮询造成过量日志。
 - 生成时间：2026-06-10 18:25:00
+
+## 本轮补充：portable 可迁移化基础设施第一版
+
+### 背景和目标
+
+Aaron 这轮要求先为“全新 Orin 仅靠 GitHub 源码 + 镜像 + 最小宿主初始化完成 RabbitBot 冷启动”建立独立实施分支和第一版落地基础设施，同时保留现有现场可回退的 legacy 路径。
+
+### 当前状态
+
+已完成：
+
+- 已从当前 `master` 切出独立分支 `feature/portable-deploy`。
+- 已新增 `third_party/manifest.lock`，显式记录 Git 之外的运行依赖、镜像来源和模型下载策略。
+- 已新增 `rabbitbot-dev-ros2-master/runtime/portable.env`，集中管理 portable 运行模式、DDS 网卡、地图路径、镜像和模型开关。
+- 已新增 portable 相关脚本：
+  - `deploy/bootstrap_host.sh`
+  - `deploy/setup_robot_network.sh`
+  - `deploy/ensure_models.sh`
+  - `deploy/build_or_pull_images.sh`
+  - `deploy/start_portable_stack.sh`
+- 已新增 portable Docker 定义：
+  - `rabbitbot-dev-ros2-master/docker/portable/core.Dockerfile`
+  - `rabbitbot-dev-ros2-master/docker/portable/nav.Dockerfile`
+  - `rabbitbot-dev-ros2-master/docker/portable/compose.yaml`
+  - `rabbitbot-dev-ros2-master/docker/portable/nav_entrypoint.sh`
+- 已新增 portable 入口脚本：
+  - `rabbitbot-dev-ros2-master/scripts_1/start_loop_entry.sh`
+  - `rabbitbot-dev-ros2-master/scripts_1/start_nav_bridge_portable.sh`
+- 已修改主循环 `start_nav_bridge_workflow_loop.sh`，支持通过 `RABBITBOT_NAV_RUNTIME=compose` 切换到 portable nav。
+- 已修改控制台启动脚本，使其优先使用 `runtime/control_console_venv`，并支持从 `runtime/portable.env` 读取地图路径。
+- 已把 `start_kuavo_agno_workflow.bash`、`start_robot_app.bash`、`start_nav_arm_bridge.sh` 的关键固定 IP / 网卡配置改为环境变量优先。
+- 已修改控制台配置与状态解析：控制台地图默认值支持 `RABBITBOT_NAV_MAP_PATH`，主循环进程检测兼容 `start_loop_entry.sh`。
+- 已升级顶层 `README.md` 为 portable 主线说明，同时保留 legacy 回退章节。
+- 已升级 `deploy/check_air_project.sh` 和 `deploy/install_air_project.sh`，使其同时识别 legacy / portable。
+
+未完成：
+
+- portable core 目前仍基于 `rabbitbot-unified-runtime:20260518` 基础镜像，尚未把其历史上游构建链完全公开重建。
+- 本轮尚未执行 portable nav Docker 实际构建，也未在“干净新 Orin”环境完成端到端冷启动验证。
+- 本轮没有把 `pyorbbecsdk-v2-py310`、`vln` 等目录真正转成仓库内可自动恢复制品，只是先通过 manifest 明确了它们必须被显式管理。
+
+### 已验证的事实
+
+- 所有新增/修改的 shell 脚本已通过 `bash -n` 语法检查。
+- `rabbitbot/control_console/config.py`、`status.py` 与现有关键 Python 文件编译检查可通过。
+- portable 基础文件已落盘，`runtime/portable.env`、`third_party/manifest.lock`、portable Docker 定义和 deploy 脚本都在仓库中可见。
+- 主循环现在支持两种导航桥接运行方式：
+  - `host`：原 `start_nav_arm_bridge.sh`
+  - `compose`：新的 `start_nav_bridge_portable.sh`
+- `deploy/check_air_project.sh` 现在会额外检查：
+  - manifest 关键条目
+  - portable env 关键键
+  - portable Docker 文件与脚本
+  - 关键运行脚本中未环境变量化的固定 IP / 网卡硬编码
+
+### 阻塞问题
+
+- 当前最大未完成阻塞仍是 portable core 的完全可重建性：它现在默认依赖 `rabbitbot-unified-runtime:20260518` 作为基础镜像，而不是完全由公开 Dockerfile 从零构建。
+- 第二个阻塞是制品供应链还未真正接通：manifest 已有，但 `unitree_sdk2`、`vln`、`pyorbbecsdk-v2-py310` 等目录的远程制品源还没落地。
+- 第三个阻塞是尚未在干净 Orin 上做完整演练，因此还不能宣称“只靠 GitHub + 镜像即可稳定冷启动成功”。
+
+### 建议的下一步
+
+- 优先在当前 HaiSong 上尝试执行：
+  - `bash deploy/check_air_project.sh`
+  - `bash deploy/build_or_pull_images.sh MODE=build`
+  - `bash deploy/start_portable_stack.sh`
+- 如果 portable nav 镜像构建失败，先逐项补齐 nav Dockerfile 的系统依赖，再继续。
+- 如果 portable core 运行依旧依赖 `rabbitbot-unified-runtime:20260518`，下一轮应继续拆解该镜像来源，逐步把上游历史镜像改成仓库内可重建或镜像仓库可拉取的显式基础镜像。
+- 在确认 portable 基础服务可启动后，再安排一次“干净 Orin”冷启动演练。
+
+### 注意事项
+
+- 本轮为了保证现场回退能力，没有删除 legacy 逻辑；因此仓库现在是“双路径并存”，不要把存在 legacy 代码误解为 portable 改造失败。
+- 新增日志点主要在 `bootstrap_host.sh`、`setup_robot_network.sh`、`ensure_models.sh`、`build_or_pull_images.sh`、`start_portable_stack.sh` 和 `start_nav_bridge_portable.sh`，覆盖了宿主初始化、网卡配置、模型下载、镜像准备和 portable nav 启动的关键阶段、输入摘要、失败原因和结果摘要。
+- 当前 root README 已改成 portable 主线说明；后续如再改部署方式，应先同步 README 与本交接报告，再继续提交代码。
+- 生成时间：2026-06-11 18:00:00
+
+## 本轮补充：portable 镜像构建收口与上下文治理
+
+### 背景和目标
+
+本轮继续推进 `feature/portable-deploy` 分支上的 RabbitBot 可迁移化改造，目标是让 portable 路径不仅具备脚本、清单和 compose 入口，还能够在当前 Orin 上实际完成 `rabbitbot-nav` 镜像构建，并避免宿主历史构建产物和大体积运行目录再次污染 Docker 构建上下文。
+
+### 当前状态
+
+已完成：
+
+- 已在 `feature/portable-deploy` 分支上修复 `rabbitbot-dev-ros2-master/docker/portable/nav.Dockerfile`，在编译 `unitree_slam_example_new/example` 前显式清理宿主遗留的 `build/` 和 `run_logs/`。
+- 已新增顶层 `.dockerignore`，排除 `models/`、`py38/`、`py310/`、ROS build/install 缓存、导航示例 build 目录和无关外部依赖，避免它们进入 portable 镜像构建上下文。
+- 已补强 `deploy/check_air_project.sh`，新增 `.dockerignore` 存在性和关键规则检查，防止后续回归导致大目录重新进入构建上下文。
+- 已重新执行 `MODE=build RABBITBOT_PORTABLE_BUILD_CORE=0 RABBITBOT_PORTABLE_BUILD_NAV=1 bash deploy/build_or_pull_images.sh`，确认 `ghcr.io/aaronai/rabbitbot-nav-portable:20260611` 构建成功。
+- 已确认本次 `docker build` 的上下文传输量降到约 `103.31kB`，不再把 `models/`、历史虚拟环境和宿主 build 目录打进镜像构建上下文。
+- 已再次执行 `bash deploy/check_air_project.sh` 和 `docker compose -f rabbitbot-dev-ros2-master/docker/portable/compose.yaml config -q`，检查通过。
+
+未完成：
+
+- 本轮没有实际启动 portable stack；原因是当前主机仍可能承担现场控制任务，不适合在未确认现场状态时直接拉起新容器拓扑。
+- `portable core` 仍默认基于 `rabbitbot-unified-runtime:20260518`，后续仍需继续拆解或发布可拉取成品镜像，才能彻底消除该基础镜像依赖。
+
+### 已验证的事实
+
+- `rabbitbot-nav` portable 镜像当前已成功生成：`ghcr.io/aaronai/rabbitbot-nav-portable:20260611`，镜像 ID 为 `sha256:d25e6527186e175be19d5e9bf26ec19fd680ae4fe0bb4feb3872a6ac56eb55c1`。
+- 之前导致构建失败的直接原因已确认是宿主 `unitree_slam_example_new/example/build/CMakeCache.txt` 被复制进容器，路径与容器内目录不一致。
+- 新增 `.dockerignore` 后，Docker 构建上下文已显著收敛，说明大体积目录已被成功排除。
+- 当前 portable 自检脚本已经覆盖：依赖清单、portable env、`.dockerignore`、关键脚本语法、Python 编译、旧路径硬编码和固定网卡/IP 硬编码。
+
+### 阻塞问题
+
+当前主要阻塞已从 `rabbitbot-nav` 构建失败转移为 `portable core` 仍依赖 legacy unified 基础镜像；如果新 Orin 上既没有本地该镜像，也没有可拉取的成品镜像，就还不能完成真正意义上的“只靠 GitHub + 镜像仓库冷启动”。
+
+### 建议的下一步
+
+- 继续拆解 `portable core`，优先识别 `rabbitbot-unified-runtime:20260518` 中必须前置固化进 Dockerfile 的系统依赖与 Python 运行时。
+- 在镜像仓库发布 `rabbitbot-core-portable` 与 `rabbitbot-nav-portable` 的可拉取版本，并把拉取地址与版本锁回写到 `third_party/manifest.lock`。
+- 选择一个不影响现场运行的窗口，按 `bootstrap_host.sh -> build_or_pull_images.sh -> start_portable_stack.sh` 路径做一次完整 portable 冷启动演练。
+- 在具备机器人链路的条件下，再补做 `workflow -> waiting_for_go` 与 28180 就绪的整链验证。
+
+### 注意事项
+
+- 本轮新增/调整的日志主要集中在 portable 脚本与检查链路：镜像准备、模型下载、宿主初始化、网络配置、compose 启动和导航入口都会记录开始、关键参数、完成状态和失败原因，便于后续在新 Orin 上排查冷启动问题。
+- `.dockerignore` 仅用于镜像构建上下文治理，不影响 Git 跟踪规则；Git 侧是否提交仍以顶层 `.gitignore` 为准。
+- 生成时间：2026-06-11 11:30:00

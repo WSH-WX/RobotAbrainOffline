@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-NETWORK_INTERFACE="${1:-eno1}"
-PCD_PATH="${2:-/home/unitree/test.pcd}"
+NETWORK_INTERFACE="${1:-${RABBITBOT_DDS_INTERFACE:-eno1}}"
+PCD_PATH="${2:-${RABBITBOT_NAV_MAP_PATH:-/home/unitree/test.pcd}}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECTS_DIR="${RABBITBOT_PROJECTS_DIR:-$(cd "${SCRIPT_DIR}/../.." && pwd)}"
@@ -90,16 +90,12 @@ echo "  ws setup  : $WS_SETUP"
 echo "  ws prefix : $WS_PREFIX"
 echo
 
-# 1. 启动导航节点
 start_bg "01_goGoalNavigation66" "$CMD_NAV"
 start_log_tail "01_goGoalNavigation66_tail" "$RUN_DIR/01_goGoalNavigation66.log"
 sleep 2
-
-# 2. 启动手臂节点
 start_bg "02_g1ArmOfficialActionServer" "$CMD_ARM"
 sleep 2
 
-# 3. 启动宿主机 Humble 28180 bridge，保持前台运行，方便高层脚本检测端口已占用。
 echo "[03_humble_robot_agent_bridge] running in foreground"
 echo "  log=$RUN_DIR/03_humble_robot_agent_bridge.log"
 echo "  Press Ctrl+C to stop bridge and background nodes started by this script."

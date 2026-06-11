@@ -286,7 +286,7 @@ def detect_main_loop_running() -> str:
     except OSError:
         return "unknown"
 
-    needle = "start_nav_bridge_workflow_loop.sh"
+    needles = ("start_nav_bridge_workflow_loop.sh", "start_loop_entry.sh")
     for proc_dir in proc_dirs:
         if not proc_dir.name.isdigit():
             continue
@@ -295,6 +295,6 @@ def detect_main_loop_running() -> str:
             cmdline = cmdline_path.read_text(encoding="utf-8", errors="ignore").replace("\x00", " ")
         except OSError:
             continue
-        if needle in cmdline:
+        if any(needle in cmdline for needle in needles):
             return "running"
     return "not_detected"
