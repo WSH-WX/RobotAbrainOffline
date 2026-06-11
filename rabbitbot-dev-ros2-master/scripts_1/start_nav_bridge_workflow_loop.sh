@@ -604,7 +604,7 @@ prepare_runtime() {
     if [ -e "${NAV_PCD_PATH}" ]; then
         log_info "导航地图文件存在：NAV_PCD_PATH=${NAV_PCD_PATH}"
     else
-        log_warn "导航地图文件不存在：NAV_PCD_PATH=${NAV_PCD_PATH}；地图不随仓库迁移，请确认机器人本体侧地图路径或更新 runtime/portable.env 的 RABBITBOT_NAV_MAP_PATH。"
+        log_warn "导航地图在 Orin 本地不可见：NAV_PCD_PATH=${NAV_PCD_PATH}；若地图由机器人/Unitree 导航服务侧读取且定位成功，这是可接受状态。迁移到新 Orin 时仍需确认该路径在机器人侧存在，或更新 runtime/portable.env 的 RABBITBOT_NAV_MAP_PATH。"
     fi
     require_path "${NAV_BRIDGE_SCRIPT}"
     if [ "${NAV_BRIDGE_RUNTIME}" != "compose" ]; then

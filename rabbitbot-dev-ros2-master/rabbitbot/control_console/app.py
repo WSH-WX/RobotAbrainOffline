@@ -313,13 +313,14 @@ def create_app(config: ConsoleConfig | None = None) -> FastAPI:
         pose = parse_latest_pose_from_lines(nav_lines, source_label=nav_source or "导航日志")
         workflow = get_latest_workflow_status(config.workflow_control_dir)
         current_map_path = read_map_path(config.map_env_file, config.map_path)
-        map_exists = Path(current_map_path).exists()
+        map_visible_on_orin = Path(current_map_path).exists()
         port_ready = is_port_open("127.0.0.1", config.nav_port)
         nav_bridge = detect_nav_bridge_status_from_lines(nav_lines, port_ready, nav_source)
         nav_bridge["port"] = config.nav_port
-        nav_bridge["map_exists"] = map_exists
-        if not map_exists:
-            nav_bridge["message"] = f"{nav_bridge['message']}；导航地图文件缺失：{current_map_path}"
+        nav_bridge["map_exists"] = map_visible_on_orin
+        nav_bridge["map_visible_on_orin"] = map_visible_on_orin
+        if not map_visible_on_orin:
+            nav_bridge["message"] = f"{nav_bridge['message']}；地图在 Orin 本地不可见：{current_map_path}（若定位已成功，说明机器人侧地图可用）"
         return {
             "ok": True,
             "map_path": current_map_path,
