@@ -15,6 +15,8 @@
 #   RABBITBOT_NAV_WORKFLOW_HEALTH_CHECK_INTERVAL_SECONDS：等待命令和运行期间的健康检查间隔秒数。
 #   RABBITBOT_NAV_WORKFLOW_LOST_PROCESS_GRACE_SECONDS：workflow 进程丢失后等待状态文件落盘的宽限秒数。
 #   RABBITBOT_NAV_WORKFLOW_BACK_RETRY_LIMIT：返航失败后自动恢复导航桥接并重试的次数，默认 1。
+#   RABBITBOT_NAV_CORE_READY_TIMEOUT_SECONDS：启动导航桥接后等待导航核心输出 Pose/Ready 的秒数，默认 90。
+#   RABBITBOT_NAV_CORE_READY_POLL_SECONDS：等待导航核心就绪时的轮询间隔秒数，默认 2。
 #   RABBITBOT_DIALOGUE_INDEX：选择 conf/dialogue_<序号>.json，未设置时默认 0。
 #   RABBITBOT_DOCX_GUIDE_DIALOGUE_INDEX：旧版台词序号变量，仅在 RABBITBOT_DIALOGUE_INDEX 未设置时兜底。
 #   RABBITBOT_DOCX_GUIDE_DIALOGUE_FILE：直接指定台词 JSON 文件完整路径，优先级高于序号。
@@ -85,6 +87,9 @@ WORKFLOW_LOST_PROCESS_GRACE_SECONDS="${RABBITBOT_NAV_WORKFLOW_LOST_PROCESS_GRACE
 NAV_BRIDGE_RESTART_WAIT_SECONDS="${RABBITBOT_NAV_WORKFLOW_NAV_RESTART_WAIT_SECONDS:-3}"
 BACK_RETRY_LIMIT="${RABBITBOT_NAV_WORKFLOW_BACK_RETRY_LIMIT:-1}"
 RETURN_FAILURE_WAIT_SECONDS="${RABBITBOT_NAV_WORKFLOW_RETURN_FAILURE_WAIT_SECONDS:-2}"
+NAV_CORE_READY_TIMEOUT_SECONDS="${RABBITBOT_NAV_CORE_READY_TIMEOUT_SECONDS:-90}"
+NAV_CORE_READY_POLL_SECONDS="${RABBITBOT_NAV_CORE_READY_POLL_SECONDS:-2}"
+NAV_BRIDGE_CONTAINER_NAME="${RABBITBOT_NAV_BRIDGE_CONTAINER_NAME:-${RABBITBOT_PORTABLE_COMPOSE_PROJECT:-rabbitbot-portable}-rabbitbot-nav-1}"
 
 nav_group_pid=""
 workflow_tail_pid=""
@@ -103,7 +108,11 @@ current_gate_ready_file=""
 current_host_gate_file=""
 current_host_gate_ready_file=""
 current_nav_log=""
+current_nav_start_epoch="0"
 last_runtime_health_check_ms=0
+nav_core_last_health_reason="not_checked"
+nav_core_last_health_source="无"
+nav_core_recent_log=""
 
 log_info() {
     echo -e "\033[32m[INFO]\033[0m $1"
@@ -307,24 +316,98 @@ nav_bridge_group_alive() {
     [ -n "${nav_group_pid}" ] && kill -0 -- "-${nav_group_pid}" 2>/dev/null
 }
 
+collect_nav_core_recent_log() {
+    local host_log=""
+    local container_log=""
+    local sources=()
+
+    if [ -n "${current_nav_log}" ] && [ -f "${current_nav_log}" ]; then
+        host_log="$(tail -n 200 "${current_nav_log}" 2>/dev/null || true)"
+        if [ -n "${host_log}" ]; then
+            sources+=("宿主日志:${current_nav_log}")
+        fi
+    fi
+
+    if [ "${NAV_BRIDGE_RUNTIME}" = "compose" ] && docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "${NAV_BRIDGE_CONTAINER_NAME}"; then
+        container_log="$(docker logs --since "${current_nav_start_epoch:-0}" --tail 240 "${NAV_BRIDGE_CONTAINER_NAME}" 2>&1 || true)"
+        if [ -n "${container_log}" ]; then
+            sources+=("容器日志:${NAV_BRIDGE_CONTAINER_NAME}")
+        fi
+    fi
+
+    if [ "${#sources[@]}" -eq 0 ]; then
+        nav_core_last_health_source="无"
+    else
+        local IFS=','
+        nav_core_last_health_source="${sources[*]}"
+    fi
+    nav_core_recent_log="$(printf '%s\n%s\n' "${host_log}" "${container_log}")"
+}
+
 nav_core_log_healthy() {
-    if [ -z "${current_nav_log}" ] || [ ! -f "${current_nav_log}" ]; then
-        log_warn "导航核心日志尚不可读：log=${current_nav_log:-未设置}"
+    local recent_log
+    nav_core_last_health_reason="not_ready"
+    collect_nav_core_recent_log
+    recent_log="${nav_core_recent_log}"
+
+    if [ -z "$(printf '%s' "${recent_log}" | tr -d '[:space:]')" ]; then
+        log_warn "导航核心日志尚不可读：host_log=${current_nav_log:-未设置}, container=${NAV_BRIDGE_CONTAINER_NAME}, source=${nav_core_last_health_source}"
         return 1
     fi
 
-    local recent_log
-    recent_log="$(tail -n 200 "${current_nav_log}" 2>/dev/null || true)"
-    if printf '%s' "${recent_log}" | grep -Eq 'does not match an available interface|DdsException|Failed to create domain|Aborted'; then
-        log_warn "导航核心健康检查失败：检测到 DDS/网卡/进程异常，log=${current_nav_log}"
-        return 1
-    fi
     if printf '%s' "${recent_log}" | grep -Eq '\[Ready\] Navigation system ready for commands!|\[Pose\]'; then
+        nav_core_last_health_reason="ready"
         return 0
     fi
 
-    log_warn "导航核心尚未完成定位或未输出位姿：log=${current_nav_log}"
+    if printf '%s' "${recent_log}" | grep -Eq 'does not match an available interface|DdsException|Failed to create domain|Aborted'; then
+        nav_core_last_health_reason="fatal"
+        log_warn "导航核心健康检查失败：检测到 DDS/网卡/进程异常，source=${nav_core_last_health_source}"
+        return 1
+    fi
+
+    log_warn "导航核心尚未完成定位或未输出位姿：source=${nav_core_last_health_source}"
     return 1
+}
+
+wait_nav_core_ready() {
+    local start_ms
+    local elapsed_ms
+    start_ms="$(now_ms)"
+    log_info "等待导航核心输出 Pose/Ready：timeout=${NAV_CORE_READY_TIMEOUT_SECONDS}s, poll=${NAV_CORE_READY_POLL_SECONDS}s, host_log=${current_nav_log}, container=${NAV_BRIDGE_CONTAINER_NAME}, since=${current_nav_start_epoch}"
+    while true; do
+        if ! nav_bridge_group_alive; then
+            elapsed_ms="$(elapsed_ms_since "${start_ms}")"
+            log_error "导航桥接进程组已退出，无法继续等待核心就绪：elapsed_ms=${elapsed_ms}, pgid=${nav_group_pid:-未设置}"
+            return 1
+        fi
+        if ! port_open 28180; then
+            elapsed_ms="$(elapsed_ms_since "${start_ms}")"
+            if [ "${elapsed_ms}" -ge $((NAV_CORE_READY_TIMEOUT_SECONDS * 1000)) ]; then
+                log_warn "等待 28180 端口重新就绪超时：elapsed_ms=${elapsed_ms}, timeout=${NAV_CORE_READY_TIMEOUT_SECONDS}s"
+                return 1
+            fi
+            log_warn "28180 端口暂未就绪，继续等待导航容器重建：elapsed_ms=${elapsed_ms}"
+            sleep "${NAV_CORE_READY_POLL_SECONDS}"
+            continue
+        fi
+        if nav_core_log_healthy; then
+            elapsed_ms="$(elapsed_ms_since "${start_ms}")"
+            log_info "导航核心已就绪：elapsed_ms=${elapsed_ms}, source=${nav_core_last_health_source}"
+            return 0
+        fi
+        if [ "${nav_core_last_health_reason}" = "fatal" ]; then
+            elapsed_ms="$(elapsed_ms_since "${start_ms}")"
+            log_error "导航核心出现不可恢复异常：elapsed_ms=${elapsed_ms}, source=${nav_core_last_health_source}"
+            return 1
+        fi
+        elapsed_ms="$(elapsed_ms_since "${start_ms}")"
+        if [ "${elapsed_ms}" -ge $((NAV_CORE_READY_TIMEOUT_SECONDS * 1000)) ]; then
+            log_warn "等待导航核心就绪超时：elapsed_ms=${elapsed_ms}, timeout=${NAV_CORE_READY_TIMEOUT_SECONDS}s, source=${nav_core_last_health_source}"
+            return 1
+        fi
+        sleep "${NAV_CORE_READY_POLL_SECONDS}"
+    done
 }
 
 nav_bridge_health_ok() {
@@ -518,6 +601,11 @@ trap 'cleanup EXIT' EXIT
 prepare_runtime() {
     mkdir -p "${CONTROL_DIR}" "${RUN_DIR}" "${HOST_LOG_DIR}" "${HOST_WORKFLOW_RUN_DIR}" "${HOST_WORKFLOW_CONTROL_DIR}"
     resolve_nav_pcd_path
+    if [ -e "${NAV_PCD_PATH}" ]; then
+        log_info "导航地图文件存在：NAV_PCD_PATH=${NAV_PCD_PATH}"
+    else
+        log_warn "导航地图文件不存在：NAV_PCD_PATH=${NAV_PCD_PATH}；地图不随仓库迁移，请确认机器人本体侧地图路径或更新 runtime/portable.env 的 RABBITBOT_NAV_MAP_PATH。"
+    fi
     require_path "${NAV_BRIDGE_SCRIPT}"
     if [ "${NAV_BRIDGE_RUNTIME}" != "compose" ]; then
         require_path "${ROS_SETUP}"
@@ -603,6 +691,7 @@ start_nav_bridge() {
 
     local nav_log="${RUN_DIR}/nav_bridge_$(date +%Y%m%d_%H%M%S).log"
     current_nav_log="${nav_log}"
+    current_nav_start_epoch="$(date +%s)"
     log_info "启动导航桥接：runtime=${NAV_BRIDGE_RUNTIME}, script=${NAV_BRIDGE_SCRIPT}, interface=${NAV_INTERFACE}, map=${NAV_PCD_PATH}"
     log_info "导航桥接日志：${nav_log}"
     if [ "${NAV_BRIDGE_RUNTIME}" = "compose" ]; then
@@ -613,7 +702,7 @@ start_nav_bridge() {
     nav_group_pid=$!
     log_info "导航桥接进程组已启动：pgid=${nav_group_pid}"
     wait_port 28180 60
-    nav_bridge_health_ok
+    wait_nav_core_ready
 }
 
 restart_nav_bridge() {

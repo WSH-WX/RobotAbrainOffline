@@ -542,3 +542,51 @@ Aaron 这轮要求先为“全新 Orin 仅靠 GitHub 源码 + 镜像 + 最小宿
 - 修改可迁移默认配置一律改 `portable.env.example`；改 `portable.env` 只影响本机。
 - `rabbitbot-dev-ros2-master/.gitignore` 是白名单式规则，向 runtime 添加新的需跟踪文件时必须同时在该文件追加 `!runtime/<文件名>`，仅改根 .gitignore 无效。
 - 本轮新增/调整日志点：bootstrap_host.sh 记录 portable.env 的生成来源（模板复制 / 已存在增量更新 / 模板缺失降级）；11 个脚本回退读取模板时打印 WARN 并附带处置建议；install_air_project.sh 缺失本机 env 时输出 ERROR 与修复指引。这些日志可直接定位"env 从哪来、为什么是这份配置"一类问题。
+
+## 本轮补充：机器人接入后的 portable 稳定运行修复与验收
+
+### 背景和目标
+
+机器人已上电并通过网线连接 Orin，`eno1` 已恢复 UP。本轮目标是在迁移到全新 Orin 前验证当前项目本体是否能稳定运行：systemd 启动后不反复重启，控制台 8080 可显示 ready，workflow 能预启动并停在 `waiting_for_go`。
+
+### 当前状态
+
+已完成：
+
+- 修复 `rabbitbot-dev-ros2-master/scripts_1/start_nav_bridge_workflow_loop.sh` 的 portable nav 启动健康检查：28180 刚监听后不再立即因宿主 wrapper 日志暂无 Pose 退出，而是按 `RABBITBOT_NAV_CORE_READY_TIMEOUT_SECONDS`（默认 90 秒）与 `RABBITBOT_NAV_CORE_READY_POLL_SECONDS`（默认 2 秒）等待导航核心输出 `[Pose]` 或 Ready。
+- 健康检查新增 portable nav 容器日志兜底：优先读取本轮宿主 wrapper 日志，同时读取 `rabbitbot-portable-rabbitbot-nav-1` 自本轮启动时间之后的日志，避免复用旧容器历史 Pose 造成误判。
+- 修复 compose `--force-recreate` 竞态：等待期间要求 28180 当前可用；容器重建过程中端口短暂消失时记录 WARN 并继续等待，不再立即进入恢复循环。
+- 控制台状态改为读取 runtime 导航日志来源：宿主 wrapper 日志没有 Pose 时，回退读取 portable nav 容器日志；`/api/status` 增加 `nav_log_source`、`nav_bridge.source` 与 `nav_bridge.map_exists`，避免容器已定位但网页仍显示未就绪。
+- 地图缺失提示增强：loop 启动、自检、控制台状态都会明确指出 `/home/unitree/test9.pcd` 缺失，并提示地图不随仓迁移，需要补齐或更新 `runtime/portable.env` 的 `RABBITBOT_NAV_MAP_PATH`。
+
+未完成：
+
+- `/home/unitree/test9.pcd` 当前仍不存在。导航核心已能定位并输出 Pose，但真实导览验收前仍应补齐该地图文件或把 `RABBITBOT_NAV_MAP_PATH` 改为现场实际地图路径。
+- 由于宿主 Python 环境和 `runtime/control_console_venv` 均未安装 `pytest`，无法运行完整 pytest 单元测试；已用 py_compile、轻量函数导入调用和现场 systemd 验收覆盖关键路径。
+
+### 已验证的事实
+
+- `eno1` 当前 UP，地址为 `192.168.123.222/24`。
+- 语法检查通过：`bash -n start_nav_bridge_workflow_loop.sh`、`python3 -m py_compile` 控制台相关文件、`bash -n deploy/check_air_project.sh`。
+- 轻量运行校验通过：`parse_latest_pose_from_lines()` 可解析 Pose，`detect_nav_bridge_status_from_lines()` 可判定 ready，`create_app()` 可正常构建 FastAPI 应用。
+- `PORTABLE_CHECK_MODE=clean_orin bash deploy/check_air_project.sh` 通过；仅保留地图文件不存在 WARN。
+- 通过终止 `rabbitbot-control-console.service` 与 `rabbitbot-loop.service` 主进程触发 systemd 自动重启，新代码已生效。
+- 5 分钟稳定性观察通过：`rabbitbot-loop.service` 的 `NRestarts` 从 247 到 247 未增长，`MainPID=84700` 保持 `active/running`。
+- `/api/status` 最终返回：`main_loop=running`，`nav_bridge.ready=true`，`workflow.status=waiting_for_go`，`workflow.ready=true`，`pose.available=true`，`pose.localized=true`，`nav_log_source=容器日志:rabbitbot-portable-rabbitbot-nav-1`。
+- 28180 仍由 `rabbitbot-nav` 提供，core 容器未启动内部 `robot_app.py`。
+
+### 阻塞问题
+
+- 真实导览前的唯一现场阻塞是地图文件路径：`/home/unitree/test9.pcd` 在宿主和 nav 容器内均不可见。当前状态接口会明确显示 `导航地图文件缺失：/home/unitree/test9.pcd`，不会再伪装成单纯重定位问题。
+
+### 建议的下一步
+
+- 补齐 `/home/unitree/test9.pcd`，或在 `rabbitbot-dev-ros2-master/runtime/portable.env` 中把 `RABBITBOT_NAV_MAP_PATH` 改为现场实际地图路径。
+- 地图补齐后再次重启 `rabbitbot-loop.service`，复验 8080 控制台 ready、`waiting_for_go`、go 导览和 back 返航。
+- 若要迁移到全新 Orin，继续使用当前 portable systemd + compose 流程；本轮修复已消除启动健康检查误判和控制台 ready 状态来源不一致。
+
+### 注意事项
+
+- 本轮通过终止服务主进程触发 systemd 自动重启，原因是 SSH 非交互环境无法提供 sudo 密码；这是现场验证动作，不是部署流程要求。
+- 本轮新增/调整日志点：导航地图存在/缺失、导航核心 ready 等待开始、28180 重建等待、首次检测到 Pose/Ready 的耗时、使用的日志来源、DDS/网卡/进程异常、容器日志读取失败或回退原因。控制台状态增加日志来源字段，便于排查网页 ready 与实际容器状态不一致。
+- 生成时间：2026-06-11 14:50:00

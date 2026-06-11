@@ -5,6 +5,7 @@ from pathlib import Path
 import logging
 import re
 import socket
+import subprocess
 import time
 from typing import Iterable
 
@@ -115,12 +116,7 @@ def _localization_state(lines: list[str]) -> tuple[bool, str]:
     return localized, message
 
 
-def parse_latest_pose(path: Path) -> PoseStatus:
-    try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return PoseStatus(available=False, localized=False, status_message=LOCALIZATION_HELP_MESSAGE, message="暂无定位位姿数据")
-
+def parse_latest_pose_from_lines(lines: list[str], source_label: str = "导航日志") -> PoseStatus:
     clean_lines = [strip_ansi(line) for line in lines]
     localized, status_message = _localization_state(clean_lines)
     latest: PoseStatus | None = None
@@ -179,6 +175,53 @@ def parse_latest_pose(path: Path) -> PoseStatus:
     return latest
 
 
+def parse_latest_pose(path: Path) -> PoseStatus:
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError as exc:
+        logger.debug("读取导航位姿日志失败：path=%s, error=%s", path, exc)
+        return PoseStatus(available=False, localized=False, status_message=LOCALIZATION_HELP_MESSAGE, message="暂无定位位姿数据")
+    return parse_latest_pose_from_lines(lines, source_label=str(path))
+
+
+def read_nav_container_log_lines(container_name: str, limit: int = 240) -> list[str]:
+    if not container_name:
+        return []
+    try:
+        result = subprocess.run(
+            ["docker", "logs", "--tail", str(limit), container_name],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        logger.warning("读取 portable nav 容器日志失败：container=%s, error=%s", container_name, exc)
+        return []
+    if result.returncode != 0:
+        logger.debug("读取 portable nav 容器日志返回非零：container=%s, code=%s, stderr=%s", container_name, result.returncode, result.stderr[-300:])
+        return []
+    text = "\n".join(part for part in (result.stdout, result.stderr) if part)
+    return [strip_ansi(line) for line in text.splitlines()]
+
+
+def runtime_nav_log_lines(nav_log: Path | None, nav_container_name: str, limit: int = 240) -> tuple[list[str], str | None]:
+    host_lines = get_tail_lines(nav_log, limit) if nav_log else []
+    container_lines = read_nav_container_log_lines(nav_container_name, limit)
+    container_text = "\n".join(container_lines[-limit:])
+    if "[Ready] Navigation system ready for commands!" in container_text or "[Pose]" in container_text:
+        logger.debug("导航状态使用 portable nav 容器日志：container=%s, lines=%s", nav_container_name, len(container_lines))
+        return container_lines, f"容器日志:{nav_container_name}"
+    if host_lines:
+        logger.debug("导航状态使用宿主 wrapper 日志：path=%s, lines=%s", nav_log, len(host_lines))
+        return host_lines, str(nav_log) if nav_log else None
+    if container_lines:
+        logger.debug("宿主 wrapper 日志为空，回退使用 portable nav 容器日志：container=%s, lines=%s", nav_container_name, len(container_lines))
+        return container_lines, f"容器日志:{nav_container_name}"
+    logger.debug("未读取到导航状态日志：host_log=%s, container=%s", nav_log, nav_container_name)
+    return [], None
+
+
 def get_latest_workflow_status(control_dir: Path) -> WorkflowStatus:
     try:
         files = [path for path in control_dir.iterdir() if path.is_file()]
@@ -234,32 +277,26 @@ def get_latest_workflow_status(control_dir: Path) -> WorkflowStatus:
     )
 
 
-def detect_nav_bridge_status(nav_log: Path | None, port_ready: bool) -> dict:
-    status = {"ready": False, "port": None, "core_ready": False, "message": "导航桥接未就绪"}
+def detect_nav_bridge_status_from_lines(lines: list[str], port_ready: bool, source: str | None = None) -> dict:
+    status = {"ready": False, "port": None, "core_ready": False, "message": "导航桥接未就绪", "source": source}
     if not port_ready:
         status["message"] = "28180 端口未就绪"
         return status
     status["message"] = "28180 就绪，等待导航核心定位"
-    if nav_log is None:
+    if not lines:
         status["message"] = "28180 就绪，但未找到导航日志"
-        return status
-
-    try:
-        lines = nav_log.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError as exc:
-        logger.debug("读取导航日志失败：path=%s, error=%s", nav_log, exc)
-        status["message"] = "28180 就绪，但导航日志不可读"
+        logger.debug("28180 已监听但没有可读导航日志：source=%s", source)
         return status
 
     clean_lines = [strip_ansi(line) for line in lines]
     recent_text = "\n".join(clean_lines[-200:])
     if "does not match an available interface" in recent_text:
         status["message"] = "导航核心未启动：Unitree DDS 网卡不可用，请检查 eno1 链路"
-        logger.debug("导航核心网卡不可用：log=%s", nav_log)
+        logger.debug("导航核心网卡不可用：source=%s", source)
         return status
     if "DdsException" in recent_text or "Failed to create domain" in recent_text or "Aborted" in recent_text:
         status["message"] = "导航核心异常退出，请查看导航日志"
-        logger.debug("导航核心异常退出：log=%s", nav_log)
+        logger.debug("导航核心异常退出：source=%s", source)
         return status
     if "[Ready] Navigation system ready for commands!" in recent_text or "[Pose]" in recent_text:
         status["ready"] = True
@@ -269,6 +306,12 @@ def detect_nav_bridge_status(nav_log: Path | None, port_ready: bool) -> dict:
 
     status["message"] = "28180 就绪，导航核心仍在重定位"
     return status
+
+
+def detect_nav_bridge_status(nav_log: Path | None, port_ready: bool) -> dict:
+    lines = get_tail_lines(nav_log, 240) if nav_log else []
+    source = str(nav_log) if nav_log else None
+    return detect_nav_bridge_status_from_lines(lines, port_ready, source)
 
 
 def is_port_open(host: str, port: int, timeout: float = 0.25) -> bool:

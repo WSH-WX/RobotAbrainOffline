@@ -13,10 +13,11 @@ from .status import (
     detect_main_loop_running,
     get_latest_workflow_status,
     get_tail_lines,
-    detect_nav_bridge_status,
+    detect_nav_bridge_status_from_lines,
     is_port_open,
     latest_file,
-    parse_latest_pose,
+    parse_latest_pose_from_lines,
+    runtime_nav_log_lines,
 )
 
 
@@ -308,12 +309,17 @@ def create_app(config: ConsoleConfig | None = None) -> FastAPI:
     @app.get("/api/status")
     def status() -> dict:
         nav_log = latest_file(config.nav_log_dir, "nav_bridge_*.log")
-        pose = parse_latest_pose(nav_log) if nav_log else parse_latest_pose(Path("/missing-nav-log"))
+        nav_lines, nav_source = runtime_nav_log_lines(nav_log, config.nav_container_name)
+        pose = parse_latest_pose_from_lines(nav_lines, source_label=nav_source or "导航日志")
         workflow = get_latest_workflow_status(config.workflow_control_dir)
         current_map_path = read_map_path(config.map_env_file, config.map_path)
+        map_exists = Path(current_map_path).exists()
         port_ready = is_port_open("127.0.0.1", config.nav_port)
-        nav_bridge = detect_nav_bridge_status(nav_log, port_ready)
+        nav_bridge = detect_nav_bridge_status_from_lines(nav_lines, port_ready, nav_source)
         nav_bridge["port"] = config.nav_port
+        nav_bridge["map_exists"] = map_exists
+        if not map_exists:
+            nav_bridge["message"] = f"{nav_bridge['message']}；导航地图文件缺失：{current_map_path}"
         return {
             "ok": True,
             "map_path": current_map_path,
@@ -321,6 +327,7 @@ def create_app(config: ConsoleConfig | None = None) -> FastAPI:
             "nav_bridge": nav_bridge,
             "workflow": workflow.to_dict(),
             "pose": pose.to_dict(),
+            "nav_log_source": nav_source,
         }
 
 

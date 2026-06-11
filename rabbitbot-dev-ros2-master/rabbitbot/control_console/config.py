@@ -16,6 +16,7 @@ class ConsoleConfig:
     command_script: Path
     workflow_control_dir: Path
     nav_log_dir: Path
+    nav_container_name: str
     workflow_log_dir: Path
     loop_service_name: str
     systemctl_path: Path
@@ -41,6 +42,10 @@ class ConsoleConfig:
             command_script=project_root / "scripts_1" / "send_nav_workflow_command.sh",
             workflow_control_dir=project_root / "logs" / "nav_workflow_control" / "workflow_control",
             nav_log_dir=project_root / "logs" / "nav_workflow_control",
+            nav_container_name=os.environ.get(
+                "RABBITBOT_NAV_BRIDGE_CONTAINER_NAME",
+                f"{os.environ.get('RABBITBOT_PORTABLE_COMPOSE_PROJECT', 'rabbitbot-portable')}-rabbitbot-nav-1",
+            ),
             workflow_log_dir=project_root / "logs" / "nav_workflow_control",
             loop_service_name=os.environ.get("RABBITBOT_LOOP_SERVICE", "rabbitbot-loop.service"),
             systemctl_path=Path(os.environ.get("RABBITBOT_CONSOLE_SYSTEMCTL_PATH", "/usr/bin/systemctl")),

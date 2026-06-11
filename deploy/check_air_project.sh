@@ -463,7 +463,7 @@ run_clean_orin_checks() {
     if [ -e "${map_path}" ]; then
         log_ok "导航地图文件存在：RABBITBOT_NAV_MAP_PATH=${map_path}"
     else
-        log_warn "导航地图文件当前不存在：RABBITBOT_NAV_MAP_PATH=${map_path}；地图不随仓库迁移，请确认机器人本体侧地图路径，缺失会导致导航无法定位。"
+        log_warn "导航地图文件当前不存在：RABBITBOT_NAV_MAP_PATH=${map_path}；地图不随仓库迁移，请确认机器人本体侧地图路径。真实导览验收前必须补齐该文件或更新 runtime/portable.env 的 RABBITBOT_NAV_MAP_PATH，否则导航核心可能持续重定位。"
     fi
     log_ok "全新 Orin 模式专属检查完成"
 }
