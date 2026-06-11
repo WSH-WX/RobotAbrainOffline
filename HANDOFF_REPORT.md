@@ -786,3 +786,41 @@ ShuHao-orin 的 `logs/unified_runtime/rabbitbot_tts.log` 显示 TTS 服务启动
 - Unitree 本体 TTS 运行在 core 容器，不在 nav 容器；因此 `unitree_sdk2` 必须同时服务 core 和 nav 两条镜像链路。
 - 本轮新增/调整日志点：core 启动脚本会记录注入的 portable 依赖卷数量和列表含义；自检会明确报告 Unitree TTS 依赖是否被 core 镜像和运行期依赖卷覆盖。
 - 生成时间：2026-06-11 18:05:00
+
+
+## 本轮补充：Unitree TTS core 镜像重建验证结果
+
+### 背景和目标
+
+完成 `unitree_sdk2` 纳入 portable core 的代码修复后，继续在 HaiSong 构建机验证新镜像是否真正包含 TTS 所需 SDK，并确认 ShuHao 仍使用旧镜像。
+
+### 当前状态
+
+已完成：
+
+- 在 HaiSong 上重建 `ghcr.io/aaronai/rabbitbot-core-portable:20260611`。
+- 新 core 镜像 ID：`sha256:9c7cb9f9c774d435d393d7500b5e5c5c75f959b4f40a06a116b69faf332df15c`。
+- nav 镜像未发生实质变化，ID 仍为 `sha256:23c0ef06c9c08a01a71c5c98db836e52ed67d660ebfb890ca1ba062b8e0482ef`。
+- 在新 core 镜像内执行 `scripts/build_unitree_g1_tts_bridge.sh` 成功，生成 `build/unitree_g1_tts_bridge`。
+
+### 已验证的事实
+
+- 新 core 镜像内存在 `/workspace/projects/unitree_sdk2/lib/aarch64/libunitree_sdk2.a` 和 `/workspace/projects/unitree_sdk2/thirdparty/lib/aarch64`。
+- ShuHao 当前仍是旧 core 镜像 ID：`sha256:161c57498e24b534174680559c0f8f0a2af30362a6ad7912ce2d6d59aa97691c`，旧 `rabbitbot-unified-runtime` 容器也基于该旧镜像。
+- 仅 `git pull` 不能修复 ShuHao 的 TTS；必须导入新 core 镜像并删除旧 core 容器后重启。
+
+### 阻塞问题
+
+- 新 core 镜像尚未传输到 ShuHao。
+- 本提交尚需推送到 GitHub 后，ShuHao 才能通过 `git pull` 获得代码侧的运行期依赖卷注入逻辑。
+
+### 建议的下一步
+
+- 将新 core 镜像导出并传输到 ShuHao，或推送到镜像仓库后在 ShuHao 拉取。
+- ShuHao 导入新镜像后，删除旧 `rabbitbot-unified-runtime` 容器和 `rabbitbot_portable_unitree_sdk2` 依赖卷，再重启 `rabbitbot-loop.service`。
+
+### 注意事项
+
+- 如果继续使用相同 tag `20260611`，必须通过 image id 确认 ShuHao 侧已经覆盖为 `sha256:9c7cb9f9...`，不能只看 tag 名。
+- 本轮新增/调整日志点保持不变：启动脚本记录 portable 依赖卷注入数量，自检报告 Unitree TTS 依赖策略。
+- 生成时间：2026-06-11 18:15:00
