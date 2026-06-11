@@ -34,7 +34,11 @@ require_path "${REPO_DIR}/scripts_1/start_control_console.sh"
 require_path "${REPO_DIR}/deploy/rabbitbot-control-console.service"
 require_path "${REPO_DIR}/scripts_1/systemd/rabbitbot-loop.service"
 require_path "${REPO_DIR}/scripts_1/systemd/rabbitbot-control-console.sudoers"
-require_path "${PORTABLE_ENV_FILE}"
+# systemd 通过 EnvironmentFile 加载本机 portable.env；该文件不进入 Git，必须先由 bootstrap 生成。
+if [ ! -f "${PORTABLE_ENV_FILE}" ]; then
+    log_error "缺少本机运行配置：${PORTABLE_ENV_FILE}。该文件不随仓库迁移，请先执行 deploy/bootstrap_host.sh 在本机生成后再安装 systemd 服务。"
+    exit 1
+fi
 require_path "${AIR_ROOT}/models"
 require_path "${AIR_ROOT}/custom_action_ws/install/setup.bash"
 require_path "${AIR_ROOT}/unitree_slam_example_new/example/start_nav_arm_bridge.sh"

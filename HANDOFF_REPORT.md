@@ -496,3 +496,49 @@ Aaron 这轮要求先为“全新 Orin 仅靠 GitHub 源码 + 镜像 + 最小宿
 - compose nav 容器 restart 策略为 `unless-stopped`：loop 停止时只杀 compose 客户端进程、容器会留下，下次 start_nav_bridge 会按"nav 容器占用 → compose 接管"路径自动重建，这是预期行为。
 - 本轮新增/调整日志点：venv 探测/自动安装（版本、包名、失败命令、下一步）、core 跳过 Robot Agent 与外部可达性检查、28180 占用者识别（三分支各自给出原因与处理方法）、nav 节点日志透传 stdout、自检的端口拓扑与 venv 能力检查，均覆盖失败原因与排查指引。
 - 生成时间：2026-06-11 12:50:00
+
+## 本轮补充：runtime 目录 Git 卫生修复（env 模板化与忽略规则）
+
+### 背景和目标
+
+`runtime/control_console_venv/` 未被 ignore，导致大量虚拟环境文件出现在 `git status`；`runtime/portable.env` 是已跟踪文件，但 `bootstrap_host.sh` 会写入本机绝对路径，导致它频繁变成 modified。目标：Git 只跟踪可迁移模板，不跟踪任何本机运行态文件；全新 Orin 仍能通过 bootstrap 自动生成实际运行用的 env。
+
+### 当前状态
+
+已完成：
+
+- 新增可迁移模板 `rabbitbot-dev-ros2-master/runtime/portable.env.example`（内容为原已跟踪 portable.env 的机器无关默认值），随仓库进入 Git。
+- `runtime/portable.env` 改为本机生成文件：已 `git rm --cached` 从索引移除（磁盘文件保留），由 `bootstrap_host.sh` 在目标机器上从模板复制生成并增量写入本机配置（DDS 网卡、CIDR、地图路径、模型目录、compose 路径等）。
+- 忽略规则修复的关键点：`rabbitbot-dev-ros2-master/.gitignore` 是白名单式规则（`*` + `!模式`），嵌套 .gitignore 优先级高于仓库根 .gitignore，单改根文件无效。已将其末尾 `!runtime/portable.env` 白名单替换为 `runtime/**` + `!runtime/.gitkeep` + `!runtime/portable.env.example`；根 `.gitignore` 同步增加 runtime 规则块作为双保险。
+- 11 个读取 env 的脚本（deploy 下 7 个、scripts_1 下 4 个）统一增加回退逻辑：优先 source `runtime/portable.env`，不存在时回退 source `portable.env.example` 并打印 WARN 提示先运行 bootstrap。
+- `check_air_project.sh`：共享检查改为要求 `portable.env.example` 存在；grep 类静态检查改用实际生效的 env 文件（新增 `PORTABLE_ENV_EFFECTIVE_FILE`）；clean_orin 模式在本机 env 缺失时打 WARN 并按模板做只读默认校验。
+- `install_air_project.sh`：安装 systemd 前强制要求本机 `runtime/portable.env` 存在，缺失时明确报错并提示先执行 `bootstrap_host.sh`（systemd `EnvironmentFile` 仍指向实际 portable.env，不加载 example）。
+- 新增 `runtime/.gitkeep` 占位文件并跟踪。README 新增"runtime 目录与 env 文件约定"小节。
+
+未完成：
+
+- `install_air_project.sh` 在 portable.env 存在时的完整安装路径未实际执行：本机 sudo 需要密码，SSH 非交互无法验证。脚本改动仅在原校验前增加显式检查，存在时行为不变，且 `bash -n` 与自检的脚本语法检查均通过。
+
+### 已验证的事实
+
+- `git status --short rabbitbot-dev-ros2-master/runtime` 只剩 `.gitkeep`（新增）与 `portable.env -> portable.env.example`（重命名跟踪），venv 文件不再出现。
+- `git check-ignore -v` 确认 `runtime/control_console_venv/bin/python`、`runtime/portable.env`、`runtime/rabbitbot-loop.env` 均命中 `rabbitbot-dev-ros2-master/.gitignore` 的 `runtime/**` 规则。
+- `git ls-files rabbitbot-dev-ros2-master/runtime` 只列出 `.gitkeep` 和 `portable.env.example`。
+- 移走本机 portable.env 后运行 `APPLY_ROBOT_NETWORK=0 bash deploy/bootstrap_host.sh`，从模板成功生成并写入全部本机值，与移走前文件相比仅头部注释不同、键值完全一致；再次运行幂等，内容无变化，Git 状态不受影响。
+- `PORTABLE_CHECK_MODE=builder` 与 `PORTABLE_CHECK_MODE=clean_orin` 自检均通过（clean_orin 仅保留预期的地图文件不存在 WARN）；`MODE=check bash deploy/build_or_pull_images.sh` 通过。
+- portable.env 缺失时运行 `install_air_project.sh`，按预期退出码 1 并提示先执行 bootstrap。
+
+### 阻塞问题
+
+- 无阻塞。仅 install 完整路径需在有 sudo 的交互会话中复跑一次确认（预期无行为变化）。
+
+### 建议的下一步
+
+- 在交互终端执行一次 `bash deploy/install_air_project.sh` 复确认 systemd 安装路径正常。
+- 若其它 Orin 已克隆本仓库，拉取本次提交后各机的 portable.env 会因索引移除而显示删除状态，属预期；各机本地文件不受影响，必要时重跑 `bootstrap_host.sh`。
+
+### 注意事项
+
+- 修改可迁移默认配置一律改 `portable.env.example`；改 `portable.env` 只影响本机。
+- `rabbitbot-dev-ros2-master/.gitignore` 是白名单式规则，向 runtime 添加新的需跟踪文件时必须同时在该文件追加 `!runtime/<文件名>`，仅改根 .gitignore 无效。
+- 本轮新增/调整日志点：bootstrap_host.sh 记录 portable.env 的生成来源（模板复制 / 已存在增量更新 / 模板缺失降级）；11 个脚本回退读取模板时打印 WARN 并附带处置建议；install_air_project.sh 缺失本机 env 时输出 ERROR 与修复指引。这些日志可直接定位"env 从哪来、为什么是这份配置"一类问题。

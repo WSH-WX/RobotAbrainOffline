@@ -23,6 +23,20 @@ if [ -f "${PORTABLE_ENV_FILE}" ]; then
     # shellcheck disable=SC1090
     source "${PORTABLE_ENV_FILE}"
     set +a
+elif [ -f "${PORTABLE_ENV_FILE}.example" ]; then
+    # 本机 portable.env 不进入 Git；不存在时回退读取随仓库迁移的模板，保证只读校验类场景可用。
+    echo "[WARN] 未找到本机配置 ${PORTABLE_ENV_FILE}，回退读取模板 ${PORTABLE_ENV_FILE}.example；正式部署请先执行 deploy/bootstrap_host.sh 生成本机 portable.env。"
+    set -a
+    # shellcheck disable=SC1090
+    source "${PORTABLE_ENV_FILE}.example"
+    set +a
+fi
+
+# grep 类静态检查使用实际生效的 env 文件：优先本机 portable.env，否则用随仓库迁移的模板。
+if [ -f "${PORTABLE_ENV_FILE}" ]; then
+    PORTABLE_ENV_EFFECTIVE_FILE="${PORTABLE_ENV_FILE}"
+else
+    PORTABLE_ENV_EFFECTIVE_FILE="${PORTABLE_ENV_FILE}.example"
 fi
 
 CORE_IMAGE="${RABBITBOT_PORTABLE_CORE_IMAGE:-ghcr.io/aaronai/rabbitbot-core-portable:20260611}"
@@ -104,14 +118,14 @@ check_portable_env_keys() {
         RABBITBOT_UNIFIED_START_ROBOT_AGENT
     )
     for key in "${required_keys[@]}"; do
-        if ! grep -Eq "^${key}=" "${PORTABLE_ENV_FILE}"; then
+        if ! grep -Eq "^${key}=" "${PORTABLE_ENV_EFFECTIVE_FILE}"; then
             log_error "portable env 缺少必填键：${key}"
             exit 1
         fi
     done
     log_ok "portable env 关键键存在：count=${#required_keys[@]}"
     # portable 端口拓扑约定：core 不启动 robot_app.py，28180 归属 nav bridge。
-    if ! grep -Eq '^RABBITBOT_UNIFIED_START_ROBOT_AGENT=0$' "${PORTABLE_ENV_FILE}"; then
+    if ! grep -Eq '^RABBITBOT_UNIFIED_START_ROBOT_AGENT=0$' "${PORTABLE_ENV_EFFECTIVE_FILE}"; then
         log_error "portable env 必须设置 RABBITBOT_UNIFIED_START_ROBOT_AGENT=0：portable 模式下 28180 由 nav bridge 提供，core 不应启动 Robot Agent。"
         exit 1
     fi
@@ -247,7 +261,8 @@ require_path "${REPO_DIR}"
 require_path "${PROJECTS_DIR}/humble_robot_agent_bridge.py"
 require_path "${PROJECTS_DIR}/custom_action_ws/src/custom_action_interfaces"
 require_path "${MANIFEST_FILE}"
-require_path "${PORTABLE_ENV_FILE}"
+# 本机 portable.env 不进入 Git；共享检查只要求可迁移模板存在，实际 env 是否就绪由各模式自行提示。
+require_path "${PORTABLE_ENV_FILE}.example"
 require_path "${DOCKERIGNORE_FILE}"
 require_path "${REPO_DIR}/docker/portable/compose.yaml"
 require_path "${REPO_DIR}/docker/portable/core.Dockerfile"
@@ -313,7 +328,7 @@ log_ok "sudoers 模板语法通过"
 
 log_info "检查 portable 运行时关键配置（共享）"
 check_no_naked_runtime_hardcode
-if ! grep -Eq '^RABBITBOT_RUNTIME_MODE=portable$' "${PORTABLE_ENV_FILE}"; then
+if ! grep -Eq '^RABBITBOT_RUNTIME_MODE=portable$' "${PORTABLE_ENV_EFFECTIVE_FILE}"; then
     log_warn "portable env 当前未默认启用 portable 模式；若准备在新 Orin 冷启动，请先执行 bootstrap_host.sh 或手动确认 runtime/portable.env。"
 else
     log_ok "portable env 默认模式为 portable"
@@ -398,6 +413,9 @@ run_builder_checks() {
 # 3. 全新 Orin 模式专属检查：外部目录可缺失，转而要求镜像/初始化结果
 # ---------------------------------------------------------------------------
 run_clean_orin_checks() {
+    if [ ! -f "${PORTABLE_ENV_FILE}" ]; then
+        log_warn "本机 ${PORTABLE_ENV_FILE} 尚未生成，本次按模板 portable.env.example 做只读默认校验；正式部署前请先执行 deploy/bootstrap_host.sh。"
+    fi
     log_info "全新 Orin 模式：确认外部构建目录缺失时仍可通过（这些目录已固化进 portable 镜像）"
     info_optional_absent "${REPO_DIR}/py38"
     info_optional_absent "${REPO_DIR}/py310"

@@ -107,5 +107,8 @@ logs/**
 # 临时构思文件
 .superpowers/
 
-# portable 运行模式模板：必须随仓库迁移到新 Orin，由 bootstrap_host.sh 在保留键名前提下更新值
-!runtime/portable.env
+# runtime 目录：Git 只跟踪可迁移模板（portable.env.example）和占位文件。
+# 本机 portable.env、control_console_venv 等运行态由 bootstrap_host.sh 在目标机器生成，不进入 Git。
+runtime/**
+!runtime/.gitkeep
+!runtime/portable.env.example

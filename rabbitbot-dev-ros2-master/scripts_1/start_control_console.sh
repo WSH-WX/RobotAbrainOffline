@@ -10,6 +10,12 @@ if [ -f "${PORTABLE_ENV_FILE}" ]; then
   set -a
   source "${PORTABLE_ENV_FILE}"
   set +a
+elif [ -f "${PORTABLE_ENV_FILE}.example" ]; then
+  # 本机 portable.env 不进入 Git；不存在时回退读取随仓库迁移的模板。
+  echo "[WARN] 未找到本机配置 ${PORTABLE_ENV_FILE}，回退读取模板 ${PORTABLE_ENV_FILE}.example；正式部署请先执行 deploy/bootstrap_host.sh 生成本机 portable.env。"
+  set -a
+  source "${PORTABLE_ENV_FILE}.example"
+  set +a
 fi
 
 export RABBITBOT_PROJECT_ROOT="${RABBITBOT_PROJECT_ROOT:-${PROJECT_DIR}}"

@@ -4,6 +4,7 @@ set -Eeuo pipefail
 AIR_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO_DIR="${AIR_ROOT}/rabbitbot-dev-ros2-master"
 PORTABLE_ENV_FILE="${REPO_DIR}/runtime/portable.env"
+PORTABLE_ENV_EXAMPLE_FILE="${PORTABLE_ENV_FILE}.example"
 CONTROL_CONSOLE_VENV="${REPO_DIR}/runtime/control_console_venv"
 MODELS_CACHE_DIR_DEFAULT="${AIR_ROOT}/models"
 DDS_INTERFACE_DEFAULT="${RABBITBOT_DDS_INTERFACE:-eno1}"
@@ -114,6 +115,19 @@ log_ok "docker compose 可用"
 ensure_python_venv_capability
 
 mkdir -p "${REPO_DIR}/runtime" "${AIR_ROOT}/unitree_slam_example_new/example/run_logs" "${REPO_DIR}/logs/nav_workflow_control"
+
+# 本机 portable.env 不进入 Git：不存在时先从随仓库迁移的模板复制生成，再增量写入本机配置。
+if [ ! -f "${PORTABLE_ENV_FILE}" ]; then
+    if [ -f "${PORTABLE_ENV_EXAMPLE_FILE}" ]; then
+        cp "${PORTABLE_ENV_EXAMPLE_FILE}" "${PORTABLE_ENV_FILE}"
+        log_info "未发现本机 portable.env，已从模板生成：${PORTABLE_ENV_EXAMPLE_FILE} -> ${PORTABLE_ENV_FILE}"
+    else
+        log_warn "模板 ${PORTABLE_ENV_EXAMPLE_FILE} 不存在（仓库可能不完整），将仅以增量写入方式生成最小 portable.env：${PORTABLE_ENV_FILE}"
+    fi
+else
+    log_info "本机 portable.env 已存在，保留现有内容并增量更新本机配置：${PORTABLE_ENV_FILE}"
+fi
+
 upsert_env "RABBITBOT_DDS_INTERFACE" "${DDS_INTERFACE_DEFAULT}" "${PORTABLE_ENV_FILE}"
 upsert_env "RABBITBOT_DDS_HOST_CIDR" "${DDS_HOST_CIDR_DEFAULT}" "${PORTABLE_ENV_FILE}"
 upsert_env "RABBITBOT_NAV_MAP_PATH" "${NAV_MAP_PATH_DEFAULT}" "${PORTABLE_ENV_FILE}"

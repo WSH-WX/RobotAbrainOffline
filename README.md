@@ -60,7 +60,7 @@ git checkout feature/portable-deploy
 # 2) 导入 portable 镜像（先校验 sha256 再 docker load）
 IMAGE_DIR=/path/to/portable-images bash deploy/import_portable_images.sh
 
-# 3) 最小宿主初始化（检查工具与 venv 能力、生成 portable.env、创建控制台轻量 venv）
+# 3) 最小宿主初始化（检查工具与 venv 能力、从 portable.env.example 生成本机 portable.env、创建控制台轻量 venv）
 bash deploy/bootstrap_host.sh
 #    宿主缺少 python3-venv 时脚本会快速失败并给出安装建议；允许自动安装时：
 #    INSTALL_HOST_PACKAGES=1 bash deploy/bootstrap_host.sh
@@ -96,6 +96,13 @@ bash deploy/ensure_models.sh qwen_vlm qwen_embedding
 `ensure_models.sh` 会按 `third_party/manifest.lock` 下载模型并记录版本、路径与校验信息。
 
 安装后，`rabbitbot-loop.service` 会通过 `runtime/portable.env` 决定使用 portable 还是 legacy 入口；默认当前模板为 portable。
+
+### runtime 目录与 env 文件约定
+
+- `runtime/portable.env.example`：可迁移默认模板，随仓库进入 GitHub；修改默认配置请改这个文件。
+- `runtime/portable.env`：本机实际运行配置（含本机绝对路径、模型目录、网卡等），**不进入 Git**，由目标 Orin 上执行 `deploy/bootstrap_host.sh` 从模板复制生成并写入本机值；systemd 的 `EnvironmentFile` 始终指向该文件。
+- `runtime/control_console_venv/`：控制台轻量虚拟环境，由 `bootstrap_host.sh` 在目标机器上生成，不进入 Git。
+- 各部署/启动脚本在 `portable.env` 不存在时会回退读取 `portable.env.example`（只读校验场景可用），并提示先运行 `bootstrap_host.sh`；`install_air_project.sh` 安装 systemd 前则强制要求本机 `portable.env` 已生成。
 
 ## 一键检查
 
