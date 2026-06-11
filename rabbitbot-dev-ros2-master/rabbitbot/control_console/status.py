@@ -170,7 +170,7 @@ def parse_latest_pose_from_lines(lines: list[str], source_label: str = "导航�
     if latest is None:
         fallback_message = LOCALIZATION_SUCCESS_MESSAGE if localized else LOCALIZATION_HELP_MESSAGE
         if status_message == LOCALIZATION_UNKNOWN_MESSAGE:
-            logger.debug("导航日志未解析到位姿，定位状态回退为未成功提示：path=%s", path)
+            logger.debug("导航日志未解析到位姿，定位状态回退为未成功提示：source=%s, localized=%s, status_message=%s", source_label, localized, status_message)
         return PoseStatus(available=False, localized=localized, status_message=fallback_message, message="暂无定位位姿数据")
     return latest
 

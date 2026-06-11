@@ -670,3 +670,40 @@ Aaron 这轮要求先为“全新 Orin 仅靠 GitHub 源码 + 镜像 + 最小宿
 - HaiSong 本地仍可能保留被 ignore 的历史模板文件，它们不再是安装链路依赖，也不会进入 GitHub。
 - 本轮新增/调整日志点：安装脚本会记录动态生成模板的目录、服务用户、用户组、当前仓库路径和 runtime mode；自检会记录动态 sudoers 校验使用的用户。这些日志用于定位新 Orin 上 systemd 路径或用户错误。
 - 生成时间：2026-06-11 16:35:00
+
+
+## 本轮补充：ShuHao 控制台状态接口 500 修复
+
+### 背景和目标
+
+在 ShuHao-orin 上完成 8080 端口释放后，浏览器已显示 RabbitBot 控制台页面，但状态区域显示“读取失败”“响应解析失败”。本轮目标是定位并修复状态接口失败，避免前端把后端异常误显示为定位失败。
+
+### 当前状态
+
+已完成：
+
+- 确认 `/api/status` 返回 500，systemd 日志显示 `parse_latest_pose_from_lines()` 在空导航日志路径下触发 `NameError: name 'path' is not defined`。
+- 修复控制台状态解析日志中的错误变量，将未定义的 `path` 改为调用方传入的 `source_label`，并补充 `localized` 与 `status_message` 上下文。
+- 在 `deploy/check_air_project.sh` 中新增控制台状态解析运行时回归检查，直接调用空导航日志解析路径，防止类似“编译通过但运行时失败”的问题再次进入 GitHub 源码。
+
+### 已验证的事实
+
+- ShuHao-orin 上 `rabbitbot-control-console.service` 已能启动并监听 8080，但 `/api/status` 因上述 NameError 返回 500。
+- ShuHao-orin 当前 `rabbitbot-loop.service` 为 inactive，portable compose 未运行；这说明当前定位链路尚未启动，不能把页面“读取失败”解读为 `unitree_slam_example_new` 配置失败。
+
+### 阻塞问题
+
+- 需要在 ShuHao-orin 拉取本提交后重启 `rabbitbot-control-console.service`，再点击“开始程序”或启动 `rabbitbot-loop.service` 继续验证导航容器、28180 和定位。
+- 若启动 loop 后仍无法定位，再排查机器人网络、DDS 网卡、portable nav 容器日志和机器人侧地图路径。
+
+### 建议的下一步
+
+- 在 ShuHao-orin 执行 `git pull`，然后运行 `PORTABLE_CHECK_MODE=clean_orin bash deploy/check_air_project.sh`。
+- 重启控制台服务后访问 `/api/status`，应返回 JSON 而不是 500。
+- 再启动主循环服务，确认 portable nav 容器运行、28180 监听、控制台状态进入“定位中”或“定位成功”。
+
+### 注意事项
+
+- `unitree_slam_example_new` 在 portable 路径中应由 nav 镜像内置，GitHub 源码中的宿主目录不是新 Orin 运行前置条件。
+- 本轮新增/调整日志点：控制台状态解析在未读到位姿时记录日志来源、定位状态和状态消息；自检新增状态解析运行时回归输出，用于定位控制台状态接口运行期异常。
+- 生成时间：2026-06-11 17:15:00

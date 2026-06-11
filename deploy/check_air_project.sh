@@ -322,6 +322,17 @@ python3 -m py_compile \
     robot_app.py memory_app.py tts_app.py
 log_ok "Python 编译通过"
 
+log_info "检查控制台状态解析运行时回归"
+PYTHONPATH="${REPO_DIR}" python3 - <<'PY'
+from rabbitbot.control_console.status import parse_latest_pose_from_lines
+
+pose = parse_latest_pose_from_lines([], source_label="portable 自检空导航日志")
+if pose.available:
+    raise SystemExit("empty_nav_log_unexpected_pose")
+print(f"pose_available={pose.available}, localized={pose.localized}, message={pose.message}")
+PY
+log_ok "控制台状态解析运行时回归通过"
+
 log_info "检查动态 sudoers 模板"
 sudoers_tmp="$(mktemp)"
 trap 'rm -f "${sudoers_tmp}"' EXIT
