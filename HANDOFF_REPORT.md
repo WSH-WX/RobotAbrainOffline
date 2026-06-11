@@ -623,3 +623,50 @@ Aaron 这轮要求先为“全新 Orin 仅靠 GitHub 源码 + 镜像 + 最小宿
 - `map_exists=false` 现在仅表示 Orin 本地不可见，不能再解读为机器人侧地图不存在。
 - 本轮新增/调整日志点集中在地图路径可见性提示，目的是区分 Orin 本地文件检查与机器人侧导航服务读图能力。
 - 生成时间：2026-06-11 15:05:00
+
+## 本轮补充：全新 Orin GitHub 源码缺 systemd/sudoers 模板修复
+
+### 背景和目标
+
+在 ShuHao-orin 上用 GitHub 新拉取源码执行 `PORTABLE_CHECK_MODE=clean_orin bash deploy/check_air_project.sh` 时，自检失败：`rabbitbot-dev-ros2-master/scripts_1/systemd/rabbitbot-control-console.sudoers` 不存在。HaiSong 现场该文件存在但被 `rabbitbot-dev-ros2-master/.gitignore` 的白名单规则排除，说明 GitHub 源码并非完整可部署状态。
+
+进一步检查发现，仓库中未跟踪的 systemd 模板还硬编码了 HaiSong 路径 `/mnt/ssd/navgation/projects/air_robot_gt_projects` 和用户 `pc`，即使强行提交也会在 ShuHao 的 `/mnt/disk1/gt/air_robot_gt_projects` 上安装错误服务。因此本轮修复选择动态生成 systemd/sudoers，而不是继续依赖固定模板文件。
+
+### 当前状态
+
+已完成：
+
+- `deploy/install_air_project.sh` 不再依赖 `rabbitbot-dev-ros2-master/scripts_1/systemd/rabbitbot-loop.service`、`rabbitbot-dev-ros2-master/scripts_1/systemd/rabbitbot-control-console.sudoers` 或 `rabbitbot-dev-ros2-master/deploy/rabbitbot-control-console.service`。
+- 安装时按当前机器动态生成：
+  - `rabbitbot-loop.service`
+  - `rabbitbot-control-console.service`
+  - `/etc/sudoers.d/rabbitbot-control-console` 的源模板
+- 动态模板使用当前仓库路径、当前执行用户和用户组；也可通过 `RABBITBOT_SERVICE_USER` / `RABBITBOT_SERVICE_GROUP` 显式覆盖。
+- portable 模式下不再强制要求 legacy 外部路径：`models`、`custom_action_ws/install/setup.bash`、`unitree_slam_example_new/example/start_nav_arm_bridge.sh`。这些只在 legacy 模式安装前检查。
+- `deploy/check_air_project.sh` 的 sudoers 检查改为生成临时 sudoers 内容并用 `visudo -cf` 校验，不再要求 GitHub 源码包含被忽略的 sudoers 文件。
+
+### 已验证的事实
+
+- `bash -n deploy/install_air_project.sh` 通过。
+- `bash -n deploy/check_air_project.sh` 通过。
+- `PORTABLE_CHECK_MODE=clean_orin bash deploy/check_air_project.sh` 在 HaiSong 上通过，并显示 `动态 sudoers 模板语法通过：user=pc`。
+- 本轮修复消除了 ShuHao-orin 发现的 `visudo: unable to open ... rabbitbot-control-console.sudoers` 问题。
+
+### 阻塞问题
+
+- 尚未在 ShuHao-orin 拉取本提交后复跑自检；需要 Aaron 在 ShuHao 上 `git pull` 后再次执行 `PORTABLE_CHECK_MODE=clean_orin bash deploy/check_air_project.sh`。
+
+### 建议的下一步
+
+- 在 ShuHao-orin 执行：
+  - `cd /mnt/disk1/gt/air_robot_gt_projects`
+  - `git pull`
+  - `PORTABLE_CHECK_MODE=clean_orin bash deploy/check_air_project.sh`
+  - `bash deploy/install_air_project.sh`
+- 检查安装后的 `/etc/systemd/system/rabbitbot-loop.service` 和 `/etc/systemd/system/rabbitbot-control-console.service`，应使用 `/mnt/disk1/gt/air_robot_gt_projects/...` 和用户 `nvidia`，不应出现 HaiSong 的 `/mnt/ssd/...` 或 `pc`。
+
+### 注意事项
+
+- HaiSong 本地仍可能保留被 ignore 的历史模板文件，它们不再是安装链路依赖，也不会进入 GitHub。
+- 本轮新增/调整日志点：安装脚本会记录动态生成模板的目录、服务用户、用户组、当前仓库路径和 runtime mode；自检会记录动态 sudoers 校验使用的用户。这些日志用于定位新 Orin 上 systemd 路径或用户错误。
+- 生成时间：2026-06-11 16:35:00

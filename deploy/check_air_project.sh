@@ -322,9 +322,15 @@ python3 -m py_compile \
     robot_app.py memory_app.py tts_app.py
 log_ok "Python 编译通过"
 
-log_info "检查 sudoers 模板"
-visudo -cf "${REPO_DIR}/scripts_1/systemd/rabbitbot-control-console.sudoers"
-log_ok "sudoers 模板语法通过"
+log_info "检查动态 sudoers 模板"
+sudoers_tmp="$(mktemp)"
+trap 'rm -f "${sudoers_tmp}"' EXIT
+cat >"${sudoers_tmp}" <<SUDOERS
+# 允许局域网控制台只管理 RabbitBot 主循环服务。
+$(id -un) ALL=(root) NOPASSWD: /usr/bin/systemctl start rabbitbot-loop.service, /usr/bin/systemctl restart rabbitbot-loop.service, /usr/bin/systemctl stop rabbitbot-loop.service
+SUDOERS
+visudo -cf "${sudoers_tmp}"
+log_ok "动态 sudoers 模板语法通过：user=$(id -un)"
 
 log_info "检查 portable 运行时关键配置（共享）"
 check_no_naked_runtime_hardcode
