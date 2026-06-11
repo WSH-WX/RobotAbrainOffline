@@ -29,6 +29,9 @@ log_info "开始启动 portable 基础服务：image_source=${RABBITBOT_IMAGE_SO
     RABBITBOT_WORKFLOW_VERBOSE=0 \
     RABBITBOT_UNIFIED_START_VLM="${RABBITBOT_ENABLE_VLM:-0}" \
     RABBITBOT_UNIFIED_START_STT="${RABBITBOT_ENABLE_STT:-0}" \
+    RABBITBOT_UNIFIED_START_ROBOT_AGENT="${RABBITBOT_UNIFIED_START_ROBOT_AGENT:-0}" \
     bash scripts_1/start_unified_integration_workflow.sh
 )
-log_ok "portable core 基础服务已完成启动检查；如需待命循环，请启动 rabbitbot-loop.service 或执行 scripts_1/start_loop_entry.sh"
+# portable 端口拓扑：本脚本只负责 core 基础服务（7687/28182/28185），不要求 28180 就绪；
+# 28180 由 nav bridge 提供，统一在 start_loop_entry.sh（nav 先行）中启动。
+log_ok "portable core 基础服务已完成启动检查（不含 28180）；如需待命循环与 nav bridge，请启动 rabbitbot-loop.service 或执行 scripts_1/start_loop_entry.sh"

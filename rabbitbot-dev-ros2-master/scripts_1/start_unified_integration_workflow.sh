@@ -51,12 +51,19 @@ RABBITBOT_REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 DEFAULT_PROJECT_ROOT="$(cd "${RABBITBOT_REPO_DIR}/.." && pwd)"
 
 # 加载 portable 运行模式配置（若存在），以便在 portable 模式下注入自包含镜像的重型依赖卷。
+# 关键开关保留调用方优先级：显式传入 RABBITBOT_RUNTIME_MODE=legacy / RABBITBOT_UNIFIED_START_ROBOT_AGENT=1
+# 时不被 env 文件覆盖，便于现场临时回退 legacy 行为。
+_CALLER_RUNTIME_MODE="${RABBITBOT_RUNTIME_MODE:-}"
+_CALLER_START_ROBOT_AGENT="${RABBITBOT_UNIFIED_START_ROBOT_AGENT:-}"
 PORTABLE_ENV_FILE="${RABBITBOT_PORTABLE_ENV_FILE:-${RABBITBOT_REPO_DIR}/runtime/portable.env}"
 if [ -f "${PORTABLE_ENV_FILE}" ]; then
     set -a
     # shellcheck disable=SC1090
     source "${PORTABLE_ENV_FILE}"
     set +a
+fi
+if [ -n "${_CALLER_RUNTIME_MODE}" ]; then
+    RABBITBOT_RUNTIME_MODE="${_CALLER_RUNTIME_MODE}"
 fi
 
 IMAGE_NAME="${IMAGE_NAME:-rabbitbot-unified-runtime:20260518}"
@@ -93,6 +100,22 @@ RABBITBOT_UNITREE_TTS_TIMEOUT="${RABBITBOT_UNITREE_TTS_TIMEOUT:-10}"
 #   宿主源码目录仍 bind mount 到 /workspace/projects 以提供 GitHub 源码、conf 与日志可见性。
 RABBITBOT_RUNTIME_MODE="${RABBITBOT_RUNTIME_MODE:-legacy}"
 RABBITBOT_PORTABLE_INJECT_DEPS="${RABBITBOT_PORTABLE_INJECT_DEPS:-1}"
+
+# 28180 端口拓扑：
+#   legacy 默认 core 内启动 robot_app.py（监听 28180）。
+#   portable 默认 core 不启动 Robot Agent，28180 归属 nav bridge 的 humble_robot_agent_bridge；
+#   workflow 通过 RABBITBOT_ROBOT_AGENT_URL（默认 http://127.0.0.1:28180）访问 nav bridge。
+if [ "${RABBITBOT_RUNTIME_MODE}" = "portable" ]; then
+    RABBITBOT_UNIFIED_START_ROBOT_AGENT="${RABBITBOT_UNIFIED_START_ROBOT_AGENT:-0}"
+else
+    # legacy 模式：portable.env 中的该键不生效；仅调用方显式传入时才覆盖，否则按 legacy 默认 1。
+    if [ -n "${_CALLER_START_ROBOT_AGENT}" ]; then
+        RABBITBOT_UNIFIED_START_ROBOT_AGENT="${_CALLER_START_ROBOT_AGENT}"
+    else
+        RABBITBOT_UNIFIED_START_ROBOT_AGENT=1
+    fi
+fi
+RABBITBOT_ROBOT_AGENT_URL="${RABBITBOT_ROBOT_AGENT_URL:-http://127.0.0.1:28180}"
 
 log_info() {
     echo -e "\033[32m[INFO]\033[0m $1"
@@ -196,7 +219,31 @@ wait_for_base_services() {
         log_info "RABBITBOT_UNIFIED_START_STT=0，跳过等待 STT 服务 (28184)"
     fi
     wait_until "Memory Agent 服务 (28182)" "${WAIT_DEFAULT_SECONDS}" http_ok http://127.0.0.1:28182/docs
-    wait_until "Robot Agent 服务 (28180)" "${WAIT_DEFAULT_SECONDS}" port_open 28180
+    if [ "${RABBITBOT_UNIFIED_START_ROBOT_AGENT}" = "1" ]; then
+        wait_until "Robot Agent 服务 (28180)" "${WAIT_DEFAULT_SECONDS}" port_open 28180
+    else
+        log_info "RABBITBOT_UNIFIED_START_ROBOT_AGENT=0，跳过等待 core 内部 Robot Agent (28180)；portable 模式下 28180 由 nav bridge 提供，可达性在 workflow 启动前检查"
+    fi
+}
+
+check_external_robot_agent_reachable() {
+    # core 不托管 Robot Agent 时，在 workflow 启动前确认外部 28180 可达。
+    if [ "${RABBITBOT_UNIFIED_START_ROBOT_AGENT}" = "1" ]; then
+        return 0
+    fi
+    local host_port host port
+    host_port="$(printf '%s' "${RABBITBOT_ROBOT_AGENT_URL}" | sed -E 's#^[a-zA-Z]+://##; s#/.*$##')"
+    host="${host_port%%:*}"
+    port="${host_port##*:}"
+    if [ -z "${port}" ] || [ "${port}" = "${host}" ]; then
+        port=80
+    fi
+    if timeout 3 bash -lc "</dev/tcp/${host}/${port}" >/dev/null 2>&1; then
+        log_success "外部 Robot Agent 可达：${RABBITBOT_ROBOT_AGENT_URL}"
+        return 0
+    fi
+    log_error "外部 Robot Agent 不可达：${RABBITBOT_ROBOT_AGENT_URL}。portable 模式下 28180 应由 nav bridge 提供；请先通过 start_loop_entry.sh（nav 先行）启动，或单独运行 scripts_1/start_nav_bridge_portable.sh。"
+    return 1
 }
 
 ensure_compatible_container() {
@@ -218,6 +265,8 @@ ensure_compatible_container() {
     container_start_embedding="$(container_env_value "${CONTAINER_NAME}" RABBITBOT_UNIFIED_START_EMBEDDING || true)"
     local container_start_stt
     container_start_stt="$(container_env_value "${CONTAINER_NAME}" RABBITBOT_UNIFIED_START_STT || true)"
+    local container_start_robot_agent
+    container_start_robot_agent="$(container_env_value "${CONTAINER_NAME}" RABBITBOT_UNIFIED_START_ROBOT_AGENT || true)"
     local container_tts_backend
     container_tts_backend="$(container_env_value "${CONTAINER_NAME}" RABBITBOT_TTS_BACKEND || true)"
     local container_unitree_interface
@@ -249,6 +298,9 @@ ensure_compatible_container() {
         incompatible_reason="Embedding 启动配置变化：container=${container_start_embedding:-未设置}, expected=${RABBITBOT_UNIFIED_START_EMBEDDING}"
     elif [ "${container_start_stt:-未设置}" != "${RABBITBOT_UNIFIED_START_STT}" ]; then
         incompatible_reason="STT 启动配置变化：container=${container_start_stt:-未设置}, expected=${RABBITBOT_UNIFIED_START_STT}"
+    elif [ "${container_start_robot_agent:-1}" != "${RABBITBOT_UNIFIED_START_ROBOT_AGENT}" ]; then
+        # 旧容器未设置该变量时视为 1（legacy 行为），避免 legacy 模式误判重建；portable 期望 0 时会触发重建。
+        incompatible_reason="Robot Agent 启动配置变化：container=${container_start_robot_agent:-未设置(按1)}, expected=${RABBITBOT_UNIFIED_START_ROBOT_AGENT}"
     elif [ "${container_tts_backend:-local}" != "${RABBITBOT_TTS_BACKEND}" ]; then
         incompatible_reason="TTS 后端配置变化：container=${container_tts_backend:-local}, expected=${RABBITBOT_TTS_BACKEND}"
     elif [ "${RABBITBOT_TTS_BACKEND}" = "unitree" ] && [ "${container_unitree_interface:-eno1}" != "${RABBITBOT_UNITREE_TTS_INTERFACE}" ]; then
@@ -359,6 +411,8 @@ create_container_if_needed() {
         -e RABBITBOT_UNIFIED_START_VLM="${RABBITBOT_UNIFIED_START_VLM}" \
         -e RABBITBOT_UNIFIED_START_EMBEDDING="${RABBITBOT_UNIFIED_START_EMBEDDING}" \
         -e RABBITBOT_UNIFIED_START_STT="${RABBITBOT_UNIFIED_START_STT}" \
+        -e RABBITBOT_UNIFIED_START_ROBOT_AGENT="${RABBITBOT_UNIFIED_START_ROBOT_AGENT}" \
+        -e RABBITBOT_ROBOT_AGENT_URL="${RABBITBOT_ROBOT_AGENT_URL}" \
         -e AUTO_START_WORKFLOW=0 \
         -e WAIT_DEFAULT_SECONDS="${WAIT_DEFAULT_SECONDS}" \
         -e WAIT_VLM_SECONDS="${WAIT_VLM_SECONDS}" \
@@ -452,5 +506,8 @@ if [ "${RUN_WORKFLOW_AFTER_START}" != "1" ]; then
     exit 0
 fi
 
+if ! check_external_robot_agent_reachable; then
+    exit 1
+fi
 stop_existing_workflow_if_needed
 run_workflow_foreground

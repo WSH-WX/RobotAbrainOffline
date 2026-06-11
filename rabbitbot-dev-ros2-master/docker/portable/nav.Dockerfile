@@ -18,14 +18,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ros-humble-ament-cmake \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip3 install --no-cache-dir fastapi 'uvicorn[standard]'
+RUN pip3 install --no-cache-dir fastapi 'uvicorn[standard]' python-multipart
 
 WORKDIR /workspace/projects
 COPY humble_robot_agent_bridge.py /workspace/projects/humble_robot_agent_bridge.py
 COPY custom_action_ws/src /workspace/projects/custom_action_ws/src
 COPY unitree_sdk2 /workspace/projects/unitree_sdk2
 COPY unitree_slam_example_new/example /workspace/projects/unitree_slam_example_new/example
-COPY rabbitbot-dev-ros2-master/docker/portable/nav_entrypoint.sh /usr/local/bin/rabbitbot-portable-nav-entrypoint
 
 # 清理宿主历史构建产物，避免旧 CMakeCache 污染容器内重新配置。
 RUN rm -rf /workspace/projects/unitree_slam_example_new/example/build \
@@ -37,6 +36,8 @@ RUN cmake -S /workspace/projects/unitree_sdk2 -B /workspace/projects/unitree_sdk
     && cmake --install /workspace/projects/unitree_sdk2/build --prefix /opt/unitree_sdk2
 RUN bash -lc 'source /opt/ros/humble/setup.bash && source /workspace/projects/custom_action_ws/install/setup.bash && cmake -S /workspace/projects/unitree_slam_example_new/example -B /workspace/projects/unitree_slam_example_new/example/build -DCMAKE_PREFIX_PATH="/opt/unitree_sdk2;/workspace/projects/custom_action_ws/install:${CMAKE_PREFIX_PATH}" && cmake --build /workspace/projects/unitree_slam_example_new/example/build -j"$(nproc)"'
 
+# 入口脚本放在编译层之后，修改入口不会触发上方编译层缓存失效。
+COPY rabbitbot-dev-ros2-master/docker/portable/nav_entrypoint.sh /usr/local/bin/rabbitbot-portable-nav-entrypoint
 RUN chmod +x /usr/local/bin/rabbitbot-portable-nav-entrypoint
 
 CMD ["/usr/local/bin/rabbitbot-portable-nav-entrypoint"]

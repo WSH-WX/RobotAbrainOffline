@@ -101,6 +101,7 @@ check_portable_env_keys() {
         RABBITBOT_NAV_MAP_PATH
         RABBITBOT_ENABLE_VLM
         RABBITBOT_ENABLE_STT
+        RABBITBOT_UNIFIED_START_ROBOT_AGENT
     )
     for key in "${required_keys[@]}"; do
         if ! grep -Eq "^${key}=" "${PORTABLE_ENV_FILE}"; then
@@ -109,6 +110,77 @@ check_portable_env_keys() {
         fi
     done
     log_ok "portable env 关键键存在：count=${#required_keys[@]}"
+    # portable 端口拓扑约定：core 不启动 robot_app.py，28180 归属 nav bridge。
+    if ! grep -Eq '^RABBITBOT_UNIFIED_START_ROBOT_AGENT=0$' "${PORTABLE_ENV_FILE}"; then
+        log_error "portable env 必须设置 RABBITBOT_UNIFIED_START_ROBOT_AGENT=0：portable 模式下 28180 由 nav bridge 提供，core 不应启动 Robot Agent。"
+        exit 1
+    fi
+    log_ok "portable env 端口拓扑配置正确：RABBITBOT_UNIFIED_START_ROBOT_AGENT=0"
+}
+
+check_core_skips_internal_28180() {
+    # 静态检查：core 启动链路必须支持在 portable 模式下跳过内部 Robot Agent 与 28180 等待。
+    local integration_script="${REPO_DIR}/scripts_1/start_unified_integration_workflow.sh"
+    local container_script="${REPO_DIR}/scripts_1/unified_runtime/start_unified_container.sh"
+    if ! grep -q 'RABBITBOT_UNIFIED_START_ROBOT_AGENT' "${integration_script}"; then
+        log_error "core 启动脚本缺少 Robot Agent 开关支持：${integration_script}"
+        exit 1
+    fi
+    if ! grep -q 'RABBITBOT_UNIFIED_START_ROBOT_AGENT' "${container_script}"; then
+        log_error "统一容器入口缺少 Robot Agent 开关支持：${container_script}"
+        exit 1
+    fi
+    log_ok "core 启动链路支持 portable 模式跳过内部 Robot Agent (28180)"
+}
+
+check_python_venv_capability() {
+    # 功能性探测 python3 -m venv：缺 python3-venv 时 venv 模块仍在，但 ensurepip 缺失导致创建失败。
+    # 判定：venv 可用 → 通过；不可用但存在 apt-get（可经 INSTALL_HOST_PACKAGES=1 自动安装）→ 可解释告警放行；
+    #       两者皆无 → 错误。
+    local tmp_dir python_minor
+    tmp_dir="$(mktemp -d)"
+    if python3 -m venv "${tmp_dir}/venv_probe" >/dev/null 2>&1; then
+        rm -rf "${tmp_dir}"
+        log_ok "python3 -m venv 可用：$(python3 -V 2>&1)"
+        return 0
+    fi
+    rm -rf "${tmp_dir}"
+    python_minor="$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
+    if command -v apt-get >/dev/null 2>&1; then
+        log_warn "python3 -m venv 当前不可用，但本机存在 apt-get，可自动补齐：执行 INSTALL_HOST_PACKAGES=1 bash deploy/bootstrap_host.sh，或手动 sudo apt-get install -y python3-venv python${python_minor}-venv。"
+        return 0
+    fi
+    log_error "python3 -m venv 不可用且未找到 apt-get，bootstrap_host.sh 将无法创建控制台虚拟环境。请先为系统补齐 Python venv 能力（python3-venv / ensurepip）。"
+    exit 1
+}
+
+check_port_topology_runtime() {
+    # 运行期端口拓扑检查（仅当相关容器在运行时执行）：
+    #   core 运行中：容器内不应有 robot_app.py 占用 28180。
+    #   nav 运行中：28180 应处于监听状态（由 humble_robot_agent_bridge 提供）。
+    local core_container="${RABBITBOT_PORTABLE_CORE_CONTAINER_NAME:-rabbitbot-unified-runtime}"
+    if ! command -v docker >/dev/null 2>&1; then
+        log_info "未找到 docker，跳过运行期端口拓扑检查。"
+        return 0
+    fi
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "${core_container}"; then
+        if docker exec "${core_container}" bash -lc 'pgrep -f "[u]vicorn robot_app:app" >/dev/null' >/dev/null 2>&1; then
+            log_error "运行期端口拓扑异常：统一容器 ${core_container} 内仍在运行 robot_app.py（28180）。portable 模式下应由 nav bridge 提供 28180，请重建统一容器。"
+            exit 1
+        fi
+        log_ok "运行期端口拓扑：core 容器未占用 28180（未运行 robot_app.py）"
+    else
+        log_info "core 容器未运行，跳过 core 侧端口拓扑检查。"
+    fi
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -Eq 'rabbitbot-nav'; then
+        if timeout 2 bash -lc '</dev/tcp/127.0.0.1/28180' >/dev/null 2>&1; then
+            log_ok "运行期端口拓扑：nav 容器运行中且 28180 在监听（humble_robot_agent_bridge）"
+        else
+            log_warn "nav 容器运行中但 28180 未监听；bridge 可能仍在启动或已异常，请查看 nav 容器日志。"
+        fi
+    else
+        log_info "nav 容器未运行，跳过 nav 侧端口拓扑检查。"
+    fi
 }
 
 check_dockerignore_rules() {
@@ -196,6 +268,8 @@ manifest_result="$(check_manifest)"
 log_ok "依赖清单检查通过：${manifest_result}"
 check_portable_env_keys
 check_dockerignore_rules
+check_core_skips_internal_28180
+check_port_topology_runtime
 
 log_info "检查脚本语法"
 scripts=(
@@ -352,6 +426,9 @@ run_clean_orin_checks() {
     if [ "${rc}" -ne 0 ]; then
         exit 1
     fi
+
+    log_info "全新 Orin 模式：校验宿主 venv 能力（bootstrap_host.sh 的前置条件）"
+    check_python_venv_capability
 
     log_info "全新 Orin 模式：校验宿主初始化结果与地图路径配置"
     if [ -x "${REPO_DIR}/runtime/control_console_venv/bin/python" ]; then

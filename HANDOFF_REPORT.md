@@ -445,3 +445,54 @@ Aaron 这轮要求先为“全新 Orin 仅靠 GitHub 源码 + 镜像 + 最小宿
 - portable 依赖卷 `rabbitbot_portable_{py38,py310,vln,pyorbbecsdk}` 在「新建 core 容器」时会被重置并从当前 core 镜像重新 seed；导入新版 core 镜像后首次 `start_portable_stack.sh` 即会刷新它们。
 - 本轮新增/调整的日志点：core 构建（上下文准备、镜像 id、耗时）、镜像 check/none 分支、导出/导入（tag/id/路径/sha256/耗时）、portable 依赖卷重置与注入、容器镜像不一致重建原因、clean_orin 自检的镜像/初始化/地图校验，均覆盖关键阶段、输入摘要、状态变化、失败原因。
 - 生成时间：2026-06-11 11:05:00
+
+## 本轮补充：宿主 venv 初始化与 28180 端口拓扑修复
+
+### 背景和目标
+
+修复 portable 冷启动链路的两个阻塞：`bootstrap_host.sh` 在缺 `python3-venv` 的宿主上模糊失败；`start_portable_stack.sh`（core 内 `robot_app.py`）与 nav bridge 争抢 28180。核心决策：portable 模式下 28180 统一归属 `rabbitbot-nav` 的 `humble_robot_agent_bridge`，core 不再启动 `robot_app.py`。
+
+### 当前状态
+
+已完成：
+
+- **`bootstrap_host.sh` venv 前置检查**：新增功能性探测（实际创建临时 venv，因为缺 `python3-venv` 时 venv 模块仍在、ensurepip 缺失）；失败时报 Python 版本、建议包名（`python3-venv pythonX.Y-venv`）、是否启用自动安装与下一步命令；`INSTALL_HOST_PACKAGES=1` 时自动 `apt-get install`（root 下不强制 sudo），装后复检。
+- **端口拓扑改造**：
+  - `start_unified_container.sh` 与 `start_unified_integration_workflow.sh` 新增 `RABBITBOT_UNIFIED_START_ROBOT_AGENT`（legacy 默认 1，portable 默认 0）；为 0 时跳过 `start_robot_agent` 与 28180 等待，但在 workflow 启动前检查 `RABBITBOT_ROBOT_AGENT_URL`（默认 `http://127.0.0.1:28180`，即 nav bridge）可达。
+  - 该键写入 `runtime/portable.env`，容器创建时以 `-e` 传入并纳入兼容性判定（旧容器未设置按 1 处理，legacy 不误重建）。
+  - **覆盖语义修正**：`portable.env` 的该键只在 portable 模式生效；显式传 `RABBITBOT_RUNTIME_MODE=legacy` 时不被 env 文件覆盖、默认回 1（已用 throwaway 容器验证 legacy=1 / portable=0）。
+  - `start_nav_bridge_workflow_loop.sh` 的 28180 占用检查改为识别占用者：core robot_app → 明确报错并指引重建；已有 portable nav 容器且 compose 运行时 → 告警后由 compose 重建接管；未知占用 → 报错并给排查命令。
+  - `start_portable_stack.sh` 只启动 core 基础服务（7687/28182/28185），不要求 28180。
+- **自检增强**（`check_air_project.sh`）：portable env 必须 `RABBITBOT_UNIFIED_START_ROBOT_AGENT=0`；静态检查 core 启动链路含开关支持；运行期端口拓扑检查（core 运行中不得有 robot_app，nav 运行中 28180 应监听）；clean_orin 增加 venv 能力探测（不可用但有 apt-get 时按"可自动补齐"告警放行，符合计划"或确认 INSTALL_HOST_PACKAGES=1 可安装"）。
+- **顺带修复的两个 nav 镜像真实 bug**（上轮镜像构建后从未运行过）：
+  1. `humble_robot_agent_bridge.py` 用 FastAPI `Form(...)` 需要 `python-multipart`，nav.Dockerfile 未安装 → bridge 导入即崩溃、28180 永不监听。已加入 pip 安装并重建镜像。
+  2. compose 模式下 goGoal/g1Arm 的日志只落容器内文件，宿主 loop 健康检查读不到 DDS 错误 → `nav_entrypoint.sh` 新增 `tail -F` 把后台节点日志透传到容器 stdout；同时把 entrypoint 的 COPY 移到编译层之后（再改入口不触发重编译，本次重建 99s）。
+
+### 已验证的事实（本机实测）
+
+- venv 失败路径：在缺 `python3-venv` 的容器（ros:humble-jammy）中快速失败，给出明确安装建议；`INSTALL_HOST_PACKAGES=1` 自动安装并复检通过。
+- **新检查在 HaiSong 宿主上抓到真实问题：本机确实缺 `python3-venv`**（此前 bootstrap 即因此失败），现报错明确；宿主侧自动安装因 sudo 需密码未执行（见阻塞）。
+- core 以 portable 镜像启动后：7687/28182/28185 监听，28180/28184/8000/8005 全部关闭，容器内无 robot_app 进程；4 个依赖卷正常 seed。
+- `start_loop_entry.sh` 不再因 28180 被 core 占用退出；nav bridge（compose）启动后 28180 由 `humble_robot_agent_bridge` 提供（Uvicorn 0.0.0.0:28180）。
+- eno1 DOWN 时 goGoal 报明确错误 `eno1: does not match an available interface` + `DdsException`，透传到 compose stdout 后，loop 健康检查给出明确原因"检测到 DDS/网卡/进程异常"，未误判为端口冲突。
+- "28180 由已有 nav 容器占用 → compose 重建接管"路径实测触发并正常工作。
+- 回归：legacy throwaway 容器 `RABBITBOT_UNIFIED_START_ROBOT_AGENT=1` 且无 portable 依赖卷；portable 容器为 0。VLM/STT 关闭时不等待 8000/8005/28184。
+- 最终自检：`PORTABLE_CHECK_MODE=builder`、`clean_orin`、`MODE=check` 全部通过（clean_orin 的 venv/控制台 venv/地图为可解释告警）。
+
+### 阻塞问题
+
+- **宿主 `python3-venv` 安装需 sudo 密码**：本机 `sudo -n` 不可用，我无法非交互执行 `INSTALL_HOST_PACKAGES=1 bash deploy/bootstrap_host.sh`。需 Aaron 在 HaiSong 上执行一次（或手动 `sudo apt-get install -y python3-venv python3.10-venv`），之后重跑 `bash deploy/bootstrap_host.sh` 即可创建控制台 venv 并完成宿主初始化幂等验证。
+- 真实 DDS 通信验证仍依赖 eno1 链路恢复与机器人在场（本轮按计划只要求错误明确）。
+
+### 建议的下一步
+
+- Aaron 在 HaiSong 执行：`INSTALL_HOST_PACKAGES=1 bash deploy/bootstrap_host.sh`，完成宿主 venv 与控制台 venv。
+- eno1 恢复后启动 `rabbitbot-loop.service`（或 `start_loop_entry.sh`），验证完整链路：nav 先行 → core 复用 → workflow 预启动到 `waiting_for_go`。
+- 若需更新离线交付件，重新执行 `bash deploy/export_portable_images.sh`（nav 镜像 id 已变更为 `23c0ef06...`，旧 tar 中的 nav 镜像含 python-multipart 缺失 bug，不应再交付）。
+
+### 注意事项
+
+- 当前 core 容器已以 `rabbitbot-core-portable:20260611` 运行（基础服务就绪，无 robot_app）；nav 容器测试后已 down，留待现场启动。
+- compose nav 容器 restart 策略为 `unless-stopped`：loop 停止时只杀 compose 客户端进程、容器会留下，下次 start_nav_bridge 会按"nav 容器占用 → compose 接管"路径自动重建，这是预期行为。
+- 本轮新增/调整日志点：venv 探测/自动安装（版本、包名、失败命令、下一步）、core 跳过 Robot Agent 与外部可达性检查、28180 占用者识别（三分支各自给出原因与处理方法）、nav 节点日志透传 stdout、自检的端口拓扑与 venv 能力检查，均覆盖失败原因与排查指引。
+- 生成时间：2026-06-11 12:50:00

@@ -63,6 +63,9 @@ start_bg "01_goGoalNavigation66" "${CMD_NAV}"
 sleep 2
 start_bg "02_g1ArmOfficialActionServer" "${CMD_ARM}"
 sleep 2
+# 把后台节点日志透传到容器 stdout：宿主 loop 健康检查读取的是 compose 输出日志，
+# 必须能在其中看到 DDS/网卡/进程异常（如 eno1 不可用、DdsException）与 [Ready]/[Pose] 状态行。
+tail -n +1 -F "${RUN_DIR}/01_goGoalNavigation66.log" "${RUN_DIR}/02_g1ArmOfficialActionServer.log" 2>/dev/null &
 log_info "前台启动 28180 bridge，日志：${RUN_DIR}/03_humble_robot_agent_bridge.log"
 set +u
 source "${ROS_SETUP}"

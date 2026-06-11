@@ -14,6 +14,10 @@ RABBITBOT_WORKFLOW_NON_INTEGRATION="${RABBITBOT_WORKFLOW_NON_INTEGRATION:-0}"
 RABBITBOT_UNIFIED_START_VLM="${RABBITBOT_UNIFIED_START_VLM:-0}"
 RABBITBOT_UNIFIED_START_EMBEDDING="${RABBITBOT_UNIFIED_START_EMBEDDING:-0}"
 RABBITBOT_UNIFIED_START_STT="${RABBITBOT_UNIFIED_START_STT:-0}"
+# 是否在本容器内启动 Robot Agent（robot_app.py，监听 28180）。
+# legacy 默认 1；portable 模式由宿主以 -e 传入 0，此时 28180 归属 nav bridge 的 humble_robot_agent_bridge。
+RABBITBOT_UNIFIED_START_ROBOT_AGENT="${RABBITBOT_UNIFIED_START_ROBOT_AGENT:-1}"
+RABBITBOT_ROBOT_AGENT_URL="${RABBITBOT_ROBOT_AGENT_URL:-http://127.0.0.1:28180}"
 RABBITBOT_TTS_BACKEND="${RABBITBOT_TTS_BACKEND:-unitree}"
 RABBITBOT_UNITREE_TTS_INTERFACE="${RABBITBOT_UNITREE_TTS_INTERFACE:-eno1}"
 RABBITBOT_UNITREE_TTS_VOLUME="${RABBITBOT_UNITREE_TTS_VOLUME:-100}"
@@ -177,6 +181,10 @@ start_memory_agent() {
 }
 
 start_robot_agent() {
+    if [ "${RABBITBOT_UNIFIED_START_ROBOT_AGENT}" != "1" ]; then
+        log_info "RABBITBOT_UNIFIED_START_ROBOT_AGENT=${RABBITBOT_UNIFIED_START_ROBOT_AGENT}，本容器不启动 Robot Agent（robot_app.py）；28180 由 nav bridge 的 humble_robot_agent_bridge 提供：${RABBITBOT_ROBOT_AGENT_URL}"
+        return 0
+    fi
     if port_open 28180; then
         log_success "Robot Agent 已运行"
         return 0
@@ -185,11 +193,32 @@ start_robot_agent() {
     wait_until "Robot Agent 服务 (28180)" "${WAIT_DEFAULT_SECONDS}" port_open 28180
 }
 
+check_external_robot_agent() {
+    # core 不托管 Robot Agent 时，在 workflow 启动前确认外部 28180 可达，避免 workflow 启动后才暴露依赖缺失。
+    if [ "${RABBITBOT_UNIFIED_START_ROBOT_AGENT}" = "1" ]; then
+        return 0
+    fi
+    local host_port
+    host_port="$(printf '%s' "${RABBITBOT_ROBOT_AGENT_URL}" | sed -E 's#^[a-zA-Z]+://##; s#/.*$##')"
+    local host="${host_port%%:*}"
+    local port="${host_port##*:}"
+    if [ -z "${port}" ] || [ "${port}" = "${host}" ]; then
+        port=80
+    fi
+    if timeout 3 bash -lc "</dev/tcp/${host}/${port}" >/dev/null 2>&1; then
+        log_success "外部 Robot Agent 可达：${RABBITBOT_ROBOT_AGENT_URL}"
+        return 0
+    fi
+    log_error "外部 Robot Agent 不可达：${RABBITBOT_ROBOT_AGENT_URL}。portable 模式下 28180 应由 nav bridge 提供，请先启动 nav bridge（start_loop_entry.sh 会按 nav 先行的顺序启动）。"
+    return 1
+}
+
 start_workflow() {
     if [ "${AUTO_START_WORKFLOW}" != "1" ]; then
         log_info "AUTO_START_WORKFLOW=${AUTO_START_WORKFLOW}，跳过 workflow"
         tail -f /dev/null
     fi
+    check_external_robot_agent
     local workflow_log="${LOG_DIR}/rabbitbot_workflow_$(date +%Y%m%d_%H%M%S).log"
     local workflow_group_pid=""
     ln -sf "${workflow_log}" "${LOG_DIR}/rabbitbot_workflow_latest.log"

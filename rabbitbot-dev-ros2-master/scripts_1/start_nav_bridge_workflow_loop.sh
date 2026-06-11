@@ -560,10 +560,45 @@ stop_nav_bridge() {
     nav_group_pid=""
 }
 
+identify_port_28180_holder() {
+    # 识别 28180 占用者：core_robot_app（统一容器内 robot_app.py）、
+    # nav_bridge_container（已有 portable nav 容器，compose 可直接重建接管）、unknown。
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "${CONTAINER_NAME}" \
+        && docker exec "${CONTAINER_NAME}" bash -lc 'pgrep -f "[u]vicorn robot_app:app" >/dev/null' >/dev/null 2>&1; then
+        echo "core_robot_app"
+        return 0
+    fi
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -Eq 'rabbitbot-nav'; then
+        echo "nav_bridge_container"
+        return 0
+    fi
+    echo "unknown"
+}
+
 start_nav_bridge() {
     if port_open 28180; then
-        log_error "28180 端口已被占用，无法由本脚本统一拉起导航桥接。请先停止旧导航桥接或占用进程。"
-        return 1
+        # 只拒绝“非本次 nav bridge 管理的占用”：已有 portable nav 容器可被 compose 重建接管。
+        local port_holder
+        port_holder="$(identify_port_28180_holder)"
+        case "${port_holder}" in
+            core_robot_app)
+                log_error "28180 已被统一容器内 robot_app.py 占用：portable 模式下 core 不应启动 Robot Agent，28180 应由 nav bridge 的 humble_robot_agent_bridge 提供。"
+                log_error "处理方法：确认 runtime/portable.env 中 RABBITBOT_UNIFIED_START_ROBOT_AGENT=0，然后重建统一容器（RECREATE_CONTAINER=1 或 docker rm -f ${CONTAINER_NAME} 后重启主循环）。"
+                return 1
+                ;;
+            nav_bridge_container)
+                if [ "${NAV_BRIDGE_RUNTIME}" = "compose" ]; then
+                    log_warn "28180 当前由已有 portable nav 容器占用；compose 启动会重建该容器并接管端口，继续。"
+                else
+                    log_error "28180 被 portable nav 容器占用，但当前导航运行方式为 host。请先停止 portable nav 容器（docker compose down）或切换 RABBITBOT_NAV_RUNTIME=compose。"
+                    return 1
+                fi
+                ;;
+            *)
+                log_error "28180 端口已被未知进程占用，无法由本脚本统一拉起导航桥接。请先排查并停止占用进程：ss -ltnp | grep 28180 或 lsof -i :28180。"
+                return 1
+                ;;
+        esac
     fi
 
     local nav_log="${RUN_DIR}/nav_bridge_$(date +%Y%m%d_%H%M%S).log"

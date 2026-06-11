@@ -60,8 +60,10 @@ git checkout feature/portable-deploy
 # 2) 导入 portable 镜像（先校验 sha256 再 docker load）
 IMAGE_DIR=/path/to/portable-images bash deploy/import_portable_images.sh
 
-# 3) 最小宿主初始化（检查工具、生成 portable.env、创建控制台轻量 venv）
+# 3) 最小宿主初始化（检查工具与 venv 能力、生成 portable.env、创建控制台轻量 venv）
 bash deploy/bootstrap_host.sh
+#    宿主缺少 python3-venv 时脚本会快速失败并给出安装建议；允许自动安装时：
+#    INSTALL_HOST_PACKAGES=1 bash deploy/bootstrap_host.sh
 #    如需同时写入机器人 DDS 网卡配置：
 #    APPLY_ROBOT_NETWORK=1 bash deploy/bootstrap_host.sh
 
@@ -166,6 +168,7 @@ sudo systemctl restart rabbitbot-control-console.service
 
 - `portable core` 现为自包含镜像：以 `rabbitbot-unified-runtime:20260518` 为基础并烤入 `py38/py310/vln/pyorbbecsdk` 与源码。受限于原四个上游镜像（`navid-rabbitbot:stt-tts-audio-ct2cuda-20260511`、`rabbitbot-vllm:20260511`、`foxy-ros-cam-orb-ubuntu20:rabbitbot-20260511`）在本机已不存在（只剩 `neo4j:5.26-community`），暂不追求“不 FROM unified-runtime 的从零重建”；unified-runtime 本身即这四个镜像的合并产物。
 - 镜像暂不发布远端仓库：通过 `deploy/export_portable_images.sh` / `deploy/import_portable_images.sh` 以 `docker save/load` 离线交付。全新 Orin 运行期不再需要任何宿主依赖目录。
+- portable 端口拓扑：`rabbitbot-core-portable` 负责 Neo4j(7687)、Memory(28182)、TTS(28185) 与 workflow 运行时；`rabbitbot-nav-portable` 负责导航桥接即 **28180**（`humble_robot_agent_bridge`）。portable 模式下 core 不启动 `robot_app.py`（`RABBITBOT_UNIFIED_START_ROBOT_AGENT=0`），workflow 经 `RABBITBOT_ROBOT_AGENT_URL=http://127.0.0.1:28180` 调用 nav bridge；`start_portable_stack.sh` 只启动 core 基础服务、不要求 28180，`start_loop_entry.sh` 按 nav 先行的顺序拉起完整链路。
 - `/home/unitree/test9.pcd` 仍是当前默认地图路径，但已改为 `runtime/portable.env` 可配置项。
 - HaiSong 的 `eno1` 当前应保持 `192.168.123.222/24`；portable 路径下建议通过 `deploy/setup_robot_network.sh` 固化，而不是手工长期维护。
 - 若仅做当前 workflow 冷启动验证，默认不要求 `8000/8005` VLM / Embedding ready。
