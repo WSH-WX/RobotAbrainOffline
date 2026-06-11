@@ -147,6 +147,26 @@ check_core_skips_internal_28180() {
     log_ok "core 启动链路支持 portable 模式跳过内部 Robot Agent (28180)"
 }
 
+check_portable_unitree_tts_policy() {
+    # Unitree 本体 TTS 服务运行在 core 容器内，core 镜像和运行期依赖卷必须提供 unitree_sdk2。
+    local integration_script="${REPO_DIR}/scripts_1/start_unified_integration_workflow.sh"
+    local core_dockerfile="${REPO_DIR}/docker/portable/core.Dockerfile"
+    local image_script="${PROJECTS_DIR}/deploy/build_or_pull_images.sh"
+    if ! grep -q 'COPY unitree_sdk2 /workspace/projects/unitree_sdk2' "${core_dockerfile}"; then
+        log_error "portable core 镜像未烤入 unitree_sdk2，Unitree TTS 会在全新 Orin 上构建失败：${core_dockerfile}"
+        exit 1
+    fi
+    if ! grep -q 'unitree_sdk2) echo "rabbitbot_portable_unitree_sdk2"' "${integration_script}"; then
+        log_error "portable core 运行期未注入 unitree_sdk2 依赖卷，宿主 GitHub 源码会遮蔽镜像内依赖：${integration_script}"
+        exit 1
+    fi
+    if ! grep -q 'require_path "${AIR_ROOT}/unitree_sdk2"' "${image_script}"; then
+        log_error "portable core 构建上下文未要求 unitree_sdk2，可能构建出缺 TTS 依赖的镜像：${image_script}"
+        exit 1
+    fi
+    log_ok "portable core Unitree TTS 依赖策略正确：unitree_sdk2 已纳入 core 镜像与运行期依赖卷"
+}
+
 check_portable_models_policy() {
     # portable 冷启动默认关闭 VLM/Embedding/STT，不能因为宿主没有 models/ 目录而阻断 core 基础服务。
     local integration_script="${REPO_DIR}/scripts_1/start_unified_integration_workflow.sh"
@@ -303,6 +323,7 @@ check_portable_env_keys
 check_dockerignore_rules
 check_core_skips_internal_28180
 check_portable_models_policy
+check_portable_unitree_tts_policy
 check_port_topology_runtime
 
 log_info "检查脚本语法"

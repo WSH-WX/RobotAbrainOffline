@@ -2,7 +2,7 @@
 # 准备 portable core / nav 镜像。
 #
 # MODE 取值：
-#   build  在构建机上构建 core/nav 镜像（core 使用专用暂存上下文，烤入 py38/py310/vln/pyorbbecsdk）。
+#   build  在构建机上构建 core/nav 镜像（core 使用专用暂存上下文，烤入 py38/py310/vln/pyorbbecsdk/unitree_sdk2）。
 #   check  只校验本地已存在 core/nav 镜像，用于全新 Orin（不构建、不拉取）。
 #   none   跳过镜像准备，由启动脚本自行校验。
 #   pull   仅尝试从镜像仓库拉取 core/nav。
@@ -87,12 +87,13 @@ check_image_present() {
 }
 
 prepare_core_build_context() {
-    log_info "准备 core 专用构建上下文（绕过顶层 .dockerignore 对 py38/py310/vln/pyorbbecsdk 的排除）：ctx=${CORE_BUILD_CTX}"
+    log_info "准备 core 专用构建上下文（绕过顶层 .dockerignore 对 py38/py310/vln/pyorbbecsdk/unitree_sdk2 的排除）：ctx=${CORE_BUILD_CTX}"
     rm -rf "${CORE_BUILD_CTX}"
     mkdir -p "${CORE_BUILD_CTX}"
     require_path "${REPO_DIR}"
     require_path "${AIR_ROOT}/vln"
     require_path "${AIR_ROOT}/pyorbbecsdk-v2-py310"
+    require_path "${AIR_ROOT}/unitree_sdk2"
     require_path "${AIR_ROOT}/humble_robot_agent_bridge.py"
     require_path "${REPO_DIR}/py38"
     require_path "${REPO_DIR}/py310"
@@ -111,9 +112,10 @@ prepare_core_build_context() {
         "${REPO_DIR}/" "${CORE_BUILD_CTX}/rabbitbot-dev-ros2-master/"
     rsync -a --exclude='__pycache__/' --exclude='*.py[cod]' "${AIR_ROOT}/vln/" "${CORE_BUILD_CTX}/vln/"
     rsync -a --exclude='__pycache__/' --exclude='*.py[cod]' "${AIR_ROOT}/pyorbbecsdk-v2-py310/" "${CORE_BUILD_CTX}/pyorbbecsdk-v2-py310/"
+    rsync -a --exclude='build/' --exclude='.git/' "${AIR_ROOT}/unitree_sdk2/" "${CORE_BUILD_CTX}/unitree_sdk2/"
     cp -f "${AIR_ROOT}/humble_robot_agent_bridge.py" "${CORE_BUILD_CTX}/humble_robot_agent_bridge.py"
     cp -f "${CORE_DOCKERFILE}" "${CORE_BUILD_CTX}/core.Dockerfile"
-    # core 上下文的 dockerignore：保留 py38/py310/vln/pyorbbecsdk，仅剔除日志、缓存和构建产物。
+    # core 上下文的 dockerignore：保留 py38/py310/vln/pyorbbecsdk/unitree_sdk2，仅剔除日志、缓存和构建产物。
     cat >"${CORE_BUILD_CTX}/.dockerignore" <<'IGN'
 **/__pycache__/
 **/*.py[cod]

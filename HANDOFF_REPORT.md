@@ -746,3 +746,43 @@ ShuHao-orin 上点击开始程序后，前端定位状态在“定位成功”�
 - `runtime/empty_models` 是本机运行态目录，不应进入 Git。
 - 本轮新增/调整日志点：unified 启动脚本会记录模型目录是否可用、是否因模型能力关闭而使用空模型挂载点，以及启用模型能力但目录缺失时的明确修复提示。
 - 生成时间：2026-06-11 17:45:00
+
+
+## 本轮补充：Unitree 本体 TTS 缺少 core 内 unitree_sdk2 修复
+
+### 背景和目标
+
+ShuHao-orin 的 `logs/unified_runtime/rabbitbot_tts.log` 显示 TTS 服务启动失败：`scripts/build_unitree_g1_tts_bridge.sh` 在 core 容器内找不到 `/workspace/projects/unitree_sdk2`，导致 `Unitree G1 TTS 桥接程序构建失败`。目标是让全新 Orin 仅靠 GitHub 源码 + portable core 镜像即可启动 Unitree 本体 TTS。
+
+### 当前状态
+
+已完成：
+
+- `core.Dockerfile` 增加 `unitree_sdk2` 打包，core 镜像不再只依赖 nav 镜像持有该 SDK。
+- `deploy/build_or_pull_images.sh` 的 core 构建上下文增加 `unitree_sdk2` 要求和 rsync 拷贝。
+- `start_unified_integration_workflow.sh` 的 portable 依赖卷从 4 个扩展为 5 个，新增 `rabbitbot_portable_unitree_sdk2`，运行期挂载到 `/workspace/projects/unitree_sdk2`。
+- `deploy/check_air_project.sh` 增加 Unitree TTS 依赖策略自检，防止 core 镜像再次漏打包 SDK。
+- `third_party/manifest.lock` 更新 `unitree_sdk2` 的 core/nav 双用途说明。
+
+### 已验证的事实
+
+- 当前旧 core 镜像 `ghcr.io/aaronai/rabbitbot-core-portable:20260611` 内未发现 `/workspace/projects/unitree_sdk2`、`/workspace/unitree_sdk2` 或 `/opt/unitree_sdk2`。
+- ShuHao 上 TTS 失败发生在 core 容器内构建桥接程序阶段，不是机器人侧网络或导航定位失败。
+- HaiSong 构建机上的 `unitree_sdk2` 已包含 `lib/aarch64/libunitree_sdk2.a` 和 `thirdparty/lib/aarch64`，满足打入 core 镜像的条件。
+
+### 阻塞问题
+
+- 代码修复后必须重建 portable core 镜像并重新导出/导入到 ShuHao；仅 `git pull` 不能修复已有旧镜像。
+- 如果继续沿用同一镜像 tag，需要确保 ShuHao 删除或覆盖旧 core 镜像与旧 `rabbitbot_unified_runtime` 容器后再启动。
+
+### 建议的下一步
+
+- 在 HaiSong 上执行 `MODE=build RABBITBOT_PORTABLE_BUILD_NAV=0 bash deploy/build_or_pull_images.sh` 重建 core 镜像。
+- 使用 `deploy/export_portable_images.sh` 导出新镜像，并转移到 ShuHao 后执行 `deploy/import_portable_images.sh`。
+- 在 ShuHao 删除旧 `rabbitbot-unified-runtime` 容器和 `rabbitbot_portable_unitree_sdk2` 卷后重启 `rabbitbot-loop.service`，确认 `rabbitbot_tts.log` 不再报缺少 SDK。
+
+### 注意事项
+
+- Unitree 本体 TTS 运行在 core 容器，不在 nav 容器；因此 `unitree_sdk2` 必须同时服务 core 和 nav 两条镜像链路。
+- 本轮新增/调整日志点：core 启动脚本会记录注入的 portable 依赖卷数量和列表含义；自检会明确报告 Unitree TTS 依赖是否被 core 镜像和运行期依赖卷覆盖。
+- 生成时间：2026-06-11 18:05:00

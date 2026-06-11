@@ -7,7 +7,7 @@
 #   2. rabbitbot-unified-runtime:20260518 本身就是这四个上游镜像的合并产物，已包含
 #      Neo4j、Java、ROS Foxy、Python 3.8、STT/TTS、VLM venv 等全部运行时。
 #   3. 因此本 Dockerfile 以 unified-runtime 为基础镜像，并把宿主 gitignore 的重型运行依赖
-#      （py38/py310 虚拟环境、vln、pyorbbecsdk-v2-py310）以及项目源码烤进镜像固定路径，
+#      （py38/py310 虚拟环境、vln、pyorbbecsdk-v2-py310、unitree_sdk2）以及项目源码烤进镜像固定路径，
 #      使全新 Orin 运行期不再需要任何宿主依赖目录，只靠 GitHub 源码 + 本镜像即可冷启动。
 #
 # 构建上下文要求：
@@ -18,7 +18,7 @@ ARG CORE_BASE_IMAGE=rabbitbot-unified-runtime:20260518
 FROM ${CORE_BASE_IMAGE}
 
 LABEL org.opencontainers.image.title="RabbitBot Portable Core (self-contained)"
-LABEL org.opencontainers.image.description="自包含 portable core：在 unified runtime 基础上烤入 py38/py310/vln/pyorbbecsdk 与项目源码，运行期不再依赖宿主目录"
+LABEL org.opencontainers.image.description="自包含 portable core：在 unified runtime 基础上烤入 py38/py310/vln/pyorbbecsdk/unitree_sdk2 与项目源码，运行期不再依赖宿主目录"
 LABEL org.opencontainers.image.version="20260611"
 
 ENV RABBITBOT_DIR=/workspace/projects/rabbitbot-dev-ros2-master \
@@ -31,6 +31,7 @@ ENV RABBITBOT_DIR=/workspace/projects/rabbitbot-dev-ros2-master \
 COPY rabbitbot-dev-ros2-master /workspace/projects/rabbitbot-dev-ros2-master
 COPY vln /workspace/projects/vln
 COPY pyorbbecsdk-v2-py310 /workspace/projects/pyorbbecsdk-v2-py310
+COPY unitree_sdk2 /workspace/projects/unitree_sdk2
 COPY humble_robot_agent_bridge.py /workspace/projects/humble_robot_agent_bridge.py
 
 # 从烤入的源码安装统一容器入口与冒烟脚本到 /usr/local/bin，保证镜像自身可独立冒烟。

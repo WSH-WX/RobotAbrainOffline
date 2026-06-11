@@ -360,8 +360,9 @@ portable_dep_enabled() {
     [ "${RABBITBOT_RUNTIME_MODE}" = "portable" ] && [ "${RABBITBOT_PORTABLE_INJECT_DEPS}" != "0" ]
 }
 
-# 4 个宿主 gitignore 的重型依赖目录；portable 模式下用从 core 镜像 seed 的 named volume 顶替。
-PORTABLE_DEP_NAMES=(py38 py310 vln pyorbbecsdk-v2-py310)
+# 5 个宿主 gitignore 的重型依赖目录；portable 模式下用从 core 镜像 seed 的 named volume 顶替。
+# unitree_sdk2 由 core 内 TTS 服务构建 Unitree 本体播报桥接程序使用。
+PORTABLE_DEP_NAMES=(py38 py310 vln pyorbbecsdk-v2-py310 unitree_sdk2)
 
 portable_dep_volume() {
     case "$1" in
@@ -369,6 +370,7 @@ portable_dep_volume() {
         py310) echo "rabbitbot_portable_py310" ;;
         vln) echo "rabbitbot_portable_vln" ;;
         pyorbbecsdk-v2-py310) echo "rabbitbot_portable_pyorbbecsdk" ;;
+        unitree_sdk2) echo "rabbitbot_portable_unitree_sdk2" ;;
     esac
 }
 
@@ -378,6 +380,7 @@ portable_dep_dest() {
         py310) echo "${CONTAINER_RABBITBOT_DIR}/py310" ;;
         vln) echo "${CONTAINER_PROJECT_ROOT}/vln" ;;
         pyorbbecsdk-v2-py310) echo "${CONTAINER_PROJECT_ROOT}/pyorbbecsdk-v2-py310" ;;
+        unitree_sdk2) echo "${CONTAINER_PROJECT_ROOT}/unitree_sdk2" ;;
     esac
 }
 
@@ -418,7 +421,7 @@ create_container_if_needed() {
         for dep_name in "${PORTABLE_DEP_NAMES[@]}"; do
             dep_args+=( -v "$(portable_dep_volume "${dep_name}"):$(portable_dep_dest "${dep_name}")" )
         done
-        log_info "portable 模式：注入 ${#PORTABLE_DEP_NAMES[@]} 个重型依赖卷（py38/py310/vln/pyorbbecsdk），运行期不再要求宿主提供这些目录"
+        log_info "portable 模式：注入 ${#PORTABLE_DEP_NAMES[@]} 个重型依赖卷（py38/py310/vln/pyorbbecsdk/unitree_sdk2），运行期不再要求宿主提供这些目录"
     fi
 
     log_info "创建统一容器基础服务底座：${CONTAINER_NAME}"

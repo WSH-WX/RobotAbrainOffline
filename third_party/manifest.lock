@@ -16,17 +16,21 @@
   },
   "dependencies": {
     "unitree_sdk2": {
-      "required_for": ["portable_nav_build"],
+      "required_for": [
+        "portable_nav_build"
+      ],
       "source_type": "local_directory_or_artifact",
       "tracked_in_git": false,
       "default_path": "unitree_sdk2",
-      "acquire_strategy": "仅构建机需要：portable nav 镜像在容器内编译并安装 unitree_sdk2 到 /opt/unitree_sdk2。运行期已固化进 nav 镜像，全新 Orin 不需要该目录。",
+      "acquire_strategy": "构建机需要该目录。portable nav 镜像用它编译并安装导航相关 SDK 到 /opt/unitree_sdk2；portable core 镜像也必须烤入 unitree_sdk2，并通过 named volume 注入 /workspace/projects/unitree_sdk2，供 Unitree G1 本体 TTS 桥接程序在 core 容器内构建。全新 Orin 运行期不需要宿主存在该目录。",
       "status": "baked_into_image",
       "baked_image": "portable_nav",
       "blocker": false
     },
     "dfx_inspire_service": {
-      "required_for": ["legacy_one_click_start"],
+      "required_for": [
+        "legacy_one_click_start"
+      ],
       "source_type": "local_directory_or_artifact",
       "tracked_in_git": false,
       "default_path": "dfx_inspire_service",
@@ -35,7 +39,10 @@
       "blocker": false
     },
     "pyorbbecsdk-v2-py310": {
-      "required_for": ["workflow", "robot_agent"],
+      "required_for": [
+        "workflow",
+        "robot_agent"
+      ],
       "source_type": "local_directory_or_artifact",
       "tracked_in_git": false,
       "default_path": "pyorbbecsdk-v2-py310",
@@ -45,7 +52,10 @@
       "blocker": false
     },
     "vln": {
-      "required_for": ["workflow", "robot_agent"],
+      "required_for": [
+        "workflow",
+        "robot_agent"
+      ],
       "source_type": "local_directory_or_artifact",
       "tracked_in_git": false,
       "default_path": "vln",
@@ -55,7 +65,10 @@
       "blocker": false
     },
     "custom_action_ws_install": {
-      "required_for": ["portable_nav_build", "legacy_runtime"],
+      "required_for": [
+        "portable_nav_build",
+        "legacy_runtime"
+      ],
       "source_type": "build_output",
       "tracked_in_git": false,
       "default_path": "custom_action_ws/install",
@@ -65,7 +78,9 @@
       "blocker": false
     },
     "legacy_python_envs": {
-      "required_for": ["legacy_runtime"],
+      "required_for": [
+        "legacy_runtime"
+      ],
       "source_type": "local_virtualenv",
       "tracked_in_git": false,
       "default_path": "rabbitbot-dev-ros2-master/py38 + rabbitbot-dev-ros2-master/py310",
@@ -85,7 +100,8 @@
         "现实约束：原四个上游镜像（navid-rabbitbot:stt-tts-audio-ct2cuda-20260511、rabbitbot-vllm:20260511、foxy-ros-cam-orb-ubuntu20:rabbitbot-20260511）在本机已不存在，只剩 neo4j:5.26-community，故无法在本机从零重建 core。",
         "rabbitbot-unified-runtime:20260518 本身即这四个上游镜像的合并产物，已包含 Neo4j/Java/ROS Foxy/Python3.8/STT/TTS/VLM venv。",
         "portable core 以 unified-runtime 为基础镜像，额外烤入 py38/py310/vln/pyorbbecsdk 与项目源码，使运行期不再依赖宿主目录。",
-        "构建使用 build_or_pull_images.sh 生成的专用上下文，绕过顶层 .dockerignore 对 py38/py310/vln/pyorbbecsdk 的排除。"
+        "构建使用 build_or_pull_images.sh 生成的专用上下文，绕过顶层 .dockerignore 对 py38/py310/vln/pyorbbecsdk 的排除。",
+        "portable core 镜像同时烤入 unitree_sdk2，供 Unitree 本体 TTS 在 core 容器内构建桥接程序；否则全新 Orin 会在 rabbitbot_tts.log 中报缺少 /workspace/projects/unitree_sdk2。"
       ],
       "blocker": false
     },
