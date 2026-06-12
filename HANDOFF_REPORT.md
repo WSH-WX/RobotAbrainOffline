@@ -824,3 +824,58 @@ ShuHao-orin 的 `logs/unified_runtime/rabbitbot_tts.log` 显示 TTS 服务启动
 - 如果继续使用相同 tag `20260611`，必须通过 image id 确认 ShuHao 侧已经覆盖为 `sha256:9c7cb9f9...`，不能只看 tag 名。
 - 本轮新增/调整日志点保持不变：启动脚本记录 portable 依赖卷注入数量，自检报告 Unitree TTS 依赖策略。
 - 生成时间：2026-06-11 18:15:00
+
+## 本轮补充：新增 VLM 语音问答测试 workflow
+
+### 背景和目标
+
+Aaron 要求新建一个独立 workflow，用于测试问答能力。目标是启动 TTS、STT、VLM 等相关服务后，持续监听用户语音，将识别到的问题交给 VLM 大模型推理，并用 TTS 播报回答。本轮在新分支 `feature/qa-vlm-workflow` 上实现该能力，避免影响现有导览 workflow。
+
+### 当前状态
+
+已完成：
+
+- 已新建 Git 分支 `feature/qa-vlm-workflow`。
+- 新增 `rabbitbot-dev-ros2-master/rabbitbot/agno_agents/vlm_qa_workflow.py`：持续监听 STT，收到有效问题后调用 VLM 推理，并通过 TTS 播报回答。
+- 新增 `rabbitbot-dev-ros2-master/scripts/run_vlm_qa_workflow.py`：Python 运行入口。
+- 新增 `rabbitbot-dev-ros2-master/scripts/start_vlm_qa_workflow.bash`：容器内 workflow 启动脚本，复用现有 TTS/STT/VLM 服务地址约定。
+- 新增 `rabbitbot-dev-ros2-master/scripts_1/start_unified_vlm_qa_workflow.sh`：宿主侧启动入口，会显式设置 `RABBITBOT_UNIFIED_START_VLM=1` 和 `RABBITBOT_UNIFIED_START_STT=1`，先启动统一容器基础服务，再前台运行问答 workflow。
+- 问答 workflow 默认纯文本问答；如需视觉输入，可设置 `RABBITBOT_QA_INCLUDE_IMAGE=1`，并通过 `RABBITBOT_QA_IMAGE_SOURCE=robot/mock` 选择机器人图像或 mock 图像。
+- 问答 workflow 支持退出口令，默认包括 `退出`、`停止`、`结束`、`再见`、`quit`、`exit`。
+
+未完成：
+
+- 本轮未实际启动 VLM/STT/TTS 服务和问答 workflow，避免在当前 ShuHao 上触发模型加载、容器重建或占用现场音频设备。
+- 当前宿主源码目录没有 `py310` 运行环境；这是 portable 模式预期行为，真实运行应通过 core 容器依赖卷执行。
+- ShuHao 之前交接记录显示 core 镜像仍可能是旧版本，若未导入包含 `unitree_sdk2` 的新 core 镜像，Unitree 本体 TTS 仍可能启动失败。
+
+### 已验证的事实
+
+- `bash -n scripts/start_vlm_qa_workflow.bash scripts_1/start_unified_vlm_qa_workflow.sh` 通过。
+- `python3 -m py_compile rabbitbot/agno_agents/vlm_qa_workflow.py scripts/run_vlm_qa_workflow.py` 通过。
+- `git diff --check` 通过。
+- 宿主 `python3 scripts/run_vlm_qa_workflow.py --help` 因缺少 `agno` 依赖失败，符合 portable 源码目录缺运行环境的现状；不代表容器内运行失败。
+
+### 阻塞问题
+
+- 当前未做实机/容器内运行验证。后续需要确认 portable core 镜像已经是包含 `unitree_sdk2` 的新版本，并确认模型目录 `/mnt/disk1/gt/air_robot_gt_projects/models` 或 `RABBITBOT_MODELS_CACHE_DIR` 可用。
+- 若启用 `RABBITBOT_QA_INCLUDE_IMAGE=1` 且 `RABBITBOT_QA_IMAGE_SOURCE=robot`，还需要 28180 Robot Agent 或导航 bridge 能提供 `get_camera_info(view_2d)`。
+
+### 建议的下一步
+
+- 确认 ShuHao 已导入新 core 镜像后，运行：`cd /mnt/disk1/gt/air_robot_gt_projects/rabbitbot-dev-ros2-master && bash scripts_1/start_unified_vlm_qa_workflow.sh`。
+- 如需先不接机器人图像，只测试语音问答，保持默认 `RABBITBOT_QA_INCLUDE_IMAGE=0`。
+- 如需用 mock 图像测试 VLM 视觉链路，可运行：`RABBITBOT_QA_INCLUDE_IMAGE=1 RABBITBOT_QA_IMAGE_SOURCE=mock bash scripts_1/start_unified_vlm_qa_workflow.sh`。
+- 如需使用机器人实时图像，先确认 28180 可用，再运行：`RABBITBOT_QA_INCLUDE_IMAGE=1 RABBITBOT_QA_IMAGE_SOURCE=robot bash scripts_1/start_unified_vlm_qa_workflow.sh`。
+
+### 注意事项
+
+- 该 workflow 不执行导航，不发送 `go/back`，也不启动导览剧本；它只负责语音监听、VLM 推理和 TTS 播报。
+- VLM/STT 被显式启用后，统一启动脚本会要求模型目录可用；如果缺模型，会按现有脚本逻辑明确报错。
+- 运行日志默认写入 `rabbitbot-dev-ros2-master/logs/vlm_qa_workflow/vlm_qa_workflow_latest.log`。
+- 语音输入日志不会记录完整原始用户问题，只记录长度、短哈希和短预览；VLM/TTS 阶段会记录推理开始、推理完成、回答长度、TTS 提交、失败异常和总耗时，便于定位 STT、VLM、TTS 任一环节的问题。
+
+### 其它信息
+
+- 本轮新增日志点覆盖：workflow 启动配置、每轮监听开始、STT 有效输入摘要、图像读取来源与耗时、VLM 推理开始/结束与耗时、TTS 提交、异常失败路径、退出信号和 workflow 总耗时摘要。
+- 生成时间：2026-06-12 18:35:00
