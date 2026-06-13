@@ -1197,3 +1197,69 @@ Aaron 明确授权安装 `/etc/sudoers.d/rabbitbot-control-console`，用于让�
 - 本轮没有新增代码日志点；本轮是系统权限配置安装。上一轮后端日志已能记录 `/api/start` 的 action、service、returncode 和 sudo/systemctl 输出。
 - `conf/dialogue_0.json` 仍存在未提交的点位坐标改动，本轮未处理。
 
+## 本轮补充：VLM 问答 workflow 时延测试
+
+### 背景和目标
+
+本轮目标是按 Aaron 要求，在无人现场对话的情况下测试 `feature/qa-vlm-workflow` 分支新增的 VLM 语音问答 workflow 是否能调用 Qwen2.5-VL 进行思考回答，并统计从 STT 命令发出到 TTS 进入回复播报请求的分阶段平均时延。
+
+### 当前状态
+
+已完成：
+
+- 已启动 `rabbitbot-unified-runtime` 统一容器底座，显式启用 VLM 与 STT，并使用 `/mnt/disk1/models` 作为模型目录。
+- 已确认 vLLM 成功加载 `/models/Qwen2.5-VL-7B-Instruct-GPTQ-Int4`，served model 为 `Qwen2.5-VL-7B-Instruct`，`/v1/models` ready。
+- 已通过临时测试驱动复用 `VLMQAWorkflow` 主逻辑，关闭启动提示语和“让我想一想”提示语，避免干扰首个回复 TTS 统计。
+- 已在 STT agent 层用同样 JSON 命令形式模拟 5 个问题输入；真实 STT 服务没有“文本注入异步识别结果”的 API，因此本轮没有走麦克风录音链路。
+- 已调用真实 Qwen2.5-VL OpenAI 兼容接口并获得 5 次回答。
+- 已在统一容器内临时启动标准 `tts_app.py` 到 `127.0.0.1:28186`，用于生成标准 `Unitree本体TTS` 日志。
+- 测试完成后已停止临时 28186 TTS 进程，并停止本轮启动的 `rabbitbot-unified-runtime` 容器。
+- 清理后已确认 28182、28184、28186、8000、7687 等本轮端口无监听；原有 caddy、redis、nav、air_vln_container、sound_docker 保持运行。
+
+未完成：
+
+- TTS 没有成功播报首字；标准 TTS app 调用 Unitree G1 TTS 时返回 `returncode=1`。
+- 因 TTS 失败，无法得到真实“首个字已经播出”的硬件侧时间，只能统计到 TTS 服务收到回复播报请求的时间点。
+- 本轮未进行摄像头图像输入测试，`RABBITBOT_QA_INCLUDE_IMAGE=0`，属于文本问答调用 Qwen2.5-VL。
+
+### 已验证的事实
+
+- Qwen2.5-VL 可被 workflow 调用，5 个问题均收到模型流式回答。
+- 本轮 5 问平均时延如下：
+  - STT 命令发出到文本可读：0.000062 秒。
+  - 文本可读到 workflow 收到：0.000265 秒。
+  - workflow 收到文本到发起 VLM 请求：0.000049 秒。
+  - VLM 请求到 stream open：0.015098 秒。
+  - VLM 请求到首 token：0.066295 秒。
+  - VLM 首 token 到完整回答结束：0.590316 秒。
+  - VLM 总耗时：0.656610 秒。
+  - VLM 完成到 TTS 请求开始：0.000094 秒。
+  - STT 命令发出到 TTS 回复请求开始：0.657080 秒。
+  - TTS 请求开始到返回失败：0.040188 秒。
+- 分轮结果已保存到 `logs/vlm_qa_workflow/latency_test_20260613_tts28186.json`。
+- TTS 标准日志 `logs/vlm_qa_workflow/tts_test_28186.log` 显示每轮均到达 `Unitree本体TTS: stage=tts_request_start`，随后失败。
+- TTS 失败根因为 Unitree DDS 接口不可用：日志中出现 `eno1: does not match an available interface` 和 `Failed to create domain explicitly`。
+- 当前已有 28185 服务来自 `sound_docker`，只暴露 `POST /v1`，不是 workflow 默认 `TTSAgent` 使用的 `/exec` 接口；因此本轮没有用它作为正式 workflow TTS endpoint。
+
+### 阻塞问题
+
+- 真实 TTS 播报链路当前被 Unitree DDS 网卡问题阻塞。`tts_app.py` 使用 `RABBITBOT_UNITREE_TTS_INTERFACE=eno1` 调用 G1 音频服务时，CycloneDDS 不能在该接口创建 domain。
+- 因上述问题，本轮无法给出真实“首字播报”平均时延；可给出的端到端值是“STT 命令发出到 TTS 回复请求开始”，平均 0.657080 秒。
+
+### 建议的下一步
+
+- 现场接入或恢复 Unitree DDS 网络后，先确认容器内也能看到可用 `eno1`，再单独测试 `build/unitree_g1_tts_bridge --network eno1 --text 测试`。
+- 如果继续使用 portable 容器内标准 `tts_app.py`，需要确认容器网络/权限下的 `eno1` 与宿主配置一致，避免宿主可用但容器内 CycloneDDS 不可用。
+- 若要在无人现场继续做纯链路时延压测，可临时将 TTS 设为 dry-run，但该结果不能代表真实首字播报时延。
+- 如需测试真正视觉问答，应在下一轮设置 `RABBITBOT_QA_INCLUDE_IMAGE=1`，并优先用 `RABBITBOT_QA_IMAGE_SOURCE=mock` 验证图文输入路径，再切到机器人摄像头。
+
+### 注意事项
+
+- 本轮测试没有启动导览导航 workflow，没有发送 `go/back`，没有触发机器人移动。
+- 本轮测试驱动没有提交为项目代码，仅生成运行日志和 JSON 结果。
+- 本轮启动 VLM 时发现 `scripts_1/start_unified_integration_workflow.sh` 直接调用会误用 legacy `IMAGE_NAME=rabbitbot-unified-runtime:20260518`，本轮通过显式设置 `IMAGE_NAME=ghcr.io/aaronai/rabbitbot-core-portable:20260611` 和 `MODELS_DIR=/mnt/disk1/models` 绕过。
+
+### 其它信息
+
+本轮没有修改业务代码日志点；测试依赖已有日志。关键日志覆盖 VLM 启动、VLM 流式回答、workflow TTS 请求链路、Unitree TTS 请求开始/失败、服务清理状态。TTS 失败日志包含接口名、返回码、stdout/stderr 和 DDS 失败原因，足够定位到容器内 Unitree DDS 接口不可用问题。
+
