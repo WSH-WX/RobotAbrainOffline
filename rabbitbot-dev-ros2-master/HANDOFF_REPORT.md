@@ -1595,3 +1595,66 @@ Aaron 要求采用命令行注入 STT 文本的形式测试 VLM QA workflow，�
 
 本轮没有新增或修改代码日志点。测试使用了已有日志中的 `segment_index`、`segment_count`、`first_token_elapsed`、`first_tts_elapsed`、独立问答日志毫秒时间戳，以及 STT `/exec` 返回耗时来定位响应速度和周期吞文本问题。
 
+## 本轮补充：修复 STT 周期间隙注入被吞
+
+### 背景和目标
+
+Aaron 要求按前一轮建议修复 STT 30 秒周期切换间隙中 `inject_text_async` 文本可能被 `start_async/reset` 清空的问题，并用同样的命令注入方式复测。
+
+### 当前状态
+
+已完成：
+
+- 已修改 `stt_app_funasr.py`，新增独立 `injected_text_queue`。
+- `inject_text_async` 不再直接写 `recorder.output_text`，改为生成 `utterance_id` 后将文本放入注入队列。
+- `get_text_async` 优先消费 `injected_text_queue`，队列为空时再回退读取真实麦克风识别结果。
+- `start_async` 和 `recorder.reset()` 不清空注入队列，因此周期切换期间注入的文本不会被下一轮 reset 清掉。
+- 已为注入队列新增脱敏诊断日志：入队和消费时记录 `utterance_id`、文本长度、文本 hash、队列大小/剩余数量，不打印完整文本。
+- 为避免 uvicorn 日志配置吞掉新增日志，已给 `rabbitbot.stt_app_funasr` 增加独立 `StreamHandler`，确保日志落到 `logs/unified_runtime/rabbitbot_stt.log`。
+- 已重启容器内 STT 服务和 VLM QA workflow；未停止统一容器、VLM、TTS 或其它基础服务。
+
+未完成：
+
+- 本轮没有修复 TTS `/exec` 与当前 `28185 /v1` 服务之间的接口适配问题。
+- 现有旧代码仍会 `print("out_text:", out_text)`，因此 STT 服务日志中仍可能出现完整注入文本；本轮新增的结构化日志已按脱敏方式记录。
+
+### 已验证的事实
+
+- `python3 -m py_compile stt_app_funasr.py` 通过。
+- STT 重启后 `http://127.0.0.1:28184/docs` 在约 17 秒后恢复可用。
+- VLM QA workflow 已重启，当前日志为 `vlm_qa_workflow_20260615_060630.log`。
+- 普通注入 `LOG_CHECK` 验证通过：STT 日志出现入队和消费日志，问答日志记录用户问题和回答。
+- 最终周期间隙测试 `GAP_FINAL`：测试脚本在状态从 `<REC_START>` 变为 `<REC_STOP>` 的瞬间注入文本，STT 返回 `utterance_id=2`，HTTP 耗时约 `0.001545s`。
+- STT 日志显示：
+  - `STT 注入文本已入队：utterance_id=2, text_len=32, text_hash=6b7fb446b573, queue_size=1`
+  - `STT 注入文本已消费：utterance_id=2, text_len=32, text_hash=6b7fb446b573, queue_remaining=0`
+- workflow 日志显示 `turn=3` 收到 `text_hash=6b7fb446b573`，`elapsed=0.013s`，并完成回答。
+- 问答日志显示：
+
+```text
+2026-06-15 06:10:31.386 用户：测试编号GAP_FINAL。
+2026-06-15 06:10:31.386 用户：请只回答一句：最终间隙注入测试收到。
+2026-06-15 06:10:31.802 回答：最终间隙注入测试收到。
+```
+
+- 结论：STT 周期间隙注入被吞的问题已修复。
+
+### 阻塞问题
+
+- TTS 仍有历史阻塞：workflow 的 `TTSAgent` 仍按 `/exec` 调用，而当前 `28185` 服务只提供 `/v1`，TTS 请求仍返回 `{"detail":"Not Found"}`。
+
+### 建议的下一步
+
+- 后续如需要进一步清理敏感日志，可把 `stt_app_funasr.py` 末尾现有 `print("out_text:", out_text)` 改成脱敏日志，避免完整文本进入 STT 服务日志。
+- 下一步仍建议修复 TTS `/exec` 与 `/v1` 的接口适配，再做真实机器人播报验证。
+
+### 注意事项
+
+- 注入队列是进程内队列，重启 STT 服务会清空未消费的注入文本。
+- 当前修复主要针对命令注入测试和异步文本注入；真实麦克风识别路径仍按原逻辑读取 `recorder.output_text`。
+- 本轮实际重启了容器内 STT 服务和 VLM QA workflow，但没有停止容器或基础服务端口。
+
+### 其它信息
+
+本轮新增日志点包括：`STT 注入文本已入队` 和 `STT 注入文本已消费`，记录 `utterance_id`、文本长度、文本 hash 和队列大小/剩余数量，用于诊断命令注入是否进入队列、是否被 workflow 消费，以及是否仍存在周期间隙吞文本问题。
+

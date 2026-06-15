@@ -7,6 +7,7 @@ import queue
 import threading
 import traceback
 import logging
+import hashlib
 from functools import partial
 
 import numpy as np
@@ -34,6 +35,17 @@ from rabbitbot.tools.sound_agno import tts_sound
 app = FastAPI()
 
 cc = OpenCC('t2s')
+LOGGER = logging.getLogger("rabbitbot.stt_app_funasr")
+if not LOGGER.handlers:
+    _stt_log_handler = logging.StreamHandler()
+    _stt_log_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    LOGGER.addHandler(_stt_log_handler)
+LOGGER.setLevel(logging.INFO)
+LOGGER.propagate = False
+
+
+def _text_digest(text: str) -> str:
+    return hashlib.sha256((text or "").encode("utf-8")).hexdigest()[:12]
 
 # ===== 配置参数 =====
 INPUT_CHANNELS = 1
@@ -272,6 +284,7 @@ recorder = AudioRecorder()
 recorder.output_text = ""
 recorder.output_utterance_id = 0
 audio_queue = queue.Queue(maxsize=AUDIO_QUEUE_MAX_CHUNKS)
+injected_text_queue = queue.Queue()
 audio_drop_count = 0
 last_audio_status_log_time = 0.0
 
@@ -392,23 +405,41 @@ async def _exec(task, lang, text, timeout):
         out_text = recorder.get_status()
         
     elif task == "get_text_async":
-        out_text = recorder.get_text()
-        utterance_id = recorder.get_utterance_id()
-        if lang == "zh" and out_text:
-            out_text = cc.convert(out_text)
-        if out_text is None:
-            out_text = ""
-        else:
-            recorder.output_text = ""
-            recorder.output_utterance_id = 0
+        try:
+            utterance_id, out_text = injected_text_queue.get_nowait()
+            if lang == "zh" and out_text:
+                out_text = cc.convert(out_text)
+            LOGGER.info(
+                "STT 注入文本已消费：utterance_id=%s, text_len=%s, text_hash=%s, queue_remaining=%s",
+                utterance_id,
+                len(out_text or ""),
+                _text_digest(out_text or ""),
+                injected_text_queue.qsize(),
+            )
+        except queue.Empty:
+            out_text = recorder.get_text()
+            utterance_id = recorder.get_utterance_id()
+            if lang == "zh" and out_text:
+                out_text = cc.convert(out_text)
+            if out_text is None:
+                out_text = ""
+            else:
+                recorder.output_text = ""
+                recorder.output_utterance_id = 0
 
     elif task == "inject_text_async":
-        recorder.utterance_id += 1
-        recorder.output_utterance_id = recorder.utterance_id
-        recorder.output_text = text or ""
-        recorder.has_recognized = True
-        out_text = recorder.output_text
-        utterance_id = recorder.output_utterance_id
+        out_text = text or ""
+        with recorder.lock:
+            recorder.utterance_id += 1
+            utterance_id = recorder.utterance_id
+        injected_text_queue.put((utterance_id, out_text))
+        LOGGER.info(
+            "STT 注入文本已入队：utterance_id=%s, text_len=%s, text_hash=%s, queue_size=%s",
+            utterance_id,
+            len(out_text),
+            _text_digest(out_text),
+            injected_text_queue.qsize(),
+        )
             
     else:
         out_text = f"Unsupported task: {task}"
