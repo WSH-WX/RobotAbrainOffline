@@ -1263,3 +1263,45 @@ Aaron 明确授权安装 `/etc/sudoers.d/rabbitbot-control-console`，用于让�
 
 本轮没有修改业务代码日志点；测试依赖已有日志。关键日志覆盖 VLM 启动、VLM 流式回答、workflow TTS 请求链路、Unitree TTS 请求开始/失败、服务清理状态。TTS 失败日志包含接口名、返回码、stdout/stderr 和 DDS 失败原因，足够定位到容器内 Unitree DDS 接口不可用问题。
 
+## 本轮补充：复核 VLM 问答 TTS 重复提交问题
+
+### 背景和目标
+
+Aaron 要求先修复 VLM 问答 workflow 中可能存在的重复 `tts_sound()` 调用问题。本轮目标是确认当前 `feature/qa-vlm-workflow` 分支实际代码状态，并在必要时修复。
+
+### 当前状态
+
+已完成：
+
+- 已检查 `rabbitbot/agno_agents/vlm_qa_workflow.py` 中 `_speak_answer()` 实现。
+- 已用脚本断言 `_speak_answer()` 代码块内 `tts_sound(self.ctx.tts_agent, answer, "zh")` 只出现 1 次。
+- 已执行 `python3 -m py_compile rabbitbot/agno_agents/vlm_qa_workflow.py`，语法检查通过。
+
+未完成：
+
+- 本轮未修改业务代码，因为当前远端文件已不存在重复 `tts_sound()` 调用。
+- 本轮未启动 workflow、容器、VLM、STT 或 TTS 服务。
+
+### 已验证的事实
+
+- 当前 `_speak_answer()` 逻辑为：空回答兜底、超长截断、单次调用 `tts_sound()`、记录 `TTS 播报已提交` 日志、随后 `tts_wait()`。
+- 当前文件不会因为该位置导致同一条完整回答被提交两次给 TTS。
+
+### 阻塞问题
+
+无。
+
+### 建议的下一步
+
+- 后续如仍观察到重复播报，应优先查看 TTS 服务端是否重复接收请求、前端/测试驱动是否重复触发同一轮问题，或是否有多个 workflow 实例并发运行。
+- 若继续优化首字延迟，应另起改动实现按句流式提交 TTS，而不是在当前单次提交逻辑上继续排查重复调用。
+
+### 注意事项
+
+- 本轮只更新交接报告，不改变运行逻辑。
+- 现有日志 `TTS 播报已提交` 与 `TTS请求链路` 足以确认单轮是否只提交一次 TTS 请求。
+
+### 其它信息
+
+本轮没有新增或调整代码日志点；已确认现有日志覆盖 TTS 提交流程。
+
