@@ -1658,3 +1658,68 @@ Aaron 要求按前一轮建议修复 STT 30 秒周期切换间隙中 `inject_tex
 
 本轮新增日志点包括：`STT 注入文本已入队` 和 `STT 注入文本已消费`，记录 `utterance_id`、文本长度、文本 hash 和队列大小/剩余数量，用于诊断命令注入是否进入队列、是否被 workflow 消费，以及是否仍存在周期间隙吞文本问题。
 
+## 本轮补充：改为宿主机和容器都可读的 latest 日志软链
+
+### 背景和目标
+
+Aaron 反馈当前使用软链接的日志查看麻烦，希望宿主机和容器同时都有同一份日志，并且能够实时更新。问题原因是 VLM QA 的 latest 软链之前指向容器内绝对路径 `/workspace/...`，在宿主机挂载目录中查看时路径不可用或不直观。
+
+### 当前状态
+
+已完成：
+
+- 已修改 `scripts_1/start_unified_vlm_qa_workflow.sh`，创建 `vlm_qa_workflow_latest.log` 时改用相对软链，目标为当前日志文件名，例如 `vlm_qa_workflow_20260615_061510.log`。
+- 已修改 `rabbitbot/agno_agents/vlm_qa_workflow.py`，创建 `vlm_qa_dialogue_latest.log` 时改用相对软链，目标为当前纯问答日志文件名，例如 `vlm_qa_dialogue_20260615_061513.log`。
+- 已把当前已有的 latest 软链立即修正为相对软链。
+- 已重启 VLM QA workflow 验证新逻辑；未停止容器、STT、VLM、TTS 等基础服务。
+
+未完成：
+
+- 本轮只处理 VLM QA workflow 相关的两个 latest 日志：`vlm_qa_workflow_latest.log` 和 `vlm_qa_dialogue_latest.log`。
+- 本轮没有修改其它历史 workflow 或导航脚本中的 latest 日志软链。
+- TTS `/exec` 与当前 `28185 /v1` 服务之间的接口适配问题仍未修复。
+
+### 已验证的事实
+
+- `python3 -m py_compile rabbitbot/agno_agents/vlm_qa_workflow.py` 通过。
+- `bash -n scripts_1/start_unified_vlm_qa_workflow.sh` 通过。
+- `git diff --check` 通过。
+- 当前宿主机路径 `logs/vlm_qa_workflow/vlm_qa_workflow_latest.log` 指向相对目标 `vlm_qa_workflow_20260615_061510.log`，并且 `test -r` 可读。
+- 当前宿主机路径 `logs/vlm_qa_workflow/vlm_qa_dialogue_latest.log` 指向相对目标 `vlm_qa_dialogue_20260615_061513.log`，并且 `test -r` 可读。
+- 容器内同一路径也显示相同相对软链，`tail` 可直接读取。
+- 因为日志目录是宿主机和容器共享挂载，同一文件会实时更新；宿主机和容器均可直接 `tail -f` latest 文件。
+
+### 阻塞问题
+
+- 无 latest 日志可读性方面的阻塞。
+- TTS 仍有历史阻塞：workflow 的 `TTSAgent` 仍按 `/exec` 调用，而当前 `28185` 服务只提供 `/v1`。
+
+### 建议的下一步
+
+- 宿主机查看纯问答日志：
+
+```bash
+tail -f /mnt/disk1/gt/air_robot_gt_projects/rabbitbot-dev-ros2-master/logs/vlm_qa_workflow/vlm_qa_dialogue_latest.log
+```
+
+- 宿主机查看 workflow 诊断日志：
+
+```bash
+tail -f /mnt/disk1/gt/air_robot_gt_projects/rabbitbot-dev-ros2-master/logs/vlm_qa_workflow/vlm_qa_workflow_latest.log
+```
+
+- 容器内查看时使用同名路径即可：
+
+```bash
+docker exec rabbitbot-unified-runtime bash -lc 'tail -f /workspace/projects/rabbitbot-dev-ros2-master/logs/vlm_qa_workflow/vlm_qa_dialogue_latest.log'
+```
+
+### 注意事项
+
+- latest 软链本身仍由容器 root 创建，因此宿主机普通用户可能不能覆盖软链，但可以读取目标日志。后续启动脚本会自动维护软链。
+- 如果后续需要处理其它 workflow 的 latest 日志，应同样避免在共享挂载目录内创建指向容器绝对路径的软链。
+
+### 其它信息
+
+本轮没有新增业务日志点；调整的是 latest 软链目标形式。该改动提升了宿主机和容器两侧查看实时日志的可用性，降低现场排查时对容器路径的依赖。
+

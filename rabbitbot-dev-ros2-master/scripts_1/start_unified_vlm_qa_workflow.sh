@@ -134,4 +134,4 @@ exec docker exec "${docker_exec_args[@]}" \
     -e RABBITBOT_QA_DIALOGUE_LOG="${RABBITBOT_QA_DIALOGUE_LOG:-}" \
     -e RABBITBOT_QA_VERBOSE="${RABBITBOT_QA_VERBOSE:-0}" \
     -e PYTHONUNBUFFERED=1 \
-    "${CONTAINER_NAME}" bash -lc "cd \"\${RABBITBOT_DIR}\" && mkdir -p \"\${RABBITBOT_LOG_DIR}\" && log_path=\"\${RABBITBOT_LOG_DIR}/vlm_qa_workflow_\$(date +%Y%m%d_%H%M%S).log\" && ln -sf \"\${log_path}\" \"\${RABBITBOT_LOG_DIR}/vlm_qa_workflow_latest.log\" && echo \"VLM问答workflow日志: \${log_path}\" && PYTHONUNBUFFERED=1 bash scripts/start_vlm_qa_workflow.bash 2>&1 | tee -a \"\${log_path}\""
+    "${CONTAINER_NAME}" bash -lc "cd \"\${RABBITBOT_DIR}\" && mkdir -p \"\${RABBITBOT_LOG_DIR}\" && log_name=\"vlm_qa_workflow_\$(date +%Y%m%d_%H%M%S).log\" && log_path=\"\${RABBITBOT_LOG_DIR}/\${log_name}\" && ln -sfn \"\${log_name}\" \"\${RABBITBOT_LOG_DIR}/vlm_qa_workflow_latest.log\" && echo \"VLM问答workflow日志: \${log_path}\" && PYTHONUNBUFFERED=1 bash scripts/start_vlm_qa_workflow.bash 2>&1 | tee -a \"\${log_path}\""

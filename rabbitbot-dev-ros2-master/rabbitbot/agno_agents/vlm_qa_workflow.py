@@ -197,7 +197,7 @@ class VLMQAWorkflow:
             try:
                 if latest_path.exists() or latest_path.is_symlink():
                     latest_path.unlink()
-                latest_path.symlink_to(log_path)
+                latest_path.symlink_to(log_path.name)
             except OSError as exc:
                 LOGGER.warning("问答日志 latest 软链更新失败：path=%s, type=%s, error=%s", latest_path, type(exc).__name__, exc)
             LOGGER.info("问答日志已启用：path=%s", log_path)
