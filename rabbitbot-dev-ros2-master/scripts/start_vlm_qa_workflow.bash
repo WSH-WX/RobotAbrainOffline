@@ -11,6 +11,7 @@
 #   RABBITBOT_QA_MOCK_IMAGE=/path/a.jpg   mock 图像路径
 #   RABBITBOT_QA_MAX_ANSWER_CHARS=180     单次播报回答最大长度
 #   RABBITBOT_QA_STREAM_TTS=1             是否按句流式提交 TTS，设为 0 可回退整段播报
+#   RABBITBOT_QA_DIALOGUE_LOG=/path/a.log  问答日志路径，默认写入 RABBITBOT_LOG_DIR
 
 set -Eeuo pipefail
 
@@ -40,7 +41,8 @@ export RABBITBOT_QA_LISTEN_TIMEOUT="${RABBITBOT_QA_LISTEN_TIMEOUT:-30}"
 export RABBITBOT_QA_INCLUDE_IMAGE="${RABBITBOT_QA_INCLUDE_IMAGE:-0}"
 export RABBITBOT_QA_MAX_ANSWER_CHARS="${RABBITBOT_QA_MAX_ANSWER_CHARS:-180}"
 export RABBITBOT_QA_STREAM_TTS="${RABBITBOT_QA_STREAM_TTS:-1}"
+export RABBITBOT_QA_DIALOGUE_LOG="${RABBITBOT_QA_DIALOGUE_LOG:-}"
 
-echo "[INFO] 启动 VLM 问答 workflow：model_server=${RABBITBOT_MODEL_SERVER}, stt=${RABBITBOT_STT_AGENT_URL}, tts=${RABBITBOT_TTS_AGENT_URL}, include_image=${RABBITBOT_QA_INCLUDE_IMAGE}, stream_tts=${RABBITBOT_QA_STREAM_TTS}"
+echo "[INFO] 启动 VLM 问答 workflow：model_server=${RABBITBOT_MODEL_SERVER}, stt=${RABBITBOT_STT_AGENT_URL}, tts=${RABBITBOT_TTS_AGENT_URL}, include_image=${RABBITBOT_QA_INCLUDE_IMAGE}, stream_tts=${RABBITBOT_QA_STREAM_TTS}, dialogue_log=${RABBITBOT_QA_DIALOGUE_LOG:-默认}"
 
 exec py310/bin/python scripts/run_vlm_qa_workflow.py "$@"

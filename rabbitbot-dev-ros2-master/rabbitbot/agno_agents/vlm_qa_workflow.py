@@ -9,6 +9,7 @@ import signal
 import sys
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from textwrap import dedent
 from typing import Optional
@@ -119,6 +120,22 @@ def _pop_stream_tts_segment(buffer: str, force: bool = False) -> tuple[Optional[
     return None, buffer
 
 
+def _split_dialogue_sentences(text: str) -> list[str]:
+    """将问答文本切成带句末标点的短句，便于逐句记录时间戳。"""
+    sentences: list[str] = []
+    pending_text = text or ""
+    while pending_text:
+        sentence, pending_text = _pop_stream_tts_segment(pending_text, force=True)
+        if sentence is None:
+            break
+        sentences.append(sentence)
+    return sentences
+
+
+def _dialogue_timestamp() -> str:
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+
+
 @dataclass
 class QAWorkflowConfig:
     listen_timeout: int
@@ -130,6 +147,7 @@ class QAWorkflowConfig:
     thinking_speech: str
     startup_speech: str
     stream_tts: bool
+    dialogue_log_path: str
     exit_words: set[str]
 
     @classmethod
@@ -145,6 +163,7 @@ class QAWorkflowConfig:
             thinking_speech=os.getenv("RABBITBOT_QA_THINKING_SPEECH", "我听到了，让我想一想。"),
             startup_speech=os.getenv("RABBITBOT_QA_STARTUP_SPEECH", "你好，请问需要我做些什么吗？"),
             stream_tts=_env_bool("RABBITBOT_QA_STREAM_TTS", "1"),
+            dialogue_log_path=os.getenv("RABBITBOT_QA_DIALOGUE_LOG", "").strip(),
             exit_words={word.strip().lower() for word in raw_exit_words.split(",") if word.strip()},
         )
 
@@ -159,6 +178,55 @@ class VLMQAWorkflow:
         self.success_count = 0
         self.failure_count = 0
         self.start_time = time.perf_counter()
+        self.dialogue_log_path = self._init_dialogue_log()
+
+    def _init_dialogue_log(self) -> Optional[Path]:
+        raw_path = self.config.dialogue_log_path
+        if raw_path:
+            log_path = Path(raw_path).expanduser()
+        else:
+            log_dir = Path(os.getenv("RABBITBOT_LOG_DIR", str(PROJECT_ROOT / "logs" / "vlm_qa_workflow")))
+            log_path = log_dir / f"vlm_qa_dialogue_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+        if not log_path.is_absolute():
+            log_path = (PROJECT_ROOT / log_path).resolve()
+
+        try:
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            log_path.touch(exist_ok=True)
+            latest_path = log_path.parent / "vlm_qa_dialogue_latest.log"
+            try:
+                if latest_path.exists() or latest_path.is_symlink():
+                    latest_path.unlink()
+                latest_path.symlink_to(log_path)
+            except OSError as exc:
+                LOGGER.warning("问答日志 latest 软链更新失败：path=%s, type=%s, error=%s", latest_path, type(exc).__name__, exc)
+            LOGGER.info("问答日志已启用：path=%s", log_path)
+            return log_path
+        except OSError as exc:
+            LOGGER.exception("问答日志初始化失败：path=%s, type=%s", log_path, type(exc).__name__)
+            return None
+
+    def _write_dialogue_log(self, role: str, text: str) -> None:
+        if self.dialogue_log_path is None:
+            return
+
+        sentences = _split_dialogue_sentences(text)
+        if not sentences:
+            return
+
+        try:
+            with self.dialogue_log_path.open("a", encoding="utf-8") as file:
+                for sentence in sentences:
+                    file.write(f"{_dialogue_timestamp()} {role}：{sentence}\n")
+                file.flush()
+        except OSError as exc:
+            LOGGER.exception(
+                "问答日志写入失败：path=%s, role=%s, text_len=%s, type=%s",
+                self.dialogue_log_path,
+                role,
+                len(text or ""),
+                type(exc).__name__,
+            )
 
     def request_stop(self, *_args) -> None:
         self.stop_requested = True
@@ -305,6 +373,7 @@ class VLMQAWorkflow:
 
         tts_started_at = time.perf_counter()
         tts_index = tts_sound(self.ctx.tts_agent, tts_text, "zh")
+        self._write_dialogue_log("回答", tts_text)
         elapsed = time.perf_counter() - tts_started_at
         LOGGER.info(
             "流式 TTS 分段已提交：turn=%s, segment_index=%s, tts_index=%s, segment_len=%s, segment_hash=%s, elapsed=%.3fs",
@@ -404,6 +473,7 @@ class VLMQAWorkflow:
             LOGGER.info("回答超过长度限制，将截断播报：answer_len=%s, max=%s", len(answer), self.config.answer_max_chars)
             answer = answer[: self.config.answer_max_chars].rstrip() + "。"
         tts_index = tts_sound(self.ctx.tts_agent, answer, "zh")
+        self._write_dialogue_log("回答", answer)
         LOGGER.info("TTS 播报已提交：turn=%s, tts_index=%s, answer_len=%s", self.turn_count, tts_index, len(answer))
         tts_wait(self.ctx.tts_agent)
 
@@ -445,9 +515,12 @@ class VLMQAWorkflow:
                 _text_preview(user_text),
                 listen_elapsed,
             )
+            self._write_dialogue_log("用户", user_text)
             if _is_exit_text(user_text, self.config.exit_words):
                 LOGGER.info("收到退出口令：turn=%s, text_hash=%s", self.turn_count, _text_digest(user_text))
-                tts_sound(self.ctx.tts_agent, "问答测试已结束。", "zh")
+                exit_answer = "问答测试已结束。"
+                tts_sound(self.ctx.tts_agent, exit_answer, "zh")
+                self._write_dialogue_log("回答", exit_answer)
                 break
 
             try:
@@ -463,7 +536,9 @@ class VLMQAWorkflow:
             except Exception as exc:
                 self.failure_count += 1
                 LOGGER.exception("问答轮次失败：turn=%s, type=%s", self.turn_count, type(exc).__name__)
-                tts_sound(self.ctx.tts_agent, "抱歉，我刚才处理问题时遇到异常，请您稍后再试。", "zh")
+                error_answer = "抱歉，我刚才处理问题时遇到异常，请您稍后再试。"
+                tts_sound(self.ctx.tts_agent, error_answer, "zh")
+                self._write_dialogue_log("回答", error_answer)
 
         total_elapsed = time.perf_counter() - self.start_time
         LOGGER.info(

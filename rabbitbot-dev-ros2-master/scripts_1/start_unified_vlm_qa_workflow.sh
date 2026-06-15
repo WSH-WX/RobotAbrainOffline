@@ -11,6 +11,7 @@
 #   RABBITBOT_QA_LISTEN_TIMEOUT=30        单轮 STT 监听超时秒数
 #   RABBITBOT_QA_MAX_ANSWER_CHARS=180     单次回答播报长度上限
 #   RABBITBOT_QA_STREAM_TTS=1             按句流式提交 TTS，设为 0 可回退整段播报
+#   RABBITBOT_QA_DIALOGUE_LOG=/path/a.log  问答日志路径，默认写入 workflow 日志目录
 #   RABBITBOT_QA_VERBOSE=1                输出 DEBUG 级别 workflow 日志
 
 set -Eeuo pipefail
@@ -130,6 +131,7 @@ exec docker exec "${docker_exec_args[@]}" \
     -e RABBITBOT_QA_IMAGE_SOURCE="${RABBITBOT_QA_IMAGE_SOURCE:-robot}" \
     -e RABBITBOT_QA_MAX_ANSWER_CHARS="${RABBITBOT_QA_MAX_ANSWER_CHARS:-180}" \
     -e RABBITBOT_QA_STREAM_TTS="${RABBITBOT_QA_STREAM_TTS:-1}" \
+    -e RABBITBOT_QA_DIALOGUE_LOG="${RABBITBOT_QA_DIALOGUE_LOG:-}" \
     -e RABBITBOT_QA_VERBOSE="${RABBITBOT_QA_VERBOSE:-0}" \
     -e PYTHONUNBUFFERED=1 \
     "${CONTAINER_NAME}" bash -lc "cd \"\${RABBITBOT_DIR}\" && mkdir -p \"\${RABBITBOT_LOG_DIR}\" && log_path=\"\${RABBITBOT_LOG_DIR}/vlm_qa_workflow_\$(date +%Y%m%d_%H%M%S).log\" && ln -sf \"\${log_path}\" \"\${RABBITBOT_LOG_DIR}/vlm_qa_workflow_latest.log\" && echo \"VLM问答workflow日志: \${log_path}\" && PYTHONUNBUFFERED=1 bash scripts/start_vlm_qa_workflow.bash 2>&1 | tee -a \"\${log_path}\""

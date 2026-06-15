@@ -1457,3 +1457,71 @@ docker exec rabbitbot-unified-runtime bash -lc 'ps -eo pid,ppid,stat,etime,cmd |
 
 本轮新增脚本日志点包括：清理已有 VLM QA workflow 的开始日志、未发现旧进程日志、准备停止旧 PID 日志、旧进程未退出时的强制停止告警。这些日志有助于排查多 workflow 实例抢 STT、curl 注入无响应、日志分散到多个文件等问题。
 
+## 本轮补充：新增 VLM QA 问答日志
+
+### 背景和目标
+
+Aaron 要求为 VLM QA workflow 增添一个独立“问答日志”，只包含用户提问和回答内容，并且每一句都要有时间戳，便于现场回放对话而不混入诊断日志。
+
+### 当前状态
+
+已完成：
+
+- 已修改 `rabbitbot/agno_agents/vlm_qa_workflow.py`，新增独立问答日志初始化和逐句写入能力。
+- 默认问答日志写入 `RABBITBOT_LOG_DIR`，文件名形如 `vlm_qa_dialogue_YYYYmmdd_HHMMSS.log`。
+- 启动时会维护 `vlm_qa_dialogue_latest.log` 软链，便于直接查看最新问答日志。
+- 新增环境变量 `RABBITBOT_QA_DIALOGUE_LOG`，可指定问答日志完整路径；未设置时使用默认路径。
+- 已修改 `scripts/start_vlm_qa_workflow.bash`，补充问答日志环境变量说明，并在启动日志中打印问答日志配置。
+- 已修改 `scripts_1/start_unified_vlm_qa_workflow.sh`，补充环境变量说明，并将 `RABBITBOT_QA_DIALOGUE_LOG` 从宿主透传到容器。
+- 用户问题在收到有效 STT 文本后写入问答日志；回答在流式 TTS 分段提交时逐句写入问答日志。
+- 非流式播报、退出口令和异常兜底回答也会写入问答日志。
+
+未完成：
+
+- 本轮没有修复 TTS `/exec` 与当前 `28185 /v1` 服务之间的接口适配问题。
+- 本轮没有改变 VLM 回答内容生成策略，仅增加对话记录。
+
+### 已验证的事实
+
+- `python3 -m py_compile rabbitbot/agno_agents/vlm_qa_workflow.py` 通过。
+- `bash -n scripts/start_vlm_qa_workflow.bash` 通过。
+- `bash -n scripts_1/start_unified_vlm_qa_workflow.sh` 通过。
+- `git diff --check` 通过。
+- 已重启 VLM QA workflow，日志显示问答日志已启用：`/workspace/projects/rabbitbot-dev-ros2-master/logs/vlm_qa_workflow/vlm_qa_dialogue_20260615_042105.log`。
+- 已注入测试问题：`请直接复述下面三句话，不要增删内容：我是机器人助手。我可以回答问题。测试结束。`
+- 最新问答日志内容只包含带时间戳的用户/回答行，例如：
+
+```text
+2026-06-15 04:21:28.880 用户：请直接复述下面三句话，不要增删内容：我是机器人助手。
+2026-06-15 04:21:28.880 用户：我可以回答问题。
+2026-06-15 04:21:28.880 用户：测试结束。
+2026-06-15 04:21:29.330 回答：好的，我明白了。
+2026-06-15 04:21:29.716 回答：我是机器人助手，可以回答问题。
+2026-06-15 04:21:29.851 回答：测试结束。
+```
+
+### 阻塞问题
+
+- TTS 仍有历史阻塞：workflow 的 `TTSAgent` 仍按 `/exec` 调用，而当前 `28185` 服务只提供 `/v1`，TTS 请求仍返回 `{"detail":"Not Found"}`。问答日志不依赖真实播报成功，因此本轮功能已可验证。
+
+### 建议的下一步
+
+- 后续查看最新问答日志可运行：
+
+```bash
+docker exec rabbitbot-unified-runtime bash -lc 'cat /workspace/projects/rabbitbot-dev-ros2-master/logs/vlm_qa_workflow/vlm_qa_dialogue_latest.log'
+```
+
+- 若需要指定日志位置，可在启动脚本前设置 `RABBITBOT_QA_DIALOGUE_LOG=/workspace/projects/rabbitbot-dev-ros2-master/logs/vlm_qa_workflow/custom.log`。
+- 下一步仍建议优先修复 TTS `/exec` 与 `/v1` 的接口适配，再做真实播报延迟测试。
+
+### 注意事项
+
+- 问答日志故意不写入 turn、hash、耗时、TTS index 或异常堆栈；这些仍保留在普通 workflow 日志中。
+- 开场语和“我听到了，让我想一想。”这类状态提示不写入问答日志，因为它们不是用户问题或模型回答内容。
+- 用户一段话中包含多个句号时，会按句拆成多行，并给每行写入时间戳。
+
+### 其它信息
+
+本轮新增日志点包括普通诊断日志 `问答日志已启用`、`问答日志 latest 软链更新失败`、`问答日志初始化失败`、`问答日志写入失败`。独立问答日志只记录带时间戳的 `用户：...` 和 `回答：...` 内容，用于对话回放；诊断日志用于排查文件路径、权限、软链和写入失败问题。
+
