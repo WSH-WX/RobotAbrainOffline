@@ -76,6 +76,41 @@ if ! docker ps --format '{{.Names}}' | grep -qx "${CONTAINER_NAME}"; then
     exit 1
 fi
 
+stop_existing_vlm_qa_workflow() {
+    log_info "清理已有 VLM 问答 workflow 进程（不停止容器或基础服务）"
+    docker exec "${CONTAINER_NAME}" bash -lc '
+set +e
+collect_pids() {
+    {
+        pgrep -f "[r]un_vlm_qa_workflow.py" || true
+        pgrep -f "[s]cripts/start_vlm_qa_workflow.bash" || true
+        pgrep -f "[t]ee -a .*/vlm_qa_workflow_.*\.log" || true
+    } | awk "NF && !seen[\$1]++ {print \$1}"
+}
+
+pids="$(collect_pids)"
+if [ -z "${pids}" ]; then
+    echo "[INFO] 未发现已有 VLM 问答 workflow 进程"
+    exit 0
+fi
+
+echo "[INFO] 准备停止已有 VLM 问答 workflow 进程: ${pids}"
+kill -TERM ${pids} 2>/dev/null || true
+for _ in 1 2 3 4 5; do
+    sleep 0.4
+    remaining="$(collect_pids)"
+    [ -z "${remaining}" ] && break
+done
+remaining="$(collect_pids)"
+if [ -n "${remaining}" ]; then
+    echo "[WARN] VLM 问答 workflow 进程未按时退出，强制停止: ${remaining}" >&2
+    kill -KILL ${remaining} 2>/dev/null || true
+fi
+'
+}
+
+stop_existing_vlm_qa_workflow
+
 docker_exec_args=()
 if [ -t 0 ]; then
     docker_exec_args+=(-i)

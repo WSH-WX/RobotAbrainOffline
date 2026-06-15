@@ -1402,3 +1402,58 @@ Aaron 要求 VLM 问答 workflow 在最开始使用 TTS 问一句“你好，请
 
 本轮没有新增代码日志点；沿用已有启动日志、VLM 流式问答日志和 TTS 提交日志即可验证开场语和回答播报链路。
 
+## 本轮补充：启动 VLM QA workflow 前自动清理旧实例
+
+### 背景和目标
+
+Aaron 要求修改 `scripts_1/start_unified_vlm_qa_workflow.sh`，使脚本每次启动新的 VLM QA workflow 前先停止已有 workflow 进程，但不能停止统一容器或 STT/TTS/VLM 等基础服务。
+
+### 当前状态
+
+已完成：
+
+- 已在 `scripts_1/start_unified_vlm_qa_workflow.sh` 中新增 `stop_existing_vlm_qa_workflow()`。
+- 新函数在确认统一容器运行后、新的 `docker exec` workflow 启动前执行。
+- 清理范围只限容器内已有 VLM QA workflow 链路：`run_vlm_qa_workflow.py`、`scripts/start_vlm_qa_workflow.bash` 和对应 `tee -a .../vlm_qa_workflow_*.log`。
+- 清理流程先发送 `TERM`，等待最多约 2 秒；仍未退出时记录 `WARN` 并发送 `KILL`。
+- 清理日志会输出是否发现旧进程、准备停止的 PID、以及是否需要强制停止。
+- 已用脚本实际启动验证：旧 workflow 链路 `1208/1222/1223` 被停止，新 workflow 拉起为 `1844/1858/1859`，新日志为 `vlm_qa_workflow_20260615_040512.log`。
+
+未完成：
+
+- 本轮没有修改 TTS `/exec` 与当前 `28185 /v1` 服务之间的接口适配问题。
+- 本轮没有修改 STT、VLM、TTS 服务启动逻辑，也没有停止统一容器。
+
+### 已验证的事实
+
+- `bash -n scripts_1/start_unified_vlm_qa_workflow.sh` 通过。
+- 实际运行脚本时，基础服务复用成功，日志显示 `RUN_WORKFLOW_AFTER_START=0，仅保持基础服务运行，不启动 workflow` 后进入新增清理步骤。
+- 新增清理步骤打印：`清理已有 VLM 问答 workflow 进程（不停止容器或基础服务）`，并列出旧 workflow PID。
+- 清理后脚本正常启动新 workflow，当前容器内只剩一组 workflow 进程。
+- 验证时 `28184`、`28185`、`8000` 仍保持监听，说明 STT/TTS/VLM 基础服务未被停止。
+
+### 阻塞问题
+
+- TTS 仍存在历史阻塞：workflow 的 `TTSAgent` 按 `/exec` 调用，但当前 `28185` 服务只提供 `/v1`，因此 TTS 请求仍返回 `{"detail":"Not Found"}`。
+
+### 建议的下一步
+
+- 后续每次测试前可直接运行 `scripts_1/start_unified_vlm_qa_workflow.sh`，脚本会自动清理旧 workflow，避免多个实例抢同一个 STT。
+- 若仍怀疑多实例，运行：
+
+```bash
+docker exec rabbitbot-unified-runtime bash -lc 'ps -eo pid,ppid,stat,etime,cmd | grep -E "run_vlm_qa_workflow|start_vlm_qa_workflow|tee -a" | grep -v grep'
+```
+
+- 下一步优先修复 TTS `/exec` 与 `/v1` 的接口适配，再做真实播报延迟测试。
+
+### 注意事项
+
+- 新增清理逻辑只在容器已运行后执行，不会创建、重建、停止或删除容器。
+- 新增清理逻辑不匹配 STT、TTS、VLM、Memory Agent、导航服务等进程。
+- 本轮实际验证时，为了确认行为，启动脚本已替换掉旧 workflow 实例；当前运行中的 workflow 日志是 `vlm_qa_workflow_20260615_040512.log`。
+
+### 其它信息
+
+本轮新增脚本日志点包括：清理已有 VLM QA workflow 的开始日志、未发现旧进程日志、准备停止旧 PID 日志、旧进程未退出时的强制停止告警。这些日志有助于排查多 workflow 实例抢 STT、curl 注入无响应、日志分散到多个文件等问题。
+
