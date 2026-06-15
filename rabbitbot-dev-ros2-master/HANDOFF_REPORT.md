@@ -1723,3 +1723,62 @@ docker exec rabbitbot-unified-runtime bash -lc 'tail -f /workspace/projects/rabb
 
 本轮没有新增业务日志点；调整的是 latest 软链目标形式。该改动提升了宿主机和容器两侧查看实时日志的可用性，降低现场排查时对容器路径的依赖。
 
+
+
+## 本轮补充：VLM QA workflow 100 问流式响应测试
+
+### 背景和目标
+
+Aaron 要求在当前 workflow 已运行的前提下，通过命令形式随机询问 100 个常见日常问题，问题覆盖多句回答场景，用于观察 VLM 问答响应速度和 TTS 流式分段提交能力；测试结束后不能终止 workflow 进程。
+
+### 当前状态
+
+已完成内容：
+
+- 已通过 `inject_text_async` 顺序注入 100 个日常问题，问题包含 3 到 6 句回答要求。
+- 已从远端 workflow 日志、STT 日志和纯问答日志重新解析统计结果。
+- 已确认 100/100 轮完成，纯问答日志中有 100 条 QA100 用户问题记录。
+- 已确认测试结束后 `run_vlm_qa_workflow.py`、`stt_app_funasr.py` 和 `tee` 日志进程仍在运行。
+
+未完成内容：
+
+- 本轮没有修复 TTS `/exec` 与当前 `28185 /v1` 服务不兼容的问题。
+- 因当前 TTS 调用仍返回无效响应，本轮只能验证 workflow 的流式文本分段提交时机，不能证明现场音箱已经真实播报。
+
+### 已验证的事实
+
+- 测试 turn 范围：21 到 120。
+- workflow 诊断日志：`/mnt/disk1/gt/air_robot_gt_projects/rabbitbot-dev-ros2-master/logs/vlm_qa_workflow/vlm_qa_workflow_latest.log`。
+- 纯问答日志：`/mnt/disk1/gt/air_robot_gt_projects/rabbitbot-dev-ros2-master/logs/vlm_qa_workflow/vlm_qa_dialogue_latest.log`。
+- STT 日志：`/mnt/disk1/gt/air_robot_gt_projects/rabbitbot-dev-ros2-master/logs/unified_runtime/rabbitbot_stt.log`。
+- 100 轮全部完成，完成率 100%。
+- 平均 STT 注入队列等待：0.409s；中位数 0.414s；P95 0.449s。
+- 平均 VLM 首 token：0.163s。
+- 平均从 VLM 请求开始到首个 TTS 分段提交：0.861s。
+- 平均 VLM 整轮生成耗时：1.227s。
+- 近似从 STT 入队到首个 TTS 分段提交：平均 1.271s，P95 1.989s。
+- 近似从 STT 入队到整轮完成：平均 1.637s，P95 2.375s。
+- 平均分段数 1.79；最大分段数 6；48/100 轮产生至少 2 个 TTS 分段。
+- 纯问答日志中 QA100 后续回答行数 179，符合多段回答被按句写入日志的现象。
+- 测试期间累计观察到 279 次 `workflow_tts_request_invalid_response`，说明 TTS 服务接口仍未打通。
+
+### 阻塞问题
+
+- TTS 真实播报仍受阻：workflow 的 TTSAgent 当前按 `/exec` 调用，但 28185 服务仍是 `/v1` 路由，日志中持续出现 `workflow_tts_request_invalid_response`。
+- 本轮最初的批量脚本尝试把 JSON 写入远端日志目录时因权限失败；已改为从日志重解析并在本地保存结果，不影响 workflow 测试本身。
+
+### 建议的下一步
+
+- 优先修复 TTS `/exec` 到当前 `/v1` 服务的适配，或把 workflow 的 TTSAgent 指向兼容 `/exec` 的 TTS 服务。
+- TTS 服务打通后，复用同类 100 问或 20 问长回答测试，统计“STT 入队到 TTS 真实首字播报”的现场时延。
+- 若希望多句问题更稳定触发多段，可继续在 prompt 中要求短句和句号，或增加按长度阈值分段。
+
+### 注意事项
+
+- 本轮测试没有停止、重启或终止 workflow，也没有停止容器/服务。
+- 当前统计中的“首个 TTS 分段提交”是 workflow 调用 TTS 接口的时间，不是音频真实播放首字时间。
+- 第一轮测试 turn=21 的 `listen_elapsed_s` 为 11.220s，是因为测试开始前 workflow 已经处于监听周期中；STT 入队到消费仅 0.076s，后续轮次稳定在约 0.4s。
+
+### 其它信息
+
+本轮没有新增或调整业务日志点；统计依赖已有日志点：`STT 注入文本已入队`、`STT 注入文本已消费`、`收到用户问题`、`VLM 首 token 到达`、`流式 TTS 分段已提交`、`VLM 流式问答完成` 和 `workflow_tts_request_invalid_response`。这些日志足够定位 STT 队列等待、VLM 推理首 token、TTS 分段提交、整轮完成耗时和 TTS 路由失败问题。
