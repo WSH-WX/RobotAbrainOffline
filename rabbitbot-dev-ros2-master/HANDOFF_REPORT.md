@@ -1305,3 +1305,55 @@ Aaron 要求先修复 VLM 问答 workflow 中可能存在的重复 `tts_sound()`
 
 本轮没有新增或调整代码日志点；已确认现有日志覆盖 TTS 提交流程。
 
+## 本轮补充：VLM 问答按句流式 TTS 适配
+
+### 背景和目标
+
+Aaron 要求让 VLM 问答 workflow 具备“流式播报”能力：大模型生成的每一句话应尽快交给 TTS 播报，而不是等待完整回答全部生成后才提交 TTS，从而降低长回答时用户感知到的首字延迟。
+
+### 当前状态
+
+已完成：
+
+- 已修改 `rabbitbot/agno_agents/vlm_qa_workflow.py`，新增 VLM 流式分句提交 TTS 的主路径。
+- 已新增 `_pop_stream_tts_segment()`，用于从流式 token 缓冲中按句末标点提取可播报分段。
+- 已新增 `_create_vlm_stream()`，统一纯文本和图文 VLM 的 OpenAI 兼容流式请求创建逻辑。
+- 已新增 `_submit_stream_tts_segment()`，每个句子分段都会单独调用 `tts_sound()`，并记录分段索引、长度、哈希、TTS 返回索引和耗时。
+- 已新增 `_call_vlm_with_stream_tts()`，在 VLM chunk 到达时持续累积文本，遇到 `。！？!?；;` 或换行即提交 TTS；流结束后提交最后残句；最后仅调用一次 `tts_wait()` 等待队列收敛。
+- 已新增环境变量 `RABBITBOT_QA_STREAM_TTS`，默认 `1` 开启按句流式 TTS；设为 `0` 可回退旧的整段回答播报逻辑。
+- 已更新 `scripts/start_vlm_qa_workflow.bash` 和 `scripts_1/start_unified_vlm_qa_workflow.sh` 的注释、环境变量透传和启动日志。
+
+未完成：
+
+- 本轮未启动真实 VLM、STT、TTS 或机器人硬件服务，未进行实机播报验证。
+- 本轮未实现真正音频级流式合成；当前粒度为“按句文本分段提交 TTS”。
+
+### 已验证的事实
+
+- `python3 -m py_compile rabbitbot/agno_agents/vlm_qa_workflow.py` 通过。
+- `bash -n scripts/start_vlm_qa_workflow.bash` 通过。
+- `bash -n scripts_1/start_unified_vlm_qa_workflow.sh` 通过。
+- `git diff --check` 通过。
+- 已用依赖桩模拟 VLM chunk 流验证分句行为：输入 chunk 拼成 `第一句。第二句！最后残句` 时，TTS 提交顺序为 `第一句。`、`第二句！`、`最后残句`，并且只在末尾调用一次 `tts_wait()`。
+- 当前实现保留回答最大长度约束；当分段超过 `RABBITBOT_QA_MAX_ANSWER_CHARS` 剩余长度时，会截断当前分段并记录日志，后续分段会跳过并记录原因。
+
+### 阻塞问题
+
+无代码层面的阻塞。运行层面仍需先解决上一轮记录的 Unitree TTS DDS 接口问题，否则真实播报仍会在 TTS 后端失败。
+
+### 建议的下一步
+
+- 在 Unitree TTS DDS 接口恢复后，启动 VLM 问答 workflow，观察日志中的 `VLM 首 token 到达`、`流式 TTS 分段已提交`、`流式 TTS 等待完成` 和 `VLM 流式问答完成`。
+- 用一个包含多句长回答的问题复测首句提交时间，对比上一轮“完整回答后才 TTS”的 `STT 命令发出到 TTS 回复请求开始` 平均时延。
+- 如需要更进一步降低延迟，可在当前按句方案基础上增加逗号/长度阈值分段，或改造 TTS 服务支持真正的音频流式播放。
+
+### 注意事项
+
+- 当前按句分段只在遇到句末标点后提交 TTS；如果模型长时间不输出句号，首句仍会等待到句末或流结束。
+- `RABBITBOT_QA_STREAM_TTS=0` 可用于现场快速回退旧逻辑。
+- 本轮没有启动导览导航 workflow，没有发送 `go/back`，没有触发机器人移动。
+
+### 其它信息
+
+本轮新增日志点包括：VLM 流式问答开始、VLM 首 token 到达、流式 TTS 分段提交、按最大长度截断/跳过、流式 TTS 等待完成、VLM 流式问答完成。日志中记录 turn、分段序号、文本长度、哈希、TTS 索引、耗时、首 token 耗时和首个 TTS 分段提交耗时，便于后续统计首字延迟和排查重复/漏播。
+

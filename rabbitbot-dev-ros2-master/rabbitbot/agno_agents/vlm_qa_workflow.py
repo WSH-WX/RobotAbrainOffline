@@ -92,6 +92,33 @@ def _is_exit_text(text: str, exit_words: set[str]) -> bool:
     return normalized in exit_words
 
 
+SENTENCE_ENDINGS = {"。", "！", "？", "!", "?", "；", ";", "\n"}
+SENTENCE_TAIL_CHARS = {"”", "’", "\"", "'", "）", ")", "】", "]", "》", ">"}
+
+
+def _pop_stream_tts_segment(buffer: str, force: bool = False) -> tuple[Optional[str], str]:
+    """从当前 VLM 流式缓冲中取出一段适合提交 TTS 的文本。"""
+    if not buffer:
+        return None, ""
+
+    for index, char in enumerate(buffer):
+        if char not in SENTENCE_ENDINGS:
+            continue
+        end_index = index + 1
+        while end_index < len(buffer) and buffer[end_index] in SENTENCE_TAIL_CHARS:
+            end_index += 1
+        segment = _normalize_text(buffer[:end_index])
+        remainder = buffer[end_index:]
+        if segment:
+            return segment, remainder
+
+    if force:
+        segment = _normalize_text(buffer)
+        if segment:
+            return segment, ""
+    return None, buffer
+
+
 @dataclass
 class QAWorkflowConfig:
     listen_timeout: int
@@ -102,6 +129,7 @@ class QAWorkflowConfig:
     answer_max_chars: int
     thinking_speech: str
     startup_speech: str
+    stream_tts: bool
     exit_words: set[str]
 
     @classmethod
@@ -116,6 +144,7 @@ class QAWorkflowConfig:
             answer_max_chars=_env_int("RABBITBOT_QA_MAX_ANSWER_CHARS", 180),
             thinking_speech=os.getenv("RABBITBOT_QA_THINKING_SPEECH", "我听到了，让我想一想。"),
             startup_speech=os.getenv("RABBITBOT_QA_STARTUP_SPEECH", "问答测试已启动，您可以直接向我提问。"),
+            stream_tts=_env_bool("RABBITBOT_QA_STREAM_TTS", "1"),
             exit_words={word.strip().lower() for word in raw_exit_words.split(",") if word.strip()},
         )
 
@@ -194,9 +223,27 @@ class VLMQAWorkflow:
             - 回答尽量控制在 {self.config.answer_max_chars} 个中文字符以内。
         """)
 
-    def _call_vlm(self, user_text: str, image: Optional[np.ndarray]) -> str:
+    def _create_vlm_stream(self, user_text: str, image: Optional[np.ndarray]):
         has_image = image is not None
         prompt = self._build_prompt(user_text, has_image)
+        if has_image:
+            messages, extra_body = self.vlm.prepare_message_for_vllm([image], prompt)
+            return self.vlm.client.chat.completions.create(
+                model=self.vlm.model,
+                messages=messages,
+                extra_body=extra_body,
+                temperature=0.2,
+                stream=True,
+            )
+        return self.vlm.client.chat.completions.create(
+            model=self.vlm.model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,
+            stream=True,
+        )
+
+    def _call_vlm(self, user_text: str, image: Optional[np.ndarray]) -> str:
+        has_image = image is not None
         request_started_at = time.perf_counter()
         LOGGER.info(
             "VLM 推理开始：turn=%s, question_len=%s, question_hash=%s, has_image=%s",
@@ -206,24 +253,15 @@ class VLMQAWorkflow:
             has_image,
         )
 
-        if has_image:
-            messages, extra_body = self.vlm.prepare_message_for_vllm([image], prompt)
-            answer = self.vlm.get_chat_response(messages, extra_body)
-        else:
-            response = self.vlm.client.chat.completions.create(
-                model=self.vlm.model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.2,
-                stream=True,
-            )
-            chunks = []
-            for chunk in response:
-                content = getattr(chunk.choices[0].delta, "content", None)
-                if content:
-                    print(content, end="", flush=True)
-                    chunks.append(content)
-            print("", flush=True)
-            answer = "".join(chunks)
+        response = self._create_vlm_stream(user_text, image)
+        chunks = []
+        for chunk in response:
+            content = getattr(chunk.choices[0].delta, "content", None)
+            if content:
+                print(content, end="", flush=True)
+                chunks.append(content)
+        print("", flush=True)
+        answer = "".join(chunks)
 
         elapsed = time.perf_counter() - request_started_at
         answer = _normalize_text(answer)
@@ -232,6 +270,127 @@ class VLMQAWorkflow:
             self.turn_count,
             len(answer),
             _text_digest(answer),
+            elapsed,
+        )
+        return answer
+
+    def _submit_stream_tts_segment(self, segment: str, segment_index: int, spoken_chars: int) -> tuple[int, int]:
+        remaining_chars = max(0, self.config.answer_max_chars - spoken_chars)
+        if remaining_chars <= 0:
+            LOGGER.warning(
+                "跳过流式 TTS 分段：turn=%s, segment_index=%s, reason=answer_max_chars_reached, segment_len=%s",
+                self.turn_count,
+                segment_index,
+                len(segment),
+            )
+            return -1, spoken_chars
+
+        tts_text = segment
+        if len(tts_text) > remaining_chars:
+            LOGGER.info(
+                "流式 TTS 分段超过剩余长度，将截断：turn=%s, segment_index=%s, segment_len=%s, remaining=%s",
+                self.turn_count,
+                segment_index,
+                len(tts_text),
+                remaining_chars,
+            )
+            tts_text = tts_text[:remaining_chars].rstrip()
+            if tts_text and tts_text[-1] not in SENTENCE_ENDINGS:
+                tts_text += "。"
+
+        if not tts_text:
+            return -1, spoken_chars
+
+        tts_started_at = time.perf_counter()
+        tts_index = tts_sound(self.ctx.tts_agent, tts_text, "zh")
+        elapsed = time.perf_counter() - tts_started_at
+        LOGGER.info(
+            "流式 TTS 分段已提交：turn=%s, segment_index=%s, tts_index=%s, segment_len=%s, segment_hash=%s, elapsed=%.3fs",
+            self.turn_count,
+            segment_index,
+            tts_index,
+            len(tts_text),
+            _text_digest(tts_text),
+            elapsed,
+        )
+        return tts_index, spoken_chars + len(tts_text)
+
+    def _call_vlm_with_stream_tts(self, user_text: str, image: Optional[np.ndarray]) -> str:
+        has_image = image is not None
+        request_started_at = time.perf_counter()
+        LOGGER.info(
+            "VLM 流式问答开始：turn=%s, question_len=%s, question_hash=%s, has_image=%s, stream_tts=%s",
+            self.turn_count,
+            len(user_text),
+            _text_digest(user_text),
+            has_image,
+            self.config.stream_tts,
+        )
+
+        response = self._create_vlm_stream(user_text, image)
+        chunks: list[str] = []
+        pending_text = ""
+        segment_index = 0
+        spoken_chars = 0
+        first_token_elapsed: Optional[float] = None
+        first_tts_elapsed: Optional[float] = None
+
+        for chunk in response:
+            content = getattr(chunk.choices[0].delta, "content", None)
+            if not content:
+                continue
+            if first_token_elapsed is None:
+                first_token_elapsed = time.perf_counter() - request_started_at
+                LOGGER.info(
+                    "VLM 首 token 到达：turn=%s, elapsed=%.3fs",
+                    self.turn_count,
+                    first_token_elapsed,
+                )
+            print(content, end="", flush=True)
+            chunks.append(content)
+            pending_text += content
+
+            while True:
+                segment, pending_text = _pop_stream_tts_segment(pending_text)
+                if segment is None:
+                    break
+                segment_index += 1
+                _, spoken_chars = self._submit_stream_tts_segment(segment, segment_index, spoken_chars)
+                if first_tts_elapsed is None:
+                    first_tts_elapsed = time.perf_counter() - request_started_at
+
+        print("", flush=True)
+        final_segment, _ = _pop_stream_tts_segment(pending_text, force=True)
+        if final_segment:
+            segment_index += 1
+            _, spoken_chars = self._submit_stream_tts_segment(final_segment, segment_index, spoken_chars)
+            if first_tts_elapsed is None:
+                first_tts_elapsed = time.perf_counter() - request_started_at
+
+        answer = _normalize_text("".join(chunks))
+        if segment_index == 0:
+            self._speak_answer(answer)
+            first_tts_elapsed = time.perf_counter() - request_started_at
+        else:
+            tts_wait_started_at = time.perf_counter()
+            tts_wait(self.ctx.tts_agent)
+            LOGGER.info(
+                "流式 TTS 等待完成：turn=%s, segment_count=%s, elapsed=%.3fs",
+                self.turn_count,
+                segment_index,
+                time.perf_counter() - tts_wait_started_at,
+            )
+
+        elapsed = time.perf_counter() - request_started_at
+        LOGGER.info(
+            "VLM 流式问答完成：turn=%s, answer_len=%s, answer_hash=%s, segment_count=%s, "
+            "first_token_elapsed=%s, first_tts_elapsed=%s, elapsed=%.3fs",
+            self.turn_count,
+            len(answer),
+            _text_digest(answer),
+            segment_index,
+            f"{first_token_elapsed:.3f}s" if first_token_elapsed is not None else None,
+            f"{first_tts_elapsed:.3f}s" if first_tts_elapsed is not None else None,
             elapsed,
         )
         return answer
@@ -293,8 +452,11 @@ class VLMQAWorkflow:
                 if self.config.thinking_speech:
                     tts_sound(self.ctx.tts_agent, self.config.thinking_speech, "zh")
                 image = self._capture_image()
-                answer = self._call_vlm(user_text, image)
-                self._speak_answer(answer)
+                if self.config.stream_tts:
+                    self._call_vlm_with_stream_tts(user_text, image)
+                else:
+                    answer = self._call_vlm(user_text, image)
+                    self._speak_answer(answer)
                 self.success_count += 1
             except Exception as exc:
                 self.failure_count += 1
