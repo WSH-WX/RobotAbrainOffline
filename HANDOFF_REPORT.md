@@ -879,3 +879,58 @@ Aaron 要求新建一个独立 workflow，用于测试问答能力。目标是�
 
 - 本轮新增日志点覆盖：workflow 启动配置、每轮监听开始、STT 有效输入摘要、图像读取来源与耗时、VLM 推理开始/结束与耗时、TTS 提交、异常失败路径、退出信号和 workflow 总耗时摘要。
 - 生成时间：2026-06-12 18:35:00
+
+## 本轮补充：补齐 VLM 问答所需模型目录
+
+### 背景和目标
+
+Aaron 启动 `scripts_1/start_unified_vlm_qa_workflow.sh` 时遇到 `模型目录不存在：/mnt/disk1/gt/air_robot_gt_projects/models`，随后直接运行 `deploy/ensure_models.sh` 又因为默认未启用按需模型而跳过下载。本轮目标是把 VLM 问答所需模型准备到位，并让启动脚本不再卡在模型目录检查。
+
+### 当前状态
+
+已完成：
+
+- 已确认现有完整模型实际位于 `/mnt/disk1/models`，包含：
+  - `Qwen2.5-VL-7B-Instruct-GPTQ-Int4`
+  - `Qwen3-Embedding-0.6B`
+  - `SenseVoiceSmall`
+- 已将 `rabbitbot-dev-ros2-master/runtime/portable.env` 的 `RABBITBOT_MODELS_CACHE_DIR` 从 `/mnt/disk1/gt/air_robot_gt_projects/models` 改为 `/mnt/disk1/models`，使运行态配置指向实际模型目录。
+- 已在 `/mnt/disk1/gt/air_robot_gt_projects/models` 下用同盘硬链接方式补齐 manifest 中的三项模型目录，避免重复占用一份大模型空间。
+- 已强制运行 `bash deploy/ensure_models.sh qwen_vlm qwen_embedding sensevoice`，三项模型均显示已存在并跳过下载。
+- 已修复 `deploy/ensure_models.sh`：下载缺失模型时不再调用已弃用且会失败的 `huggingface-cli download`，改用 `huggingface_hub.snapshot_download()`。
+- 已执行 `bash -n deploy/ensure_models.sh`，语法检查通过。
+- 已进行受控启动冒烟测试：`start_unified_vlm_qa_workflow.sh` 已能识别 `模型目录可用：/mnt/disk1/models`，并进入 `等待 VLM 服务 (8000)` 阶段，不再报模型目录不存在。
+- 冒烟测试结束后已停止本轮启动的 `rabbitbot-unified-runtime` 容器。
+
+未完成：
+
+- 本轮没有等待 VLM 完整加载完成，也没有启动实际 VLM 问答 workflow。
+- 本轮没有重新下载网络模型文件，因为 `/mnt/disk1/models` 已有完整模型；本轮采用硬链接补齐 air 包期望路径。
+
+### 已验证的事实
+
+- `deploy/ensure_models.sh qwen_vlm qwen_embedding sensevoice` 输出三项模型已存在，count=3。
+- `start_unified_vlm_qa_workflow.sh` 不再报 `/mnt/disk1/gt/air_robot_gt_projects/models` 缺失，而是使用 `/mnt/disk1/models`。
+- 当前运行容器仍为原有 caddy、redis、portable nav、air_vln_container、sound_docker；本轮启动的 `rabbitbot-unified-runtime` 已停止。
+- 当前 28182、28184、28186、8000、7687 等本轮可能占用端口无监听残留。
+
+### 阻塞问题
+
+无模型目录层面的阻塞。后续真实问答运行仍可能受 VLM 加载耗时、TTS DDS 接口或现场音频链路影响。
+
+### 建议的下一步
+
+- 重新运行 `/mnt/disk1/gt/air_robot_gt_projects/rabbitbot-dev-ros2-master/scripts_1/start_unified_vlm_qa_workflow.sh`，等待 VLM、STT、TTS 基础服务 ready。
+- 如果未来某项模型目录被删除，可再次运行 `bash deploy/ensure_models.sh qwen_vlm qwen_embedding sensevoice`；修复后的脚本会使用 `snapshot_download()` 下载。
+- 如果要迁移到新机器，应同时迁移 `/mnt/disk1/models` 或重新运行模型下载脚本。
+
+### 注意事项
+
+- `runtime/portable.env` 是本机运行态配置，被 Git 忽略；本轮改动不会进入提交，但已在交接报告记录。
+- `/mnt/disk1/gt/air_robot_gt_projects/models` 中的模型是硬链接补齐，不是重复复制；不要只按 `du` 单次显示误判为额外占用了一整份空间。
+- 本轮没有启动导览导航 workflow，没有发送 `go/back`，没有触发机器人移动。
+
+### 其它信息
+
+本轮新增/调整的日志点：未新增业务日志。`deploy/ensure_models.sh` 仍保留原有下载开始、模型已存在、下载完成和总数日志；修复点是底层下载实现从 CLI 改为 Python API，以避免 Hugging Face CLI 兼容失败。
+

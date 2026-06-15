@@ -79,9 +79,27 @@ download_model() {
     log_info "开始下载模型：key=${key}, repo=${repo}, target=${target_dir}, downloader=${DOWNLOAD_IMAGE}"
     docker run --rm \
         -e HF_TOKEN="${HF_TOKEN}" \
+        -e MODEL_KEY="${key}" \
+        -e MODEL_REPO="${repo}" \
         -v "${target_dir}:/models/${key}" \
         "${DOWNLOAD_IMAGE}" \
-        bash -lc "pip install --quiet huggingface_hub && if [ -n \"\${HF_TOKEN}\" ]; then huggingface-cli login --token \"\${HF_TOKEN}\" --add-to-git-credential >/dev/null; fi && huggingface-cli download '${repo}' --local-dir /models/${key} --local-dir-use-symlinks False"
+        bash -lc "pip install --quiet huggingface_hub && python - <<'PY'
+import os
+from huggingface_hub import snapshot_download
+
+repo = os.environ['MODEL_REPO']
+key = os.environ['MODEL_KEY']
+token = os.environ.get('HF_TOKEN') or None
+kwargs = {
+    'repo_id': repo,
+    'local_dir': f'/models/{key}',
+    'token': token,
+}
+try:
+    snapshot_download(**kwargs, local_dir_use_symlinks=False)
+except TypeError:
+    snapshot_download(**kwargs)
+PY"
     log_ok "模型下载完成：key=${key}, path=${target_dir}"
 }
 
