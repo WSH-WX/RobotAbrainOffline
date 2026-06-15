@@ -143,7 +143,7 @@ class QAWorkflowConfig:
             image_height=_env_int("RABBITBOT_QA_IMAGE_HEIGHT", 720),
             answer_max_chars=_env_int("RABBITBOT_QA_MAX_ANSWER_CHARS", 180),
             thinking_speech=os.getenv("RABBITBOT_QA_THINKING_SPEECH", "我听到了，让我想一想。"),
-            startup_speech=os.getenv("RABBITBOT_QA_STARTUP_SPEECH", "问答测试已启动，您可以直接向我提问。"),
+            startup_speech=os.getenv("RABBITBOT_QA_STARTUP_SPEECH", "你好，请问需要我做些什么吗？"),
             stream_tts=_env_bool("RABBITBOT_QA_STREAM_TTS", "1"),
             exit_words={word.strip().lower() for word in raw_exit_words.split(",") if word.strip()},
         )
@@ -212,13 +212,15 @@ class VLMQAWorkflow:
     def _build_prompt(self, user_text: str, has_image: bool) -> str:
         visual_rule = "请结合当前画面回答用户问题。" if has_image else "当前没有可用画面，请只根据用户问题回答。"
         return dedent(f"""\
-            你是 RabbitBot 的现场问答测试助手。{visual_rule}
+            你是 RabbitBot 的现场对话助手，正在和用户面对面自然交流。{visual_rule}
 
             用户问题：{user_text}
 
             回答要求：
-            - 使用中文，语气自然，适合机器人直接播报。
-            - 优先给出明确答案，不要输出思考过程。
+            - 使用中文口语化表达，像日常聊天一样回答，适合机器人直接播报。
+            - 优先给出明确答案，不要输出思考过程，也不要写成报告或长段说明。
+            - 默认回答 1 到 2 句；除非用户要求展开，否则不要冗长。
+            - 如果问题很简单，直接短答；如果不确定，就简短说明无法确认。
             - 如果问题依赖画面但画面不可用或看不清，请直接说明无法确认。
             - 回答尽量控制在 {self.config.answer_max_chars} 个中文字符以内。
         """)
