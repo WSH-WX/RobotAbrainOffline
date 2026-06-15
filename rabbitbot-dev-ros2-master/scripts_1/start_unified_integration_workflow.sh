@@ -72,9 +72,15 @@ fi
 if [ -n "${_CALLER_RUNTIME_MODE}" ]; then
     RABBITBOT_RUNTIME_MODE="${_CALLER_RUNTIME_MODE}"
 fi
+RABBITBOT_RUNTIME_MODE="${RABBITBOT_RUNTIME_MODE:-legacy}"
 
-IMAGE_NAME="${IMAGE_NAME:-rabbitbot-unified-runtime:20260518}"
-CONTAINER_NAME="${CONTAINER_NAME:-rabbitbot-unified-runtime}"
+if [ "${RABBITBOT_RUNTIME_MODE}" = "portable" ]; then
+    IMAGE_NAME="${IMAGE_NAME:-${RABBITBOT_PORTABLE_CORE_IMAGE:-ghcr.io/aaronai/rabbitbot-core-portable:20260611}}"
+    CONTAINER_NAME="${CONTAINER_NAME:-${RABBITBOT_PORTABLE_CORE_CONTAINER_NAME:-rabbitbot-unified-runtime}}"
+else
+    IMAGE_NAME="${IMAGE_NAME:-rabbitbot-unified-runtime:20260518}"
+    CONTAINER_NAME="${CONTAINER_NAME:-rabbitbot-unified-runtime}"
+fi
 PROJECT_ROOT="${PROJECT_ROOT:-${DEFAULT_PROJECT_ROOT}}"
 CONTAINER_PROJECT_ROOT="${CONTAINER_PROJECT_ROOT:-/workspace/projects}"
 MODELS_DIR="${MODELS_DIR:-${RABBITBOT_MODELS_CACHE_DIR:-${PROJECT_ROOT}/models}}"
@@ -99,13 +105,13 @@ RABBITBOT_UNITREE_TTS_INTERFACE="${RABBITBOT_UNITREE_TTS_INTERFACE:-eno1}"
 RABBITBOT_UNITREE_TTS_VOLUME="${RABBITBOT_UNITREE_TTS_VOLUME:-100}"
 RABBITBOT_UNITREE_TTS_SPEAKER_ID="${RABBITBOT_UNITREE_TTS_SPEAKER_ID:-0}"
 RABBITBOT_UNITREE_TTS_TIMEOUT="${RABBITBOT_UNITREE_TTS_TIMEOUT:-10}"
+RABBITBOT_PORTABLE_STOP_LEGACY_CONTAINERS="${RABBITBOT_PORTABLE_STOP_LEGACY_CONTAINERS:-sound_docker air_vln_container}"
 
 # portable 自包含运行模式：
 #   当 RABBITBOT_RUNTIME_MODE=portable 且 RABBITBOT_PORTABLE_INJECT_DEPS!=0 时，
 #   为 4 个宿主 gitignore 的重型依赖目录注入 named volume；这些卷在首次使用时会从自包含 core
 #   镜像 seed 出 py38/py310/vln/pyorbbecsdk，从而即使宿主源码目录缺这些子目录也能正常运行。
 #   宿主源码目录仍 bind mount 到 /workspace/projects 以提供 GitHub 源码、conf 与日志可见性。
-RABBITBOT_RUNTIME_MODE="${RABBITBOT_RUNTIME_MODE:-legacy}"
 RABBITBOT_PORTABLE_INJECT_DEPS="${RABBITBOT_PORTABLE_INJECT_DEPS:-1}"
 
 # 28180 端口拓扑：
@@ -210,6 +216,14 @@ http_ok() {
     [ "${code}" = "200" ]
 }
 
+tts_exec_ok() {
+    local code
+    code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 \
+        -X POST http://127.0.0.1:28185/exec \
+        --form-string 'task={"task":"wait_speech","lang":"","text":"","timeout":1}' 2>/dev/null || true)
+    [ "${code}" = "200" ]
+}
+
 json_model_ok() {
     curl -s --max-time 5 "$1" 2>/dev/null | grep -q '"data"'
 }
@@ -247,7 +261,7 @@ wait_for_base_services() {
     else
         log_info "RABBITBOT_UNIFIED_START_EMBEDDING=0，跳过等待 Embedding 服务 (8005)"
     fi
-    wait_until "TTS 服务 (28185)" "${WAIT_DEFAULT_SECONDS}" http_ok http://127.0.0.1:28185/docs
+    wait_until "TTS /exec 服务 (28185)" "${WAIT_DEFAULT_SECONDS}" tts_exec_ok
     if [ "${RABBITBOT_UNIFIED_START_STT}" = "1" ]; then
         wait_until "STT 服务 (28184)" "${WAIT_DEFAULT_SECONDS}" http_ok http://127.0.0.1:28184/docs
     else
@@ -464,6 +478,51 @@ create_container_if_needed() {
     log_info "统一容器创建完成：${CONTAINER_NAME}"
 }
 
+stop_legacy_containers_for_portable() {
+    if [ "${RABBITBOT_RUNTIME_MODE}" != "portable" ]; then
+        return 0
+    fi
+    if [ -z "${RABBITBOT_PORTABLE_STOP_LEGACY_CONTAINERS}" ]; then
+        log_info "RABBITBOT_PORTABLE_STOP_LEGACY_CONTAINERS 为空，跳过 legacy 容器清理"
+        return 0
+    fi
+
+    local stopped=0
+    local legacy_container legacy_image
+    for legacy_container in ${RABBITBOT_PORTABLE_STOP_LEGACY_CONTAINERS}; do
+        if docker ps --format '{{.Names}}' | grep -qx "${legacy_container}"; then
+            legacy_image="$(docker inspect "${legacy_container}" --format '{{.Config.Image}}' 2>/dev/null || true)"
+            log_warn "portable 模式将停止 legacy 容器：${legacy_container}，image=${legacy_image:-unknown}"
+            docker stop "${legacy_container}" >/dev/null
+            stopped=1
+        fi
+    done
+
+    if [ "${stopped}" = "1" ]; then
+        log_info "legacy 容器清理完成：containers=${RABBITBOT_PORTABLE_STOP_LEGACY_CONTAINERS}"
+    fi
+}
+
+ensure_portable_tts_exec_owner() {
+    if [ "${RABBITBOT_RUNTIME_MODE}" != "portable" ]; then
+        return 0
+    fi
+    if tts_exec_ok; then
+        log_success "TTS /exec 已由当前 portable 服务提供"
+        return 0
+    fi
+
+    if port_open 28185; then
+        log_error "28185 端口仍被非 /exec 兼容服务占用，无法保证 portable TTS 归属。请检查：ss -ltnp | grep :28185"
+        exit 1
+    fi
+
+    if container_running "${CONTAINER_NAME}"; then
+        log_warn "统一容器已运行但 TTS /exec 未就绪，将重启 ${CONTAINER_NAME} 以重新执行容器内 TTS 启动流程"
+        docker restart "${CONTAINER_NAME}" >/dev/null
+    fi
+}
+
 start_container_if_needed() {
     if container_running "${CONTAINER_NAME}"; then
         log_info "统一容器基础服务底座已运行：${CONTAINER_NAME}"
@@ -536,6 +595,8 @@ if [ "${START_AFTER_CREATE}" != "1" ]; then
     exit 0
 fi
 
+stop_legacy_containers_for_portable
+ensure_portable_tts_exec_owner
 start_container_if_needed
 wait_for_base_services
 

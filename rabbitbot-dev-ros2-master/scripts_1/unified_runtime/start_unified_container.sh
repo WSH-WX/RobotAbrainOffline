@@ -27,6 +27,7 @@ RABBITBOT_UNITREE_TTS_TIMEOUT="${RABBITBOT_UNITREE_TTS_TIMEOUT:-10}"
 mkdir -p "${LOG_DIR}"
 
 log_info() { echo -e "\033[32m[INFO]\033[0m $1"; }
+log_warn() { echo -e "\033[33m[WARN]\033[0m $1"; }
 log_error() { echo -e "\033[31m[ERROR]\033[0m $1"; }
 log_success() { echo -e "\033[32m[SUCCESS]\033[0m $1"; }
 
@@ -51,6 +52,14 @@ http_ok() {
     else
         code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "${url}" 2>/dev/null || true)
     fi
+    [ "${code}" = "200" ]
+}
+
+tts_exec_ok() {
+    local code
+    code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 \
+        -X POST http://127.0.0.1:28185/exec \
+        --form-string 'task={"task":"wait_speech","lang":"","text":"","timeout":1}' 2>/dev/null || true)
     [ "${code}" = "200" ]
 }
 
@@ -149,13 +158,17 @@ start_vlm_and_embedding() {
 }
 
 start_tts() {
-    if http_ok http://127.0.0.1:28185/docs; then
-        log_success "TTS 已运行"
+    if tts_exec_ok; then
+        log_success "TTS /exec 服务已运行"
         return 0
+    fi
+    if port_open 28185; then
+        log_error "28185 端口已被非 /exec 兼容 TTS 服务占用，无法在统一容器内启动 portable TTS。请先停止 legacy TTS 容器或进程。"
+        return 1
     fi
     log_info "TTS 启动配置：后端=${RABBITBOT_TTS_BACKEND}，Unitree 网卡=${RABBITBOT_UNITREE_TTS_INTERFACE}，音量=${RABBITBOT_UNITREE_TTS_VOLUME}"
     start_background "TTS" "${LOG_DIR}/rabbitbot_tts.log" bash -lc "cd '${PROJECT_DIR}' && export RABBITBOT_TTS_BACKEND='${RABBITBOT_TTS_BACKEND}' && export RABBITBOT_UNITREE_TTS_INTERFACE='${RABBITBOT_UNITREE_TTS_INTERFACE}' && export RABBITBOT_UNITREE_TTS_VOLUME='${RABBITBOT_UNITREE_TTS_VOLUME}' && export RABBITBOT_UNITREE_TTS_SPEAKER_ID='${RABBITBOT_UNITREE_TTS_SPEAKER_ID}' && export RABBITBOT_UNITREE_TTS_TIMEOUT='${RABBITBOT_UNITREE_TTS_TIMEOUT}' && export RABBITBOT_TTS_DEVICE=\${RABBITBOT_UNIFIED_TTS_DEVICE:-cuda} && export RABBITBOT_TTS_FAST_SOUND_PRELOAD=\${RABBITBOT_UNIFIED_TTS_FAST_SOUND_PRELOAD:-0} && export RABBITBOT_TTS_STARTUP_SPEECH=\${RABBITBOT_UNIFIED_TTS_STARTUP_SPEECH:-0} && bash scripts/start_tts_app.bash"
-    wait_until "TTS 服务 (28185)" "${WAIT_DEFAULT_SECONDS}" http_ok http://127.0.0.1:28185/docs
+    wait_until "TTS /exec 服务 (28185)" "${WAIT_DEFAULT_SECONDS}" tts_exec_ok
 }
 
 start_stt() {

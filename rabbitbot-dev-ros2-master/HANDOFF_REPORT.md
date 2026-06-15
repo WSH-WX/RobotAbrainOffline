@@ -1782,3 +1782,71 @@ Aaron 要求在当前 workflow 已运行的前提下，通过命令形式随机�
 ### 其它信息
 
 本轮没有新增或调整业务日志点；统计依赖已有日志点：`STT 注入文本已入队`、`STT 注入文本已消费`、`收到用户问题`、`VLM 首 token 到达`、`流式 TTS 分段已提交`、`VLM 流式问答完成` 和 `workflow_tts_request_invalid_response`。这些日志足够定位 STT 队列等待、VLM 推理首 token、TTS 分段提交、整轮完成耗时和 TTS 路由失败问题。
+
+## 本轮补充：收敛服务到 portable core/nav 容器
+
+### 背景和目标
+
+Aaron 指出当前 `sound_docker`、`air_vln_container` 等 legacy 容器仍承载项目服务，不符合此前为本项目做的可迁移性适配。目标是让机器人项目核心服务运行在 `ghcr.io/aaronai/rabbitbot-core-portable:20260611` 或 `ghcr.io/aaronai/rabbitbot-nav-portable:20260611` 上，避免 legacy 容器抢占端口。
+
+### 当前状态
+
+已完成内容：
+
+- 已修改统一容器入口 `scripts_1/unified_runtime/start_unified_container.sh`：
+  - TTS 健康检查从只看 `/docs` 改为检查 `/exec` 是否可用。
+  - 如果 `28185` 被非 `/exec` 兼容 TTS 占用，明确报错，不再误判为“统一容器 TTS 已运行”。
+- 已修改宿主启动入口 `scripts_1/start_unified_integration_workflow.sh`：
+  - portable 模式下自动选择 `ghcr.io/aaronai/rabbitbot-core-portable:20260611` 和 `rabbitbot-unified-runtime`，不再落回 legacy 镜像默认值。
+  - portable 模式默认停止 legacy 容器 `sound_docker air_vln_container`，可通过 `RABBITBOT_PORTABLE_STOP_LEGACY_CONTAINERS` 覆盖。
+  - 增加 `TTS /exec` 探活和归属检查；如果 core 容器已运行但 `/exec` TTS 不可用，会重启 core 容器重新执行容器内 TTS 启动流程。
+- 已执行迁移：停止了 `sound_docker` 和 `air_vln_container`，重启了 `rabbitbot-unified-runtime`。
+- 已重新拉起基础服务，并后台启动 VLM QA workflow。
+
+未完成内容：
+
+- 没有停止 `caddy` 和 `redis`，它们不是当前 VLM QA / 导航链路的 legacy 机器人服务。
+- Unitree G1 TTS 后端仍返回 `Unitree G1 TTS 请求失败: returncode=1`；这不是 `/exec` 路由不兼容问题，而是 core portable 内 TTS 调用硬件/网络后端失败。
+
+### 已验证的事实
+
+- 当前运行的机器人相关容器：
+  - `rabbitbot-unified-runtime`：`ghcr.io/aaronai/rabbitbot-core-portable:20260611`
+  - `rabbitbot-portable-rabbitbot-nav-1`：`ghcr.io/aaronai/rabbitbot-nav-portable:20260611`
+- `sound_docker` 已停止，状态为 `Exited (137)`。
+- `air_vln_container` 已停止，状态为 `Exited (137)`。
+- core portable 当前承载：
+  - VLM/vLLM：`8000`
+  - TTS `/exec`：`28185`
+  - FunASR STT：`28184`
+  - Memory Agent：`28182`
+  - Neo4j
+- nav portable 当前承载：
+  - `humble_robot_agent_bridge:app`：`28180`
+  - 导航日志 tail / tee
+- `curl -X POST http://127.0.0.1:28185/exec --form-string 'task={"task":"wait_speech","lang":"","text":"","timeout":1}'` 返回 `{"out_text":"TTS finished"}`，HTTP 200。
+- `http://127.0.0.1:8000/v1/models` 返回 Qwen2.5-VL 模型列表。
+- VLM QA workflow 已后台运行，进程为 `scripts/run_vlm_qa_workflow.py`，最新日志：
+  - `logs/vlm_qa_workflow/vlm_qa_workflow_20260615_070422.log`
+  - `logs/vlm_qa_workflow/vlm_qa_dialogue_20260615_070424.log`
+
+### 阻塞问题
+
+- TTS 路由问题已解决：现在不再返回 `{"detail":"Not Found"}`。
+- TTS 真实播报仍受硬件/网络后端影响：core portable 内 Unitree G1 TTS 返回 `returncode=1`，workflow 日志仍会记录 `workflow_tts_request_invalid_response`，但原因已经变为后端执行失败。
+
+### 建议的下一步
+
+- 排查 Unitree G1 TTS 后端失败，重点检查 `eno1` 是否连到机器人、DDS/Unitree SDK 是否能正常发包、`RABBITBOT_UNITREE_TTS_INTERFACE` 是否应调整。
+- 修复 Unitree 后端后，重新注入一个短问题，确认 workflow TTS 日志出现有效 `tts_index`，且机器人现场真实播报。
+- 如果现场临时必须保留某个 legacy 容器，可启动时设置 `RABBITBOT_PORTABLE_STOP_LEGACY_CONTAINERS` 覆盖默认清理列表，但这会重新引入端口归属风险。
+
+### 注意事项
+
+- 本轮重启了 `rabbitbot-unified-runtime`，因此 VLM 重新加载了一次；当前已就绪。
+- 大部分容器使用 host network，端口归属需要结合进程和容器内 `ps` 判断。
+- `start_unified_vlm_qa_workflow.sh` 后台启动的宿主 stdout 写在 `/tmp/start_vlm_qa_workflow_20260615_150421.out`，workflow 自身日志仍在共享 `logs/vlm_qa_workflow` 下。
+
+### 其它信息
+
+本轮新增/调整日志点主要在 shell 启动脚本：portable 模式停止 legacy 容器时记录容器名和镜像；TTS `/exec` 归属检查成功时记录成功；core 容器已运行但 TTS `/exec` 不可用时记录重启原因；容器内发现 `28185` 被非 `/exec` 服务占用时输出明确错误。这些日志用于定位服务到底由 portable core 还是 legacy 容器提供，以及排查 TTS 端口抢占。
