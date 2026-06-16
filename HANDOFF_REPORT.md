@@ -1039,3 +1039,58 @@ Aaron 暂时不继续排查机器人网络链路，希望先优化 TTS 服务本
 - 本轮新增/调整日志点：未新增业务日志；但梳理确认现有关键日志分布在启动脚本的后端选择日志、`Unitree本体TTS` 阶段日志、本地 `TTS服务链路` 阶段日志、workflow `TTS请求链路` 日志和 `/exec` 探活日志。后续优化时应优先围绕这些阶段补齐结构化状态与错误码。
 - 生成时间：2026-06-16 13:45:00
 
+## 本轮补充：TTS auto 后端健康检查加固
+
+### 背景和目标
+
+Aaron 指出 `RABBITBOT_TTS_BACKEND=auto` 只判断 Unitree 网卡名是否存在，不判断链路、IP、DDS 或机器人音频服务是否可用，导致 TTS 服务容易误选 Unitree 后端并在运行时才失败。本轮目标是让 auto 判定更健壮，并把成功/错误原因清楚写入启动日志，方便现场调试。
+
+### 当前状态
+
+已完成：
+
+- 已修改 `rabbitbot-dev-ros2-master/scripts/start_tts_app.bash`，将 shebang 改为 bash，并新增 `TTS启动检查` 分阶段日志。
+- `auto` 模式现在会依次检查：
+  - Unitree 网卡是否存在。
+  - `operstate` 与 `carrier`，默认要求接口 UP 且有物理载波。
+  - IPv4 地址，默认要求能读取到接口 IPv4。
+  - Unitree TTS 桥接程序是否存在；不存在时尝试构建并记录构建日志尾部。
+  - Unitree 音频服务只读探测，默认调用桥接程序 `--probe get_volume`。
+- 已新增可配置开关：
+  - `RABBITBOT_UNITREE_TTS_REQUIRE_CARRIER`，默认 `1`。
+  - `RABBITBOT_UNITREE_TTS_REQUIRE_IPV4`，默认 `1`。
+  - `RABBITBOT_UNITREE_TTS_AUTO_PROBE`，默认 `1`。
+  - `RABBITBOT_UNITREE_TTS_PROBE_TIMEOUT`，默认 `3` 秒。
+- 已修改 `rabbitbot-dev-ros2-master/scripts/unitree_g1_tts_bridge.cpp`，新增 `--probe get_volume` 模式，使用 Unitree SDK2 `AudioClient.GetVolume()` 做只读探测，不触发 TTS 播报。
+
+未完成：
+
+- 本轮没有重启当前已经运行的 TTS 服务；新 auto 判定需要下次启动 `scripts/start_tts_app.bash` 或重建/重启 core 后生效。
+- 当前现场 `eno1` 仍为 `down/carrier=0`，因此还无法验证链路恢复后的成功选择 Unitree 分支。
+
+### 已验证的事实
+
+- `bash -n rabbitbot-dev-ros2-master/scripts/start_tts_app.bash` 通过。
+- `bash -n rabbitbot-dev-ros2-master/scripts/build_unitree_g1_tts_bridge.sh` 通过。
+- 在 core 容器内用新源码编译桥接程序成功，`--help` 显示新增 `--probe get_volume`。
+- 在 core 容器内运行 `bash scripts/build_unitree_g1_tts_bridge.sh` 成功，生成新的 `build/unitree_g1_tts_bridge`。
+- 当前断链状态下直接执行 `./build/unitree_g1_tts_bridge --network eno1 --timeout 2 --probe get_volume` 返回 `ret=3104`，退出码为 32，说明只读探测可以捕获机器人音频接口不可用。
+- 默认 auto 判定在当前现场状态下输出：`operstate=down, carrier=0`，随后记录“Unitree链路检查失败”并回退 `local`。
+- 临时设置 `RABBITBOT_UNITREE_TTS_REQUIRE_CARRIER=0` 后，脚本能继续走到 `GetVolume` 探测，并在日志中记录 `Unitree音频服务探测失败：returncode=32 ... ret=3104`，随后回退 `local`。
+
+### 阻塞问题
+
+无代码层面阻塞。现场层面仍需恢复 `eno1` 链路后才能验证成功路径：接口 UP、有 IPv4、`GetVolume` 返回 0、auto 选择 `unitree`。
+
+### 建议的下一步
+
+- 恢复机器人网络链路后，重启 TTS 所在 core 服务，让新的 auto 健康检查生效。
+- 查看 `rabbitbot-dev-ros2-master/logs/unified_runtime/rabbitbot_tts.log`，确认是否出现 `TTS启动检查: TTS后端自动选择完成：effective=unitree`。
+- 如果链路恢复后仍回退 `local`，优先看同一段日志里的失败阶段：接口、carrier、IPv4、桥接构建或 `GetVolume` 探测。
+
+### 注意事项
+
+- `GetVolume` 探测是只读接口，不发送 `TtsMaker`，不会产生播报声音。
+- `RABBITBOT_UNITREE_TTS_AUTO_PROBE=0` 可临时跳过音频服务探测，但不建议现场常态使用；否则又会退回“链路看起来可用但机器人音频服务不可用”的不可靠状态。
+- 本轮新增/调整日志点：`TTS启动检查` 会记录 auto 判定开始、接口状态、carrier/IP 检查结果、桥接程序构建状态、Unitree 音频服务探测开始/成功/失败、stdout/stderr 摘要和最终 effective 后端。这些日志用于快速定位 TTS 是因物理链路、IP、SDK/桥接构建还是机器人音频服务失败而回退。
+- 生成时间：2026-06-16 13:55:00
