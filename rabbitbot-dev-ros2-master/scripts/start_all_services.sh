@@ -54,7 +54,7 @@ MEMORY_AGENT_PORT=28182
 ROBOT_AGENT_PORT=28180
 
 TTS_DEVICE_NAME="${TTS_DEVICE_NAME:-BT67}"
-STT_DEVICE_NAME="${STT_DEVICE_NAME:-Wireless Mic Rx}"
+STT_DEVICE_NAME="${STT_DEVICE_NAME:-}"
 RABBITBOT_UNIFIED_START_STT="${RABBITBOT_UNIFIED_START_STT:-0}"
 
 AUTO_START_WORKFLOW="${AUTO_START_WORKFLOW:-1}"
@@ -273,8 +273,12 @@ start_stt() {
         return 0
     fi
 
-    log_info "通过 scripts/start_stt_app.bash 启动 STT"
-    exec_detached "${AUDIO_CONTAINER}" "cd '${CONTAINER_PROJECT_DIR}' && mkdir -p '${CONTAINER_LOG_DIR}' && export STT_DEVICE_NAME='${STT_DEVICE_NAME}' && bash scripts/start_stt_app.bash > '${CONTAINER_LOG_DIR}/rabbitbot_stt.log' 2>&1"
+    log_info "通过 scripts/start_stt_app.bash 启动 STT；设备选择由 STT 服务自身完成，显式覆盖=${STT_DEVICE_NAME:-未设置}"
+    local stt_device_export=""
+    if [ -n "${STT_DEVICE_NAME}" ]; then
+        stt_device_export="export STT_DEVICE_NAME='${STT_DEVICE_NAME}' && "
+    fi
+    exec_detached "${AUDIO_CONTAINER}" "cd '${CONTAINER_PROJECT_DIR}' && mkdir -p '${CONTAINER_LOG_DIR}' && ${stt_device_export}bash scripts/start_stt_app.bash > '${CONTAINER_LOG_DIR}/rabbitbot_stt.log' 2>&1"
     wait_until "STT 服务 (${STT_PORT})" "${WAIT_DEFAULT_SECONDS}" stt_ready
 }
 

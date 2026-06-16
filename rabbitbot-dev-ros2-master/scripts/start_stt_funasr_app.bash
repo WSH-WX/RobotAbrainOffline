@@ -40,6 +40,7 @@ DEVICE_NAME="${STT_DEVICE_NAME:-}"
 
 # 查找输入设备。必须在激活虚拟环境后执行，否则默认 python 可能没有 sounddevice。
 echo "查找输入设备，指定名称: ${DEVICE_NAME:-未指定}"
+echo "STT 输入设备自动选择策略: 显式指定名称 > 外接麦克风类设备 > 其它外接输入设备 > Orin 内置音频设备"
 DEVICE_INFO=$(python - <<'PYDEV'
 import os
 import sys

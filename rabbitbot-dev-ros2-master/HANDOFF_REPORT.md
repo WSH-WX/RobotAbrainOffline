@@ -1992,3 +1992,48 @@ Aaron 指出当前 `sound_docker`、`air_vln_container` 等 legacy 容器仍承�
 ### 其它信息
 
 - 本轮未新增代码日志点；排查使用了已有 workflow TTS 请求链路日志、Unitree TTS 服务端日志、STT 设备选择日志和 STT 输出日志。
+
+
+## 本轮补充：STT 设备选择从 workflow 解耦
+
+### 背景和目标
+
+- Aaron 要求确认并移除 workflow 编排层中的 STT 音频设备选择逻辑，让设备选择由 STT 服务自身完成。
+- 目标选择策略为：优先选择外接麦克风类设备；如果没有外接麦克风，再回退 Orin 自身音频设备。
+
+### 当前状态
+
+已完成：
+
+- 已从 `scripts_1/start_unified_integration_workflow.sh` 移除 `STT_DEVICE_NAME` 的默认值、容器兼容性比较、创建容器时的 `-e STT_DEVICE_NAME=...` 透传，以及 workflow 编排层的 STT 设备过滤日志。
+- 已从 `runtime/portable.env` 移除 `STT_DEVICE_NAME="DJI MIC MINI"`，当前运行态不再由 portable workflow 配置固定 STT 设备名。
+- 已保留 STT 服务脚本中的可选人工覆盖能力：只有调用方显式设置 `STT_DEVICE_NAME` 时，STT 服务才按名称优先选择；默认不设置时由 STT 服务自行扫描。
+- 已在 `scripts/start_stt_funasr_app.bash` 和 `scripts/start_stt_app.bash` 增加选择策略日志：`显式指定名称 > 外接麦克风类设备 > 其它外接输入设备 > Orin 内置音频设备`。
+- 已同步 legacy `scripts/start_all_services.sh`：不再默认 `STT_DEVICE_NAME=Wireless Mic Rx`；只有显式设置 `STT_DEVICE_NAME` 时才传给 STT 服务。
+
+### 已验证的事实
+
+- 语法检查通过：`bash -n scripts_1/start_unified_integration_workflow.sh`、`bash -n scripts/start_stt_funasr_app.bash`、`bash -n scripts/start_all_services.sh`、`bash -n scripts/start_stt_app.bash`。
+- 已用 `RECREATE_CONTAINER=1 bash scripts_1/start_unified_vlm_qa_workflow.sh` 重建 core portable 容器；新容器环境中没有 `STT_DEVICE_NAME`，仅保留 `RABBITBOT_UNIFIED_START_STT=1`。
+- 最新 STT 日志显示 `查找输入设备，指定名称: 未指定`，随后打印自动选择策略，并自行扫描候选设备。
+- 最新 STT 自动选择结果为 `DJI MIC MINI: USB Audio (hw:2,0)，index=24`，说明未指定设备名时仍会优先选中外接麦克风类设备。
+- 当前 workflow、VLM、TTS、STT 均在 `rabbitbot-unified-runtime` 内运行，端口 `8000/28184/28185` 均可用。
+
+### 阻塞问题
+
+- STT 设备选择已按要求解耦；仍未证明 DJI MIC MINI 真实收到现场语音，后续若仍无识别文本，需要继续检查物理麦克风链路。
+- 本轮重建后 Unitree TTS 仍出现 `ret=3104`，这是机器人本体音响/DDS 响应问题，与 STT 设备选择解耦无关。
+
+### 建议的下一步
+
+- 现场对 DJI MIC MINI 说一句短句，确认 `logs/unified_runtime/rabbitbot_stt.log` 是否出现非空识别文本。
+- 如果需要临时强制某个 STT 设备，仍可在启动 STT 服务前显式设置 `STT_DEVICE_NAME`；默认情况下不要在 workflow 编排层设置该变量。
+
+### 注意事项
+
+- 后续不要把 `STT_DEVICE_NAME` 写回 `runtime/portable.env`，否则会重新把设备选择上移到编排层。
+- 如果新增其它启动脚本，应遵循同一原则：STT 设备选择留在 STT 服务入口脚本内完成。
+
+### 其它信息
+
+- 本轮新增/调整日志点用于证明 STT 服务自身的选择策略和最终设备选择，便于排查是否又被外层环境变量覆盖。
