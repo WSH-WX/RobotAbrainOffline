@@ -1956,3 +1956,39 @@ Aaron 指出当前 `sound_docker`、`air_vln_container` 等 legacy 容器仍承�
 ### 其它信息
 
 - 本轮新增日志点位于 `scripts/start_tts_app.bash`：`TTS后端自动选择` 会记录 auto 决策、Unitree 接口名和最终有效后端，用于区分“按要求选择了机器人本体音响但 DDS 失败”和“接口缺失后回退本地声卡”。
+
+
+## 本轮补充：最新 workflow TTS/STT 日志判断
+
+### 背景和目标
+
+- Aaron 重新启动了一次 VLM QA workflow，要求只通过各类日志判断 TTS 和 STT 是否有问题。
+
+### 当前状态
+
+- 最新 workflow 日志为 `logs/vlm_qa_workflow/vlm_qa_workflow_20260616_035129.log`。
+- 当前 workflow、TTS、STT、VLM 均在 `rabbitbot-unified-runtime` 内运行，端口 `8000/28184/28185` 均可用。
+- 本轮只读排查日志，未改动运行中的服务状态。
+
+### 已验证的事实
+
+- TTS 本轮正常：workflow 开场语“你好，请问需要我做些什么吗？”在 `2026-06-16 03:51:31` 发出，`workflow_tts_request_done` 返回 `tts_index=3`，耗时约 `0.370s`。
+- TTS 服务端确认走 Unitree：日志包含 `TTS后端自动选择: interface=eno1, effective=unitree` 和 `RABBITBOT_TTS_BACKEND: unitree`。
+- TTS 服务端确认 Unitree 成功：同一开场语返回 `Unitree G1 设置音量完成: ret=0` 和 `Unitree G1 TTS请求完成: ret=0`，HTTP `/exec` 返回 200。
+- STT 服务本身运行正常并选中 DJI MIC MINI：日志显示 `使用输入音频设备 DJI MIC MINI: USB Audio (hw:2,0)，index=24`、`Starting audio stream on device 24`。
+- DJI MIC MINI ALSA capture 当前为打开状态：`Mic,0` 和 `Mic,1` 均为 `[on]`。
+- STT 当前没有识别到真实用户文本：最近 workflow 多轮只看到 `audio_input: timeout 30`，STT 日志持续返回 `<REC_START>` 和空字符串，没有出现可用于问答的中文文本；最新问答日志 `vlm_qa_dialogue_20260616_035131.log` 仍为空。
+
+### 阻塞问题
+
+- TTS 从日志看本轮无软件链路问题；若现场仍听不到，优先查机器人本体音量、扬声器或现场音频输出状态。
+- STT 的服务和设备选择正常，但没有有效识别结果；如果现场确实对 DJI MIC MINI 讲话，需要继续查 DJI 发射端配对、电量、静音、接收端输出或输入电平。
+
+### 建议的下一步
+
+- 现场对 DJI MIC MINI 说一句短句，同时观察 `logs/unified_runtime/rabbitbot_stt.log` 是否出现非空识别文本；若仍为空，优先在停止 STT 后用 `arecord` 直接录 DJI MIC MINI 验证输入电平。
+- 若现场听不到开场语但日志仍显示 Unitree `ret=0`，需要现场检查机器人本体音量/音频服务，而不是切换到 BT67。
+
+### 其它信息
+
+- 本轮未新增代码日志点；排查使用了已有 workflow TTS 请求链路日志、Unitree TTS 服务端日志、STT 设备选择日志和 STT 输出日志。
