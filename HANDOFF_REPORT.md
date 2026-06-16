@@ -985,3 +985,57 @@ Aaron 反馈当前 TTS 不能播放，要求确认根因是否仍是缺少 `unit
 - 本轮新增/调整日志点：未新增业务日志；排查使用了现有 TTS 日志中的 `stage=bridge_binary_ready`、`tts_request_start`、`tts_request_retry_without_volume`、`tts_request_error`、`ret=3104`，以及 NetworkManager 的 `eno1 carrier-changed` 日志。这些日志足以区分 SDK 缺失、桥接程序缺失、接口返回错误和物理链路断开。
 - 生成时间：2026-06-16 13:20:00
 
+## 本轮补充：TTS 服务代码逻辑梳理
+
+### 背景和目标
+
+Aaron 暂时不继续排查机器人网络链路，希望先优化 TTS 服务本身。本轮目标是只读梳理当前 TTS 服务相关代码，明确启动链路、HTTP 接口、Unitree 本体后端、本地 Kokoro 后端、workflow 调用层以及已暴露的不可靠点，为后续重构或加固做准备。
+
+### 当前状态
+
+已完成：
+
+- 已阅读 `scripts_1/unified_runtime/start_unified_container.sh` 中 TTS 启动入口。
+- 已阅读 `scripts/start_tts_app.bash` 中后端自动选择和本地声卡扫描逻辑。
+- 已阅读 `tts_app.py` 中 FastAPI `/exec` 与 `/v1/chat/completions` 接口、启动预热、快捷语音逻辑。
+- 已阅读 `rabbitbot/audio/unitree_g1_tts.py` 中 Unitree G1 本体 TTS 后端逻辑。
+- 已阅读 `scripts/unitree_g1_tts_bridge.cpp` 与 `scripts/build_unitree_g1_tts_bridge.sh` 中 C++ 桥接和 SDK2 构建逻辑。
+- 已阅读 `rabbitbot/audio/run_tts_espnet.py` 中本地 Kokoro/Cloud TTS 合成、播放队列、停止逻辑。
+- 已阅读 `rabbitbot/tools/sound_agno.py` 与 `rabbitbot/provider.py` 中 workflow 对 TTS 的调用、错误降级和回声清理逻辑。
+- 已快速查看 `sound/tts_server_kokoro.py`，确认它是历史 `/v1` 风格的独立 TTS 服务，不是当前 portable core 默认 `/exec` 服务。
+
+未完成：
+
+- 本轮没有修改 TTS 业务代码。
+- 本轮没有运行新的 TTS 实机播报测试。
+- 本轮没有设计最终优化方案，仅完成现有逻辑梳理。
+
+### 已验证的事实
+
+- 当前 portable core 默认由 `start_unified_container.sh` 启动 `scripts/start_tts_app.bash`，服务端口为 28185，并要求 `/exec` 探活成功。
+- `start_tts_app.bash` 的 `auto` 模式只检查 Unitree 网卡名是否存在，不检查链路载波、IP、DDS 可达性或机器人音频服务可用性；只要接口存在就会选择 `unitree` 后端。
+- `tts_app.py` 在模块导入阶段同步初始化 TTS 引擎、执行 warmup、注册大量 FastSound 文案，并可能执行启动播报；Uvicorn 真正开始监听前会先完成这些初始化步骤。
+- Unitree 后端是同步调用：每个 `text_to_speech` 请求会启动一次 C++ 桥接进程，先尝试带音量调用，失败后再不带音量重试；成功后用文本长度估算播放时长维护本地 `pending_until`。
+- Unitree 后端没有真实播放完成回调，也没有真实停止接口；`wait_speech` 和 `stop` 都只是本地估算或本地状态清理。
+- 本地 Kokoro 后端是异步流水：HTTP 请求只把文本放进队列并返回 `tts_index`；后台文本线程合成 wav，后台播放线程重采样并写入 sounddevice 输出流。
+- workflow 调用层通过 `TTSAgent` POST 到 `/exec`，解析 `out_text`；请求异常、超时或响应不能解析时默认返回空字符串，再由 `sound_agno.py` 降级为 `-1` 或跳过等待，除非启用 `RABBITBOT_TTS_STRICT_FAILURE`。
+- 历史 `sound/tts_server_kokoro.py` 暴露的是 `/v1` JSON 接口，和当前 workflow 默认 `/exec` 表单接口不兼容；启动脚本现在会检查 28185 是否为 `/exec` 兼容服务，避免误用历史服务。
+
+### 阻塞问题
+
+无代码阅读层面的阻塞。后续若要优化可靠性，需要先决定是继续强化 Unitree 本体 TTS，还是抽象出统一 TTS 状态机同时兼容 Unitree 与本地 Kokoro 输出。
+
+### 建议的下一步
+
+- 优先把 TTS 后端选择从“接口存在”升级为“健康检查通过”，至少区分网卡存在、链路有载波、IP 配置、桥接程序可执行、机器人音频接口可用。
+- 将 Unitree 播报从同步 HTTP 请求内直接执行改为队列式 worker，避免单次 DDS 卡顿或重试阻塞 `/exec` 请求线程。
+- 为 Unitree 后端建立明确状态：启动就绪、机器人可达、音频接口错误、正在播报、估算等待中、降级可用，并暴露健康接口或状态任务。
+- 统一 `/exec` 与历史 `/v1` 服务边界，避免 28185 上出现“端口存在但协议不兼容”的假就绪。
+- 改造错误返回：服务端应返回结构化错误码和阶段，调用层不要只依赖 `out_text` 是否可转整数。
+
+### 注意事项
+
+- 当前 TTS 可靠性问题不只在 Unitree SDK 或网络，还包括后端选择、同步阻塞、缺少真实播放状态、错误语义不清和调用层默认吞错。
+- 本轮新增/调整日志点：未新增业务日志；但梳理确认现有关键日志分布在启动脚本的后端选择日志、`Unitree本体TTS` 阶段日志、本地 `TTS服务链路` 阶段日志、workflow `TTS请求链路` 日志和 `/exec` 探活日志。后续优化时应优先围绕这些阶段补齐结构化状态与错误码。
+- 生成时间：2026-06-16 13:45:00
+
