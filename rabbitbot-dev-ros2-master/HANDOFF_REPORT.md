@@ -1850,3 +1850,56 @@ Aaron 指出当前 `sound_docker`、`air_vln_container` 等 legacy 容器仍承�
 ### 其它信息
 
 本轮新增/调整日志点主要在 shell 启动脚本：portable 模式停止 legacy 容器时记录容器名和镜像；TTS `/exec` 归属检查成功时记录成功；core 容器已运行但 TTS `/exec` 不可用时记录重启原因；容器内发现 `28185` 被非 `/exec` 服务占用时输出明确错误。这些日志用于定位服务到底由 portable core 还是 legacy 容器提供，以及排查 TTS 端口抢占。
+
+## 本轮补充：修复 VLM QA 音频桥接
+
+### 背景和目标
+
+- 目标是修复 VLM QA workflow 中“麦克风无法输入、机器人音响不播报”的问题，并确保 STT 麦克风按现场指定使用 `DJI MIC MINI`，不是 `BT67`。
+- 当前项目路径为 `/mnt/disk1/gt/air_robot_gt_projects/rabbitbot-dev-ros2-master`，分支为 `feature/qa-vlm-workflow`。
+
+### 当前状态
+
+已完成：
+
+- 已将 `runtime/portable.env` 的运行态配置改为 `STT_DEVICE_NAME="DJI MIC MINI"`，避免 shell 读取带空格设备名时报 `MIC: command not found`。
+- 已保留 `RABBITBOT_UNITREE_TTS_SPEAKER_ID=1`，当前 TTS 走 Unitree G1 本体音响，网卡为 `eno1`。
+- 已让 `scripts_1/start_unified_integration_workflow.sh` 透传 `STT_DEVICE_NAME` 到 `rabbitbot-unified-runtime`，并把该变量纳入容器兼容性检查；后续切换 STT 设备时会自动重建不匹配容器，避免复用旧设备配置。
+- 已让 `scripts/start_stt_funasr_app.bash` 默认把 STT 启动提示音发送到 `http://127.0.0.1:28185/v1`，避免继续请求错误的 TTS 地址。
+- 已补充启动日志：unified 容器创建前打印 `STT 输入设备过滤`，STT 启动前打印 `STT 启动提示 TTS 地址`，便于后续确认运行态配置是否进入容器。
+- 已重新启动 VLM QA workflow；当前 `rabbitbot-unified-runtime`、`rabbitbot-portable-rabbitbot-nav-1` 均为 portable 镜像体系，workflow 保持运行，未在验证后终止。
+
+未完成：
+
+- 远程无法实际听到机器人现场音响，也无法现场对着 DJI MIC MINI 说话；本轮通过设备选择、音频流启动、HTTP 注入和 Unitree TTS 返回码完成链路验证。现场仍需人工说一句话，确认真实拾音和物理播报体感。
+
+### 已验证的事实
+
+- 当前容器环境中 `STT_DEVICE_NAME=DJI MIC MINI`，`RABBITBOT_TTS_BACKEND=unitree`，`RABBITBOT_UNITREE_TTS_SPEAKER_ID=1`。
+- STT 日志确认：`查找输入设备，指定名称: DJI MIC MINI`，并选中 `DJI MIC MINI: USB Audio (hw:2,0)，index=24`，随后 `Starting audio stream on device 24`。
+- TTS 日志确认：Unitree 后端初始化为 `network=eno1, speaker=1, volume=100`；启动提示音、workflow 开场语和注入测试回答均返回 `Unitree G1 TTS请求完成: ret=0`。
+- workflow 日志确认：开场语“你好，请问需要我做些什么吗？”拿到有效 `tts_index=1`；注入问题后 VLM 首 token 用时约 `2.046s`，首段 TTS 提交用时约 `2.871s`，本轮测试总耗时约 `7.801s`。
+- 本轮注入验证命令返回 HTTP 200，问答日志路径为 `logs/vlm_qa_workflow/vlm_qa_dialogue_20260616_030709.log`，其中记录了用户问题和回答内容。
+- 当前三个关键端口均已就绪：VLM `8000`、STT `28184`、TTS `28185`。
+- 已执行 `bash -n scripts_1/start_unified_integration_workflow.sh` 和 `bash -n scripts/start_stt_funasr_app.bash`，语法检查通过。
+
+### 阻塞问题
+
+- 无代码层面的阻塞。
+- 物理拾音和物理播报最终效果仍依赖现场硬件连接、DJI MIC MINI 发射端状态、G1 音频服务状态和 `eno1` 到机器人网线连接，远程只能验证软件链路和后端返回码。
+
+### 建议的下一步
+
+- 现场对着 DJI MIC MINI 说一句短问题，观察 `logs/vlm_qa_workflow/vlm_qa_workflow_latest.log` 是否出现“收到用户问题”，并确认机器人音响真实播报。
+- 如现场仍听不到声音，优先查看 `logs/unified_runtime/rabbitbot_tts.log` 中最新 `speaker=1` 请求是否仍返回 `ret=0`；若返回成功但无声，排查 G1 音量、音频路由和机器人本体音响状态。
+- 如现场仍无法拾音，优先查看 `logs/unified_runtime/rabbitbot_stt.log` 是否持续使用 `DJI MIC MINI` index 24，并检查 DJI MIC MINI 接收端/发射端连接和电量。
+
+### 注意事项
+
+- `runtime/portable.env` 未纳入 Git，当前必须保持 `STT_DEVICE_NAME="DJI MIC MINI"` 这种带引号写法；不要写成未加引号的 `STT_DEVICE_NAME=DJI MIC MINI`。
+- `BT67` 当前不是 STT 麦克风；它曾被误选过一次，本轮已更正并重建 core portable 容器。
+- 当前 workflow 仍在运行；不要为了查看日志而停止 workflow。若需要重新启动，直接运行 `scripts_1/start_unified_vlm_qa_workflow.sh`，该脚本会先清理已有 workflow 进程，但不会停止容器基础服务。
+
+### 其它信息
+
+- 本轮新增/调整日志点覆盖了 STT 设备过滤、TTS 地址默认值、容器兼容性中 STT 设备变化原因，以及 STT/TTS 关键启动路径。这些日志用于快速判断问题发生在设备选择、容器复用、TTS 地址路由还是 Unitree 本体播报后端。

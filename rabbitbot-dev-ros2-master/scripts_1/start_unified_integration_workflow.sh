@@ -106,6 +106,7 @@ RABBITBOT_UNITREE_TTS_VOLUME="${RABBITBOT_UNITREE_TTS_VOLUME:-100}"
 RABBITBOT_UNITREE_TTS_SPEAKER_ID="${RABBITBOT_UNITREE_TTS_SPEAKER_ID:-0}"
 RABBITBOT_UNITREE_TTS_TIMEOUT="${RABBITBOT_UNITREE_TTS_TIMEOUT:-10}"
 RABBITBOT_PORTABLE_STOP_LEGACY_CONTAINERS="${RABBITBOT_PORTABLE_STOP_LEGACY_CONTAINERS:-sound_docker air_vln_container}"
+STT_DEVICE_NAME="${STT_DEVICE_NAME:-}"
 
 # portable 自包含运行模式：
 #   当 RABBITBOT_RUNTIME_MODE=portable 且 RABBITBOT_PORTABLE_INJECT_DEPS!=0 时，
@@ -314,6 +315,8 @@ ensure_compatible_container() {
     container_start_embedding="$(container_env_value "${CONTAINER_NAME}" RABBITBOT_UNIFIED_START_EMBEDDING || true)"
     local container_start_stt
     container_start_stt="$(container_env_value "${CONTAINER_NAME}" RABBITBOT_UNIFIED_START_STT || true)"
+    local container_stt_device_name
+    container_stt_device_name="$(container_env_value "${CONTAINER_NAME}" STT_DEVICE_NAME || true)"
     local container_start_robot_agent
     container_start_robot_agent="$(container_env_value "${CONTAINER_NAME}" RABBITBOT_UNIFIED_START_ROBOT_AGENT || true)"
     local container_tts_backend
@@ -347,6 +350,8 @@ ensure_compatible_container() {
         incompatible_reason="Embedding 启动配置变化：container=${container_start_embedding:-未设置}, expected=${RABBITBOT_UNIFIED_START_EMBEDDING}"
     elif [ "${container_start_stt:-未设置}" != "${RABBITBOT_UNIFIED_START_STT}" ]; then
         incompatible_reason="STT 启动配置变化：container=${container_start_stt:-未设置}, expected=${RABBITBOT_UNIFIED_START_STT}"
+    elif [ "${container_stt_device_name:-}" != "${STT_DEVICE_NAME}" ]; then
+        incompatible_reason="STT 输入设备名称变化：container=${container_stt_device_name:-未设置}, expected=${STT_DEVICE_NAME:-未设置}"
     elif [ "${container_start_robot_agent:-1}" != "${RABBITBOT_UNIFIED_START_ROBOT_AGENT}" ]; then
         # 旧容器未设置该变量时视为 1（legacy 行为），避免 legacy 模式误判重建；portable 期望 0 时会触发重建。
         incompatible_reason="Robot Agent 启动配置变化：container=${container_start_robot_agent:-未设置(按1)}, expected=${RABBITBOT_UNIFIED_START_ROBOT_AGENT}"
@@ -440,6 +445,7 @@ create_container_if_needed() {
 
     log_info "创建统一容器基础服务底座：${CONTAINER_NAME}"
     log_info "TTS 默认后端：${RABBITBOT_TTS_BACKEND}，Unitree 网卡：${RABBITBOT_UNITREE_TTS_INTERFACE}，音量：${RABBITBOT_UNITREE_TTS_VOLUME}"
+    log_info "STT 输入设备过滤：${STT_DEVICE_NAME:-未指定，使用自动选择}"
     docker create \
         --name "${CONTAINER_NAME}" \
         --network host \
@@ -463,6 +469,7 @@ create_container_if_needed() {
         -e RABBITBOT_UNIFIED_START_VLM="${RABBITBOT_UNIFIED_START_VLM}" \
         -e RABBITBOT_UNIFIED_START_EMBEDDING="${RABBITBOT_UNIFIED_START_EMBEDDING}" \
         -e RABBITBOT_UNIFIED_START_STT="${RABBITBOT_UNIFIED_START_STT}" \
+        -e STT_DEVICE_NAME="${STT_DEVICE_NAME}" \
         -e RABBITBOT_UNIFIED_START_ROBOT_AGENT="${RABBITBOT_UNIFIED_START_ROBOT_AGENT}" \
         -e RABBITBOT_ROBOT_AGENT_URL="${RABBITBOT_ROBOT_AGENT_URL}" \
         -e AUTO_START_WORKFLOW=0 \
