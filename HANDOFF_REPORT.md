@@ -934,3 +934,54 @@ Aaron 启动 `scripts_1/start_unified_vlm_qa_workflow.sh` 时遇到 `模型目�
 
 本轮新增/调整的日志点：未新增业务日志。`deploy/ensure_models.sh` 仍保留原有下载开始、模型已存在、下载完成和总数日志；修复点是底层下载实现从 CLI 改为 Python API，以避免 Hugging Face CLI 兼容失败。
 
+## 本轮补充：TTS 不能播放根因排查
+
+### 背景和目标
+
+Aaron 反馈当前 TTS 不能播放，要求确认根因是否仍是缺少 `unitree_sdk2`。本轮目标是在 ShuHao-orin 当前运行态下检查 portable core 镜像、统一容器、TTS 日志、Unitree TTS 桥接程序和机器人网络链路，区分依赖缺失、构建失败、接口返回错误和现场链路问题。
+
+### 当前状态
+
+已完成：
+
+- 已确认当前 Git 分支为 `feature/qa-vlm-workflow`，HEAD 为 `aa664a1`。
+- 已确认当前运行的 `rabbitbot-unified-runtime` 容器使用镜像 `ghcr.io/aaronai/rabbitbot-core-portable:20260611`，镜像 ID 为 `sha256:9c7cb9f9c774d435d393d7500b5e5c5c75f959b4f40a06a116b69faf332df15c`，与此前包含 `unitree_sdk2` 的新 core 镜像一致。
+- 已确认容器内存在 `/workspace/projects/unitree_sdk2`，且 `/workspace/projects/unitree_sdk2/lib/aarch64/libunitree_sdk2.a` 存在。
+- 已确认 `rabbitbot-dev-ros2-master/build/unitree_g1_tts_bridge` 可执行文件存在，`ldd` 能解析到 `/workspace/projects/unitree_sdk2/thirdparty/lib/aarch64/libddsc.so.0` 与 `libddscxx.so.0`。
+- 已确认当前 TTS 服务 28185 已启动，日志显示 `stage=bridge_binary_ready`，说明不是桥接程序缺失或 SDK 缺失导致启动失败。
+- 已手工在容器内执行 Unitree TTS 桥接程序，返回 `Unitree G1 TTS请求完成: ret=3104`，进程退出码为 32。
+- 已确认当前宿主 `eno1` 为 `NO-CARRIER` / `DOWN`，地址仍配置为 `192.168.123.222/24`，但链路无载波。
+- 已确认容器内对机器人网段地址 `192.168.123.161` ping 失败，100% 丢包。
+- 已查 NetworkManager 日志：`eno1` 曾在 09:56:14 连接并激活，11:48:47 再次显示 link connected，但 12:16:19 因 `carrier-changed` 变为 unavailable。
+- 已对比历史 TTS 日志：早些时候 `rabbitbot-dev-ros2-master/logs/rabbitbot_tts.log` 中多次 TTS 请求返回 `ret=0`，包括 02:46 到 02:58 的播报测试；当前 `unified_runtime/rabbitbot_tts.log` 在 13:06 后开始出现 `ret=3104`。
+
+未完成：
+
+- 本轮未修复现场物理链路，也未重启机器人或机器人侧音频服务。
+- 本轮没有改业务代码；只做运行态诊断和报告记录。
+
+### 已验证的事实
+
+- 当前 TTS 不能播放的直接失败点不是缺少 `unitree_sdk2`。SDK 目录、静态库、第三方动态库、桥接程序和 TTS 服务启动链路均已验证存在且可运行。
+- 当前失败表现是 Unitree SDK2 `AudioClient.SetVolume()` 与 `AudioClient.TtsMaker()` 调用机器人本体音频服务返回 `ret=3104`。
+- 当前 `eno1` 没有物理载波，机器人 DDS 网络不可达；这与 TTS 失败时间线吻合。
+- 历史日志证明同一套 TTS 代码和 SDK 在链路正常时可以返回 `ret=0`，因此当前问题更符合机器人网络链路断开、机器人侧音频服务不可达或忙碌，而不是 core 镜像缺 SDK。
+
+### 阻塞问题
+
+当前阻塞是现场机器人网络链路不可用：`eno1` 为 `NO-CARRIER/DOWN`，导致 Unitree 本体 TTS 通过 DDS 调机器人音频服务失败。需要恢复机器人网线、交换机或机器人侧网络状态后，才能继续验证 TTS 是否恢复为 `ret=0`。
+
+### 建议的下一步
+
+- 现场先检查机器人网线、交换机、电源和机器人网络口，确认 `ip -brief addr show dev eno1` 不再显示 `DOWN`，并保持 `192.168.123.222/24`。
+- 链路恢复后，先运行容器内桥接程序小测试，命令为：`docker exec rabbitbot-unified-runtime bash -lc "cd /workspace/projects/rabbitbot-dev-ros2-master && ./build/unitree_g1_tts_bridge --network eno1 --text 诊断测试 --speaker 1 --volume -1 --timeout 3"`，期望返回 `ret=0`。
+- 如果链路恢复后仍返回 `ret=3104`，下一步应排查机器人本体音频服务是否运行、是否被占用、speaker 编号是否匹配，以及是否需要重启机器人侧音频服务或整机。
+- 若只是需要临时验证问答链路，可考虑把 TTS 后端临时切到非 Unitree 本体输出，但这不等价于修复机器人本体播报。
+
+### 注意事项
+
+- 不能只看镜像 tag 判断 SDK 是否更新；本轮已用镜像 ID 和容器内文件验证，当前运行容器确实是包含 `unitree_sdk2` 的新 core 镜像。
+- `ret=3104` 是桥接程序成功运行后由 Unitree 音频接口返回的错误码，不是本地 C++ 程序构建失败。
+- 本轮新增/调整日志点：未新增业务日志；排查使用了现有 TTS 日志中的 `stage=bridge_binary_ready`、`tts_request_start`、`tts_request_retry_without_volume`、`tts_request_error`、`ret=3104`，以及 NetworkManager 的 `eno1 carrier-changed` 日志。这些日志足以区分 SDK 缺失、桥接程序缺失、接口返回错误和物理链路断开。
+- 生成时间：2026-06-16 13:20:00
+
