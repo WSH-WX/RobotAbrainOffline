@@ -1903,3 +1903,56 @@ Aaron 指出当前 `sound_docker`、`air_vln_container` 等 legacy 容器仍承�
 ### 其它信息
 
 - 本轮新增/调整日志点覆盖了 STT 设备过滤、TTS 地址默认值、容器兼容性中 STT 设备变化原因，以及 STT/TTS 关键启动路径。这些日志用于快速判断问题发生在设备选择、容器复用、TTS 地址路由还是 Unitree 本体播报后端。
+
+## 本轮补充：TTS auto 选择与 DJI capture 修复
+
+### 背景和目标
+
+- Aaron 明确要求：优先使用机器人本体音响，不要直接切到 `BT67`；`BT67` 只能作为没有 `eno1` 时的回退方案，并且设备选择逻辑应放在 TTS 服务侧，不应硬编码在 workflow 启动逻辑里。
+
+### 当前状态
+
+已完成：
+
+- 已撤销 workflow 编排侧传递 `TTS_DEVICE_NAME=BT67` 的改动；当前 `scripts_1/start_unified_integration_workflow.sh` 和 `scripts_1/unified_runtime/start_unified_container.sh` 不包含 `TTS_DEVICE_NAME` 选择逻辑。
+- 已在 `scripts/start_tts_app.bash` 增加 TTS 服务侧 `auto` 后端：
+  - 默认 `RABBITBOT_TTS_BACKEND=auto`。
+  - 检测到 `RABBITBOT_UNITREE_TTS_INTERFACE` 对应接口存在时，导出 `RABBITBOT_TTS_BACKEND=unitree`，使用机器人本体音响。
+  - 只有接口不存在时才回退 `local`，并把 `TTS_DEVICE_NAME` 默认设为 `BT67`。
+- 已将运行态 `runtime/portable.env` 改为 `RABBITBOT_TTS_BACKEND=auto`，保留 `STT_DEVICE_NAME="DJI MIC MINI"` 和 `RABBITBOT_UNITREE_TTS_SPEAKER_ID=1`。
+- 已打开 DJI MIC MINI 的 ALSA capture 开关：`Mic,0` 当前为 `[on]`，音量 100%；并执行 `alsactl store` 保存当前 ALSA 状态。
+- 当前 workflow、STT、TTS、VLM 均在 `rabbitbot-unified-runtime` 内运行。
+
+未完成：
+
+- 机器人本体音响仍未成功播报。当前不是 BT67 选择问题，而是 `eno1` 物理链路/Unitree DDS 问题。
+- 现场对 DJI MIC MINI 讲话仍未在 workflow 日志中出现识别文本；已修复 capture muted 问题，但仍需现场复测发射端/接收端链路。
+
+### 已验证的事实
+
+- TTS 日志确认 auto 逻辑已按要求选择 Unitree：`TTS后端自动选择: interface=eno1, effective=unitree`，`RABBITBOT_TTS_BACKEND: unitree`。
+- 当前宿主 `eno1` 已恢复为 `UP 192.168.123.222/24`，但 Unitree bridge 仍返回 `ret=3104`，说明接口存在和链路 UP 还不足以完成机器人音频服务/DDS 响应。
+- Unitree bridge 绑定 `eno1` 时不再报“接口名不存在”，但返回 `ret=3104`；workflow 开场 TTS 和 STT 启动提示 TTS 均因 Unitree bridge 返回失败而没有有效 `tts_index`。
+- STT 日志确认仍选中 `DJI MIC MINI: USB Audio (hw:2,0)，index=24` 并启动音频流。
+- DJI MIC MINI 的 ALSA capture 曾为 `[off]`，本轮已改为 `[on]`；由于 STT 进程占用设备，宿主 `arecord` 无法并行录音验证电平，返回 `Device or resource busy`。
+- 已执行语法检查：`bash -n scripts/start_tts_app.bash` 通过。
+
+### 阻塞问题
+
+- `eno1` 当前已显示 UP，但机器人本体音响 DDS/TTS 仍返回 `ret=3104`，无法成功响应。需要现场确认 Orin 到机器人本体网络通信、机器人侧音频服务状态和 DDS 域/网卡配置。
+- DJI MIC MINI 是否真实输入语音仍未验证成功；如果现场确认已经对麦克风说话但日志仍只有空文本，需要继续检查 DJI 发射端配对、电量、静音状态和接收端输出。
+
+### 建议的下一步
+
+- 现场先确认 Orin 与机器人之间 `eno1` 网络通信和机器人音频服务状态；当前 `ip -br addr show eno1` 已显示 `UP 192.168.123.222/24`，下一步应让 Unitree bridge 返回 `ret=0`。
+- 链路恢复后查看 `logs/unified_runtime/rabbitbot_tts.log`，期待 Unitree TTS 请求返回 `ret=0`，workflow 开场语拿到有效 `tts_index`。
+- 对 DJI MIC MINI 说一句短问题，同时查看 `logs/vlm_qa_workflow/vlm_qa_workflow_latest.log` 是否出现“收到用户问题”。
+
+### 注意事项
+
+- 不要把 `RABBITBOT_TTS_BACKEND` 固定成 `local`，也不要在 workflow 启动脚本里传 `TTS_DEVICE_NAME=BT67`。
+- `BT67` 只作为 TTS 服务侧 auto 逻辑在 `eno1` 接口不存在时的回退设备；当前 `eno1` 存在，因此不会自动切 BT67。
+
+### 其它信息
+
+- 本轮新增日志点位于 `scripts/start_tts_app.bash`：`TTS后端自动选择` 会记录 auto 决策、Unitree 接口名和最终有效后端，用于区分“按要求选择了机器人本体音响但 DDS 失败”和“接口缺失后回退本地声卡”。

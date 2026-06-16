@@ -11,7 +11,26 @@ export HF_ENDPOINT=https://hf-mirror.com
 
 source /opt/venv/bin/activate
 
-RABBITBOT_TTS_BACKEND="${RABBITBOT_TTS_BACKEND:-unitree}"
+RABBITBOT_TTS_BACKEND="${RABBITBOT_TTS_BACKEND:-auto}"
+RABBITBOT_UNITREE_TTS_INTERFACE="${RABBITBOT_UNITREE_TTS_INTERFACE:-eno1}"
+
+unitree_interface_ready() {
+    [ -e "/sys/class/net/${RABBITBOT_UNITREE_TTS_INTERFACE}" ] \
+        || grep -q "^ *${RABBITBOT_UNITREE_TTS_INTERFACE}:" /proc/net/dev 2>/dev/null
+}
+
+if [ "${RABBITBOT_TTS_BACKEND}" = "auto" ]; then
+    if unitree_interface_ready; then
+        echo "TTS后端自动选择: interface=${RABBITBOT_UNITREE_TTS_INTERFACE}, effective=unitree"
+        RABBITBOT_TTS_BACKEND="unitree"
+    else
+        echo "TTS后端自动选择: interface=${RABBITBOT_UNITREE_TTS_INTERFACE}不可用，回退本地外接输出设备"
+        RABBITBOT_TTS_BACKEND="local"
+        export TTS_DEVICE_NAME="${TTS_DEVICE_NAME:-BT67}"
+    fi
+    export RABBITBOT_TTS_BACKEND
+fi
+
 case "${RABBITBOT_TTS_BACKEND}" in
     unitree|g1|robot)
         echo "使用 Unitree G1 本体 TTS 后端，跳过 Orin 本地输出声卡扫描。音量=${RABBITBOT_UNITREE_TTS_VOLUME:-100}"
