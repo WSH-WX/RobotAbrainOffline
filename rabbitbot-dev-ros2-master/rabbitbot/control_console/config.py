@@ -17,6 +17,8 @@ class ConsoleConfig:
     workflow_control_dir: Path
     nav_log_dir: Path
     nav_container_name: str
+    runtime_container_name: str
+    docker_path: Path
     workflow_log_dir: Path
     current_runtime_log: Path
     loop_service_name: str
@@ -47,6 +49,8 @@ class ConsoleConfig:
                 "RABBITBOT_NAV_BRIDGE_CONTAINER_NAME",
                 f"{os.environ.get('RABBITBOT_PORTABLE_COMPOSE_PROJECT', 'rabbitbot-portable')}-rabbitbot-nav-1",
             ),
+            runtime_container_name=os.environ.get("RABBITBOT_UNIFIED_CONTAINER_NAME", os.environ.get("CONTAINER_NAME", "rabbitbot-unified-runtime")),
+            docker_path=Path(os.environ.get("RABBITBOT_CONSOLE_DOCKER_PATH", "/usr/bin/docker")),
             workflow_log_dir=project_root / "logs" / "nav_workflow_control",
             current_runtime_log=Path(os.environ.get("RABBITBOT_CURRENT_RUNTIME_LOG", str(project_root / "logs" / "current_runtime.log"))),
             loop_service_name=os.environ.get("RABBITBOT_LOOP_SERVICE", "rabbitbot-loop.service"),

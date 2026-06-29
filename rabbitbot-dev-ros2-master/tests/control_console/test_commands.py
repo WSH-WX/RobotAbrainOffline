@@ -147,21 +147,32 @@ def test_restart_loop_service_reports_failure(tmp_path):
     assert "restart failed" in str(excinfo.value)
 
 
-def test_stop_loop_service_invokes_systemctl_stop(tmp_path):
+def test_stop_loop_service_invokes_systemctl_stop_and_docker_restart(tmp_path):
     systemctl = tmp_path / "systemctl"
-    record = tmp_path / "record.txt"
+    docker = tmp_path / "docker"
+    systemctl_record = tmp_path / "systemctl_record.txt"
+    docker_record = tmp_path / "docker_record.txt"
     systemctl.write_text(
-        f"#!/usr/bin/env bash\nprintf '%s\n' \"$@\" > {record}\n",
+        f"#!/usr/bin/env bash\nprintf '%s\n' \"$@\" > {systemctl_record}\n",
         encoding="utf-8",
     )
     systemctl.chmod(0o755)
+    docker.write_text(
+        f"#!/usr/bin/env bash\nprintf '%s\n' \"$@\" > {docker_record}\necho rabbitbot-unified-runtime\n",
+        encoding="utf-8",
+    )
+    docker.chmod(0o755)
 
-    result = stop_loop_service(systemctl_path=systemctl, sudo_path=None)
+    result = stop_loop_service(systemctl_path=systemctl, sudo_path=None, docker_path=docker)
 
     assert result["ok"] is True
     assert result["service"] == "rabbitbot-loop.service"
-    assert result["message"] == "已关闭导航主程序"
-    assert record.read_text(encoding="utf-8").splitlines() == ["stop", "rabbitbot-loop.service"]
+    assert result["container"] == "rabbitbot-unified-runtime"
+    assert result["container_restarted"] is True
+    assert "已关闭导航主程序" in result["message"]
+    assert "已重启 Docker 容器 rabbitbot-unified-runtime" in result["message"]
+    assert systemctl_record.read_text(encoding="utf-8").splitlines() == ["stop", "rabbitbot-loop.service"]
+    assert docker_record.read_text(encoding="utf-8").splitlines() == ["restart", "rabbitbot-unified-runtime"]
 
 
 def test_stop_loop_service_rejects_other_services(tmp_path):

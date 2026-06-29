@@ -8,7 +8,9 @@ def make_config(tmp_path):
     project_root = tmp_path / "project"
     command_script = project_root / "scripts_1" / "send_nav_workflow_command.sh"
     systemctl_path = project_root / "bin" / "systemctl"
+    docker_path = project_root / "bin" / "docker"
     systemctl_record = project_root / "systemctl_args.txt"
+    docker_record = project_root / "docker_args.txt"
     map_env_file = project_root / "runtime" / "rabbitbot-loop.env"
     workflow_control_dir = project_root / "logs" / "nav_workflow_control" / "workflow_control"
     nav_log_dir = project_root / "logs" / "nav_workflow_control"
@@ -29,6 +31,8 @@ def make_config(tmp_path):
     command_script.chmod(0o755)
     systemctl_path.write_text(f"#!/usr/bin/env bash\nprintf '%s\n' \"$@\" > {systemctl_record}\n", encoding="utf-8")
     systemctl_path.chmod(0o755)
+    docker_path.write_text(f"#!/usr/bin/env bash\nprintf '%s\n' \"$@\" > {docker_record}\necho rabbitbot-unified-runtime\n", encoding="utf-8")
+    docker_path.chmod(0o755)
     return ConsoleConfig(
         project_root=project_root,
         host="127.0.0.1",
@@ -39,6 +43,8 @@ def make_config(tmp_path):
         workflow_control_dir=workflow_control_dir,
         nav_log_dir=nav_log_dir,
         nav_container_name="",
+        runtime_container_name="rabbitbot-unified-runtime",
+        docker_path=docker_path,
         workflow_log_dir=workflow_log_dir,
         current_runtime_log=current_runtime_log,
         loop_service_name="rabbitbot-loop.service",
@@ -206,9 +212,14 @@ def test_stop_stops_loop_service_without_login(tmp_path):
 
     assert response.status_code == 200
     assert response.json()["service"] == "rabbitbot-loop.service"
-    assert response.json()["message"] == "已关闭导航主程序"
+    assert response.json()["container"] == "rabbitbot-unified-runtime"
+    assert response.json()["container_restarted"] is True
+    assert "已关闭导航主程序" in response.json()["message"]
+    assert "已重启 Docker 容器 rabbitbot-unified-runtime" in response.json()["message"]
     record = config.project_root / "systemctl_args.txt"
     assert record.read_text(encoding="utf-8").splitlines() == ["stop", "rabbitbot-loop.service"]
+    docker_record = config.project_root / "docker_args.txt"
+    assert docker_record.read_text(encoding="utf-8").splitlines() == ["restart", "rabbitbot-unified-runtime"]
 
 
 def test_dialogue_loads_current_config(tmp_path):

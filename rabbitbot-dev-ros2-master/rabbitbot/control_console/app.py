@@ -461,6 +461,8 @@ def create_app(config: ConsoleConfig | None = None) -> FastAPI:
                 config.loop_service_name,
                 systemctl_path=config.systemctl_path,
                 sudo_path=config.sudo_path,
+                docker_path=config.docker_path,
+                runtime_container_name=config.runtime_container_name,
             )
         except CommandError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc

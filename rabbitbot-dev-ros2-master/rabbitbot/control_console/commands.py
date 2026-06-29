@@ -11,6 +11,7 @@ ALLOWED_COMMANDS = {"go", "back", "arrive"}
 TASK_LABELS = {"guide": "导览", "dialogue": "对话", "vision": "视觉导航"}
 PLACEHOLDER_TASKS = {"dialogue", "vision"}
 LOOP_SERVICE_NAME = "rabbitbot-loop.service"
+RUNTIME_CONTAINER_NAME = "rabbitbot-unified-runtime"
 MAP_ENV_KEY = "NAV_PCD_PATH"
 NO_ROBOT_ENV_KEY = "RABBITBOT_NAV_WORKFLOW_NO_ROBOT"
 WORKFLOW_MANUAL_ENV_KEY = "RABBITBOT_WORKFLOW_NON_INTEGRATION"
@@ -170,6 +171,33 @@ def start_task(task: str, script: Path, extra_args: list[str] | None = None) -> 
     }
 
 
+def _restart_runtime_container(container_name: str, docker_path: Path) -> str:
+    if not container_name.strip():
+        raise CommandError("Docker 容器名不能为空")
+    if not docker_path.exists():
+        raise CommandError(f"docker 不存在：{docker_path}")
+
+    args = [str(docker_path), "restart", container_name]
+    logger.info("准备重启 Docker 容器：container=%s, docker=%s", container_name, docker_path)
+    result = subprocess.run(
+        args,
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    output = (result.stdout or result.stderr or "").strip()
+    if result.returncode != 0:
+        logger.error(
+            "Docker 容器重启失败：container=%s, returncode=%s, output=%s",
+            container_name,
+            result.returncode,
+            output,
+        )
+        raise CommandError(output or f"Docker 容器重启失败，退出码：{result.returncode}")
+    logger.info("Docker 容器重启完成：container=%s", container_name)
+    return output
+
+
 def _run_loop_service_action(
     action: str,
     service_name: str,
@@ -269,8 +297,19 @@ def stop_loop_service(
     service_name: str = LOOP_SERVICE_NAME,
     systemctl_path: Path = Path("/usr/bin/systemctl"),
     sudo_path: Path | None = Path("/usr/bin/sudo"),
+    docker_path: Path = Path("/usr/bin/docker"),
+    runtime_container_name: str = RUNTIME_CONTAINER_NAME,
 ) -> dict:
     if service_name != LOOP_SERVICE_NAME:
         raise CommandError(f"不支持关闭的服务：{service_name}")
-    output = _run_loop_service_action("stop", service_name, systemctl_path, sudo_path, "关闭")
-    return {"ok": True, "service": service_name, "message": output or "已关闭导航主程序"}
+    service_output = _run_loop_service_action("stop", service_name, systemctl_path, sudo_path, "关闭")
+    container_output = _restart_runtime_container(runtime_container_name, docker_path)
+    message_parts = [service_output or "已关闭导航主程序", f"已重启 Docker 容器 {runtime_container_name}"]
+    return {
+        "ok": True,
+        "service": service_name,
+        "container": runtime_container_name,
+        "container_restarted": True,
+        "message": "；".join(message_parts),
+        "docker_output": container_output,
+    }
