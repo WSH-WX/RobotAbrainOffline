@@ -46,6 +46,10 @@ def patch_vln():
     return patch('rabbitbot.provider.VLNAgent', spec=True, **vln_default_cfg)
 
 
+def _env_enabled(name: str, default: str = "0") -> bool:
+    return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _gate_log(stage: str, **fields):
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
     details = ', '.join(f'{key}={value}' for key, value in fields.items() if value is not None)
@@ -89,6 +93,7 @@ async def _wait_for_start_gate():
 
 
 async def main(args):
+    guide_start_by_voice = _env_enabled('RABBITBOT_GUIDE_START_BY_VOICE', '0')
     with ExitStack() as stack:
         if args.patch:
             stack.enter_context(patch_vln())
@@ -98,12 +103,15 @@ async def main(args):
             'camera_types': ['null'],
         }
         async with AppContext(robot_kwargs) as ctx:
-            await _wait_for_start_gate()
-            if os.getenv('RABBITBOT_ENABLE_GUIDE_OPENING', '1') == '1':
-                await guide_opening_speech(ctx)
+            if guide_start_by_voice:
+                _gate_log('voice_qa_mode', note='默认进入 QA，等待开始导览口令')
             else:
-                tts_sound(ctx.tts_agent, f'，，流程开始，请各就各位', 'zh')
-                time.sleep(1.0)
+                await _wait_for_start_gate()
+                if os.getenv('RABBITBOT_ENABLE_GUIDE_OPENING', '1') == '1':
+                    await guide_opening_speech(ctx)
+                else:
+                    tts_sound(ctx.tts_agent, f'，，流程开始，请各就各位', 'zh')
+                    time.sleep(1.0)
             workflow = create_main_workflow(ctx)
             prompt = '等待用户说话'
             try:

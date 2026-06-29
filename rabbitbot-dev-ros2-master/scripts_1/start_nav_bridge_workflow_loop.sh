@@ -7,8 +7,10 @@
 # 控制 workflow 开始和剧本结束后的返航。
 #
 # 为降低 go 后开场延迟，本脚本会在等待 go 前预启动 workflow，让 Python 和 AppContext
-# 初始化完成后停在启动闸门；收到 go 时只释放闸门。相关可调变量：
-#   RABBITBOT_NAV_WORKFLOW_GATE_READY_TIMEOUT_SECONDS：等待 workflow 预启动就绪的超时秒数。
+# 初始化完成后默认进入 QA 状态，听到“开始导览”后再释放剧本导览；如需恢复旧外部 go 闸门，
+# 设置 RABBITBOT_NAV_WORKFLOW_VOICE_START=0。相关可调变量：
+#   RABBITBOT_NAV_WORKFLOW_VOICE_START：默认 1，启动后先进入 QA 并等待“开始导览”语音口令。
+#   RABBITBOT_NAV_WORKFLOW_GATE_READY_TIMEOUT_SECONDS：旧外部 go 模式下等待 workflow 预启动就绪的超时秒数。
 #   RABBITBOT_WORKFLOW_START_GATE_POLL_SECONDS：workflow 内部等待 go 闸门文件的轮询间隔。
 #   RABBITBOT_NAV_WORKFLOW_STATUS_POLL_SECONDS：workflow 运行期间检查状态和预接收 back 的轮询间隔。
 #   RABBITBOT_TTS_STRICT_FAILURE：TTS 失败是否终止 workflow，默认 0，即记录错误并继续。
@@ -72,7 +74,13 @@ RABBITBOT_WORKFLOW_NON_INTEGRATION="${RABBITBOT_WORKFLOW_NON_INTEGRATION:-0}"
 RABBITBOT_WORKFLOW_VERBOSE="${RABBITBOT_WORKFLOW_VERBOSE:-0}"
 RABBITBOT_UNIFIED_ATTACH_STDIN="${RABBITBOT_UNIFIED_ATTACH_STDIN:-0}"
 RABBITBOT_TTS_STRICT_FAILURE="${RABBITBOT_TTS_STRICT_FAILURE:-0}"
-RABBITBOT_UNIFIED_START_STT="${RABBITBOT_UNIFIED_START_STT:-0}"
+RABBITBOT_NAV_WORKFLOW_VOICE_START="${RABBITBOT_NAV_WORKFLOW_VOICE_START:-1}"
+if [ "${RABBITBOT_NAV_WORKFLOW_VOICE_START}" = "1" ]; then
+    # 语音启动导览必须依赖 STT 常驻；即使 portable.env 默认关闭 STT，这里也要为 loop 场景打开。
+    RABBITBOT_UNIFIED_START_STT="1"
+else
+    RABBITBOT_UNIFIED_START_STT="${RABBITBOT_UNIFIED_START_STT:-0}"
+fi
 RABBITBOT_DIALOGUE_INDEX="${RABBITBOT_DIALOGUE_INDEX:-}"
 RABBITBOT_DOCX_GUIDE_DIALOGUE_INDEX="${RABBITBOT_DOCX_GUIDE_DIALOGUE_INDEX:-}"
 RABBITBOT_DOCX_GUIDE_DIALOGUE_FILE="${RABBITBOT_DOCX_GUIDE_DIALOGUE_FILE:-}"
@@ -849,12 +857,17 @@ launch_workflow_detached() {
     else
         dialogue_config="序号=0（默认）"
     fi
-    log_info "预启动 workflow 并等待 go 闸门：run_id=${current_run_id}"
+    if [ "${RABBITBOT_NAV_WORKFLOW_VOICE_START}" = "1" ]; then
+        log_info "启动 workflow 默认 QA 状态，等待语音口令开始导览：run_id=${current_run_id}"
+    else
+        log_info "预启动 workflow 并等待 go 闸门：run_id=${current_run_id}"
+    fi
     log_info "workflow 台词配置：${dialogue_config}"
     docker exec -d \
         -e RABBITBOT_WORKFLOW_NON_INTEGRATION="${RABBITBOT_WORKFLOW_NON_INTEGRATION}" \
         -e RABBITBOT_WORKFLOW_VERBOSE="${RABBITBOT_WORKFLOW_VERBOSE}" \
         -e RABBITBOT_TTS_STRICT_FAILURE="${RABBITBOT_TTS_STRICT_FAILURE}" \
+        -e RABBITBOT_GUIDE_START_BY_VOICE="${RABBITBOT_NAV_WORKFLOW_VOICE_START}" \
         -e RABBITBOT_DIALOGUE_INDEX="${RABBITBOT_DIALOGUE_INDEX}" \
         -e RABBITBOT_DOCX_GUIDE_DIALOGUE_INDEX="${RABBITBOT_DOCX_GUIDE_DIALOGUE_INDEX}" \
         -e RABBITBOT_DOCX_GUIDE_DIALOGUE_FILE="${RABBITBOT_DOCX_GUIDE_DIALOGUE_FILE}" \
@@ -1190,29 +1203,33 @@ main() {
             log_warn "workflow 预启动命令发送失败，重新进入循环"
             continue
         fi
-        if ! wait_workflow_gate_ready; then
-            stop_workflow_tail
-            stop_current_workflow
-            recover_runtime_services "workflow预启动不可用" || sleep "${RETURN_FAILURE_WAIT_SECONDS}"
-            log_warn "本轮 workflow 预启动不可用，重新预启动"
-            continue
+        if [ "${RABBITBOT_NAV_WORKFLOW_VOICE_START}" = "1" ]; then
+            log_info "语音启动导览模式：workflow 已进入 QA 状态，不等待外部 go 命令。"
+        else
+            if ! wait_workflow_gate_ready; then
+                stop_workflow_tail
+                stop_current_workflow
+                recover_runtime_services "workflow预启动不可用" || sleep "${RETURN_FAILURE_WAIT_SECONDS}"
+                log_warn "本轮 workflow 预启动不可用，重新预启动"
+                continue
+            fi
+            if ! wait_go_or_back; then
+                stop_workflow_tail
+                stop_current_workflow
+                recover_runtime_services "等待go/back阶段异常" || sleep "${RETURN_FAILURE_WAIT_SECONDS}"
+                log_warn "等待 go/back 阶段检测到预启动 workflow 异常，重新预启动"
+                continue
+            fi
+            if [ "${WAITED_COMMAND}" = "back" ]; then
+                log_info "等待 go 阶段收到 back，停止预启动 workflow 后直接返航"
+                stop_workflow_tail
+                stop_current_workflow
+                complete_return_to_start_or_wait_retry "等待go阶段收到back"
+                log_info "返航流程结束，继续预启动下一次 workflow。"
+                continue
+            fi
+            release_workflow_gate
         fi
-        if ! wait_go_or_back; then
-            stop_workflow_tail
-            stop_current_workflow
-            recover_runtime_services "等待go/back阶段异常" || sleep "${RETURN_FAILURE_WAIT_SECONDS}"
-            log_warn "等待 go/back 阶段检测到预启动 workflow 异常，重新预启动"
-            continue
-        fi
-        if [ "${WAITED_COMMAND}" = "back" ]; then
-            log_info "等待 go 阶段收到 back，停止预启动 workflow 后直接返航"
-            stop_workflow_tail
-            stop_current_workflow
-            complete_return_to_start_or_wait_retry "等待go阶段收到back"
-            log_info "返航流程结束，继续预启动下一次 workflow。"
-            continue
-        fi
-        release_workflow_gate
         monitor_workflow_until_finished
         if [ "${queued_back_after_workflow}" = "1" ]; then
             log_info "使用 workflow 运行期间预接收的 back 命令进入返航"
