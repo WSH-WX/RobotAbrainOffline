@@ -97,6 +97,17 @@ Aaron 要求让前端“关闭程序”按钮同时执行重启 Docker 容器。
 - 新增 Docker 容器重启失败 ERROR 日志：记录容器名、退出码和输出，便于区分 systemd stop 成功后 Docker restart 失败的场景。
 - 未新增 DEBUG/TRACE 持久化日志，也未增加高频日志。
 
+
+## 本轮修改详情：核查 STT 未检测到讲话原因
+
+Aaron 反馈虽然 STT 使用 DJI Mic Mini，但对着麦克风讲话后日志没有显示收到。本轮检查当前 STT 日志、STT 进程 fd、宿主 ALSA 状态、PortAudio 设备表、mixer 状态和内核日志。结论：设备选择没有错，当前 STT 使用 `DJI MIC MINI: USB Audio (hw:0,0)`，并持有 `/dev/snd/pcmC0D0c`；宿主 `card0` capture 为 RUNNING，硬件参数为 48000Hz、2ch、S24_3LE，Mic capture 为 100% 且 on。
+
+已验证事实：当前 STT 日志只有一次 `Starting audio stream on device 0...`，但 `Speech detected`、`Recognizing`、`Recognized text`、`Audio too quiet`、`Audio too short` 计数均为 0；因此应用层从未进入“检测到语音/准备识别”分支。更可能的原因是 DJI 发射端未实际送出音频（未配对、静音、未开麦、输入源不对），或现场讲话电平未超过当前 `STT_MIN_RMS=0.022` 和 `STT_VAD_SPEECH_THRES=0.12` 门限。当前 `get_last_rms` 任务在 STT 服务中未实现，workflow 侧不能直接打印实时 RMS。
+
+建议下一步：现场先确认 DJI 接收端/发射端配对、发射端未静音、接收端有电平指示；随后短时增加 STT 的实时 RMS/峰值日志或实现 `get_last_rms` 诊断接口，再根据真实电平决定是否调低 `STT_MIN_RMS` 或 `STT_VAD_SPEECH_THRES`。
+
+新增或调整日志点：本轮为运行状态只读核查和交接报告整理，未修改业务代码，未新增或调整代码日志点。
+
 ## 最近历史摘要
 
 - `8672472 记录导览打断恢复耗时核查`：记录当前日志中提问打断和恢复导览耗时。
