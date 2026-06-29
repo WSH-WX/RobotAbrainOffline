@@ -150,3 +150,34 @@ Aaron 要求在不影响当前服务状态的情况下，把 Embedding 设为默
 
 - 本轮未启动或停止任何现场服务，未触发机器人运动。
 - 生成时间：2026-06-29
+
+## 本轮修改详情：无机器人模式跳过手臂动作、不等待回执
+
+### 背景和目标
+
+Aaron 反馈：无机器人模式下导览调用动作时会卡住很久。`logs/current_runtime.log` 证实，无机器人模式下 workflow 仍以 sync 模式向 `http://127.0.0.1:28180/do_arm_async` 发送手臂动作（`shake_hand`、`face_wave` 等），而 28180 的机器人 Agent 由导航桥接提供、在无机器人模式下根本不会启动，于是每个动作都阻塞到 HTTP 读超时（动作默认 45 秒、release 默认 3 秒），导致台词推进被动作卡死。目标：无机器人模式下直接跳过手臂动作请求、不等待机器人回执。
+
+### 已完成内容
+
+- 修改 `rabbitbot-dev-ros2-master/rabbitbot/provider.py`：
+  - 新增 `_arm_action_no_robot_skip()`：当 `RABBITBOT_WORKFLOW_NON_INTEGRATION=1` 或 `RABBITBOT_NAV_WORKFLOW_NO_ROBOT=1` 时返回 True，表示应跳过手臂动作；可用 `RABBITBOT_ARM_ACTION_FORCE_WHEN_NO_ROBOT=1` 强制恢复发送。
+  - 在 `RobotAgent._post_arm_action()` 入口（远程开关检查之后）增加无机器人模式短路：命中时记录链路日志后直接返回 `{"success": True, "skipped": True, ...}`，不再发起 HTTP 请求。
+- 该拦截点是 sync `do_arm`、async `do_arm_async`、release 三类手臂动作的共同入口，故一处修改即覆盖全部手臂动作；workflow 侧的并发动作线程会瞬间返回，join 不再阻塞，台词按 TTS 节奏推进。
+- 返回 `success=True` 可避免 workflow 把跳过误记为“动作回执失败”，链路日志中以 `no_robot_mode_skip` 明确区分“无机器人跳过”与真实失败。
+
+### 已验证的事实
+
+- `python3 -m py_compile rabbitbot/provider.py` 通过。
+- 复刻 `_arm_action_no_robot_skip()` 的开关判定逻辑单测 6 个用例全部通过（默认关闭、两个开关分别开启、force 覆盖、true 值、显式 0）。
+- 启动脚本确认：无机器人模式下 workflow 进程会收到 `RABBITBOT_WORKFLOW_NON_INTEGRATION=1`（`scripts_1/start_nav_bridge_workflow_loop.sh` 第 80 行由 `RABBITBOT_NAV_WORKFLOW_NO_ROBOT=1` 转写，并经 -e 传入容器）。
+
+### 未完成 / 注意事项
+
+- 本轮未重启 `rabbitbot-loop.service`、控制台或 `rabbitbot-unified-runtime` 容器；改动需下次启动或重建容器后生效（provider.py 在 workflow/容器进程内加载）。
+- 真实机器人模式不受影响：两个无机器人开关均未开启时行为不变，仍按原超时发送动作。
+- 头部 / 手指 / 抓取等动作（`do_head_async`、`do_finger_async`、`do_grab_async` 等）走的是各自 timeout=10 的独立路径，未纳入本次短路；如无机器人模式下它们也造成卡顿，可后续按同样方式处理。
+
+### 新增或调整日志点
+
+- `RobotAgent._post_arm_action()` 命中无机器人短路时输出 `provider动作链路: stage=no_robot_mode_skip, action=..., mode=sync/async`，便于在“当前运行日志”中确认动作被有意跳过、而非真实失败或超时。
+- 未新增高频日志：每个动作仅一行跳过日志，且替代了原本 33~45 秒的超时等待日志。
