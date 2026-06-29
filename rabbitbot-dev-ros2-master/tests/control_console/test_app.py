@@ -37,6 +37,7 @@ def make_config(tmp_path):
         command_script=command_script,
         workflow_control_dir=workflow_control_dir,
         nav_log_dir=nav_log_dir,
+        nav_container_name="",
         workflow_log_dir=workflow_log_dir,
         loop_service_name="rabbitbot-loop.service",
         systemctl_path=systemctl_path,
@@ -110,6 +111,15 @@ def test_command_sends_go_without_login(tmp_path):
     assert response.json()["command"] == "go"
 
 
+def test_command_sends_arrive_without_login(tmp_path):
+    client = TestClient(create_app(make_config(tmp_path)))
+
+    response = client.post("/api/command", json={"command": "arrive"})
+
+    assert response.status_code == 200
+    assert response.json()["command"] == "arrive"
+
+
 def test_task_guide_sends_go_without_login(tmp_path):
     client = TestClient(create_app(make_config(tmp_path)))
 
@@ -144,8 +154,25 @@ def test_start_starts_loop_service_without_login(tmp_path):
     assert response.status_code == 200
     assert response.json()["service"] == "rabbitbot-loop.service"
     assert response.json()["message"] == "已启动导航主程序"
+    assert 'RABBITBOT_NAV_WORKFLOW_NO_ROBOT="0"' in config.map_env_file.read_text(encoding="utf-8")
     record = config.project_root / "systemctl_args.txt"
     assert record.read_text(encoding="utf-8").splitlines() == ["start", "rabbitbot-loop.service"]
+
+
+def test_start_no_robot_restarts_loop_service_and_writes_mode(tmp_path):
+    config = make_config(tmp_path)
+    client = TestClient(create_app(config))
+
+    response = client.post("/api/start-no-robot")
+
+    assert response.status_code == 200
+    assert response.json()["service"] == "rabbitbot-loop.service"
+    assert response.json()["no_robot_mode"] is True
+    content = config.map_env_file.read_text(encoding="utf-8")
+    assert 'RABBITBOT_NAV_WORKFLOW_NO_ROBOT="1"' in content
+    assert 'RABBITBOT_WORKFLOW_NON_INTEGRATION="1"' in content
+    record = config.project_root / "systemctl_args.txt"
+    assert record.read_text(encoding="utf-8").splitlines() == ["restart", "rabbitbot-loop.service"]
 
 
 def test_restart_restarts_loop_service_without_login(tmp_path):
@@ -157,7 +184,9 @@ def test_restart_restarts_loop_service_without_login(tmp_path):
     assert response.status_code == 200
     assert response.json()["service"] == "rabbitbot-loop.service"
     assert response.json()["map_path"] == "/home/unitree/test10.pcd"
-    assert config.map_env_file.read_text(encoding="utf-8") == 'NAV_PCD_PATH="/home/unitree/test10.pcd"\n'
+    content = config.map_env_file.read_text(encoding="utf-8")
+    assert 'NAV_PCD_PATH="/home/unitree/test10.pcd"' in content
+    assert 'RABBITBOT_NAV_WORKFLOW_NO_ROBOT="0"' in content
     record = config.project_root / "systemctl_args.txt"
     assert record.read_text(encoding="utf-8").splitlines() == ["restart", "rabbitbot-loop.service"]
 
@@ -231,6 +260,22 @@ def test_logs_return_latest_nav_log_lines(tmp_path):
     response = client.get("/api/logs?target=nav&lines=2")
 
     assert response.status_code == 200
+    assert response.json()["lines"] == ["two", "three"]
+
+
+def test_logs_return_current_workflow_log_by_run_id(tmp_path):
+    config = make_config(tmp_path)
+    (config.workflow_control_dir / "20260609_100000.status").write_text("finished\n", encoding="utf-8")
+    (config.workflow_log_dir / "rabbitbot_workflow_20260609_100000.log").write_text("old\n", encoding="utf-8")
+    (config.workflow_control_dir / "20260609_110000.status").write_text("running\n", encoding="utf-8")
+    (config.workflow_control_dir / "20260609_110000.ready").write_text("ready\n", encoding="utf-8")
+    (config.workflow_log_dir / "rabbitbot_workflow_20260609_110000.log").write_text("one\ntwo\nthree\n", encoding="utf-8")
+    client = TestClient(create_app(config))
+
+    response = client.get("/api/logs?target=workflow&lines=2")
+
+    assert response.status_code == 200
+    assert response.json()["path"].endswith("rabbitbot_workflow_20260609_110000.log")
     assert response.json()["lines"] == ["two", "three"]
 
 

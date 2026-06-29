@@ -18,6 +18,12 @@ elif [ -f "${PORTABLE_ENV_FILE}.example" ]; then
 fi
 
 RUNTIME_MODE="${RABBITBOT_RUNTIME_MODE:-legacy}"
+if [ "${RABBITBOT_NAV_WORKFLOW_NO_ROBOT:-0}" = "1" ]; then
+    export RABBITBOT_WORKFLOW_NON_INTEGRATION=1
+    export RABBITBOT_UNIFIED_START_ROBOT_AGENT=0
+    echo "[INFO] 使用无机器人模式启动主循环：跳过真实导航桥接，导航到点由前端按钮确认"
+fi
+
 if [ "${RUNTIME_MODE}" = "portable" ]; then
     export RABBITBOT_NAV_RUNTIME="${RABBITBOT_NAV_RUNTIME:-compose}"
     export NAV_INTERFACE="${NAV_INTERFACE:-${RABBITBOT_DDS_INTERFACE:-eno1}}"

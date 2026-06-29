@@ -6,13 +6,14 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-from .commands import CommandError, read_map_path, restart_loop_service, send_workflow_command, start_loop_service, start_task, stop_loop_service
+from .commands import CommandError, read_loop_no_robot_mode, read_map_path, restart_loop_service, send_workflow_command, start_loop_service, start_task, stop_loop_service
 from .config import ConsoleConfig
 from .dialogue import DialogueError, read_dialogue_editor, resolve_dialogue_path, write_dialogue_config
 from .status import (
     detect_main_loop_running,
     get_latest_workflow_status,
     get_tail_lines,
+    workflow_log_for_status,
     detect_nav_bridge_status_from_lines,
     is_port_open,
     latest_file,
@@ -69,8 +70,10 @@ def _html() -> str:
           </div>
           <div class="actions">
             <button class="back" onclick="sendCommand('back')">返航</button>
+            <button id="arriveBtn" class="task" onclick="sendCommand('arrive')">到达下一个点位(无机器人模式)</button>
             <button class="refresh" onclick="refresh()">刷新状态</button>
-            <button id="startBtn" class="go" onclick="startProgram()">开始程序</button>
+            <button id="startBtn" class="go" onclick="startProgram(false)">开始程序</button>
+            <button id="startNoRobotBtn" class="task" onclick="startProgram(true)">开始程序(无机器人模式)</button>
             <button id="restartBtn" class="restart" onclick="restartProgram()">一键重启</button>
             <button id="stopBtn" class="back" onclick="stopProgram()">关闭程序</button>
           </div>
@@ -102,7 +105,7 @@ def _html() -> str:
       </section>
       <section class="panel" style="margin-top:16px">
         <div class="top" style="margin-bottom:10px">
-          <div class="label">最近日志</div>
+          <div class="label">当前 Workflow 最近日志</div>
           <button id="logsToggleBtn" class="refresh" onclick="toggleLogs()">显示日志</button>
         </div>
         <pre id="logs" class="log" hidden></pre>
@@ -135,16 +138,17 @@ function showError(message){
   setText('message',message);
 }
 function servicesReady(data){
-  return data&&data.main_loop==='running'&&data.nav_bridge&&data.nav_bridge.ready&&data.workflow&&data.workflow.ready;
+  return data&&data.main_loop==='running'&&data.workflow&&data.workflow.ready&&(data.no_robot_mode||(data.nav_bridge&&data.nav_bridge.ready));
 }
 function renderStatus(data){
   setText('map','地图：'+data.map_path);
   if(!mapPathTouched&&data.map_path){document.getElementById('mapPathInput').value=data.map_path;}
-  setText('overall',servicesReady(data)?'全部就绪':(data.nav_bridge.ready?'在线':'导航未就绪'));
+  setText('overall',servicesReady(data)?(data.no_robot_mode?'无机器人模式就绪':'全部就绪'):(data.nav_bridge.ready?'在线':'导航未就绪'));
   setText('mainLoop',data.main_loop);
   setText('navBridge',(data.nav_bridge&&data.nav_bridge.message)||(data.nav_bridge.ready?'28180 就绪':'未就绪'));
   setText('workflow',data.workflow.status||'unknown');
   document.getElementById('guideBtn').disabled=!servicesReady(data);
+  document.getElementById('arriveBtn').disabled=!(data.no_robot_mode&&data.main_loop==='running');
   setText('poseStatus',(data.pose&&data.pose.status_message)||(data.pose&&data.pose.localized?'定位成功':'定位未成功：程序会持续重定位，需要遥控机器人的位姿，帮助机器人完成定位'));
   if(data.pose&&data.pose.available){
     var newline=String.fromCharCode(10);
@@ -184,7 +188,7 @@ function waitForServicesReady(button,startedAt){
 }
 function refreshLogs(){
   if(!logsVisible){return;}
-  requestJson('GET','/api/logs?target=nav&lines=120',null,function(logError,body){
+  requestJson('GET','/api/logs?target=workflow&lines=160',null,function(logError,body){
     if(logError){setText('logs',logError.message);return;}
     setText('logs',(body.lines&&body.lines.join(String.fromCharCode(10)))||'暂无日志');
   });
@@ -255,12 +259,12 @@ function startTask(task){
     refresh();
   });
 }
-function startProgram(){
-  var button=document.getElementById('startBtn');
+function startProgram(noRobot){
+  var button=document.getElementById(noRobot?'startNoRobotBtn':'startBtn');
   button.disabled=true;
   setText('overall','启动中');
-  setText('message','正在启动导航主程序...');
-  requestJson('POST','/api/start',{},function(error,body){
+  setText('message',noRobot?'正在启动无机器人模式...':'正在启动导航主程序...');
+  requestJson('POST',noRobot?'/api/start-no-robot':'/api/start',{},function(error,body){
     if(error){setText('message',error.message);button.disabled=false;refresh();return;}
     setText('message',body.message+'，正在等待所有服务加载完成...');
     waitForServicesReady(button,Date.now());
@@ -312,14 +316,18 @@ def create_app(config: ConsoleConfig | None = None) -> FastAPI:
         nav_lines, nav_source = runtime_nav_log_lines(nav_log, config.nav_container_name)
         pose = parse_latest_pose_from_lines(nav_lines, source_label=nav_source or "导航日志")
         workflow = get_latest_workflow_status(config.workflow_control_dir)
+        no_robot_mode = read_loop_no_robot_mode(config.map_env_file)
         current_map_path = read_map_path(config.map_env_file, config.map_path)
         map_visible_on_orin = Path(current_map_path).exists()
         port_ready = is_port_open("127.0.0.1", config.nav_port)
-        nav_bridge = detect_nav_bridge_status_from_lines(nav_lines, port_ready, nav_source)
+        if no_robot_mode:
+            nav_bridge = {"ready": True, "message": "无机器人模式：已跳过导航桥接", "source": "runtime_env"}
+        else:
+            nav_bridge = detect_nav_bridge_status_from_lines(nav_lines, port_ready, nav_source)
         nav_bridge["port"] = config.nav_port
         nav_bridge["map_exists"] = map_visible_on_orin
         nav_bridge["map_visible_on_orin"] = map_visible_on_orin
-        if not map_visible_on_orin:
+        if not map_visible_on_orin and not no_robot_mode:
             nav_bridge["message"] = f"{nav_bridge['message']}；地图在 Orin 本地不可见：{current_map_path}（若定位已成功，说明机器人侧地图可用）"
         return {
             "ok": True,
@@ -329,6 +337,7 @@ def create_app(config: ConsoleConfig | None = None) -> FastAPI:
             "workflow": workflow.to_dict(),
             "pose": pose.to_dict(),
             "nav_log_source": nav_source,
+            "no_robot_mode": no_robot_mode,
         }
 
 
@@ -355,6 +364,21 @@ def create_app(config: ConsoleConfig | None = None) -> FastAPI:
                 config.loop_service_name,
                 systemctl_path=config.systemctl_path,
                 sudo_path=config.sudo_path,
+                map_env_file=config.map_env_file,
+                no_robot_mode=False,
+            )
+        except CommandError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/start-no-robot")
+    def start_no_robot() -> dict:
+        try:
+            return start_loop_service(
+                config.loop_service_name,
+                systemctl_path=config.systemctl_path,
+                sudo_path=config.sudo_path,
+                map_env_file=config.map_env_file,
+                no_robot_mode=True,
             )
         except CommandError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -368,6 +392,7 @@ def create_app(config: ConsoleConfig | None = None) -> FastAPI:
                 sudo_path=config.sudo_path,
                 map_path=payload.map_path,
                 map_env_file=config.map_env_file,
+                no_robot_mode=False,
             )
         except CommandError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -405,7 +430,8 @@ def create_app(config: ConsoleConfig | None = None) -> FastAPI:
         if target == "nav":
             path = latest_file(config.nav_log_dir, "nav_bridge_*.log")
         elif target == "workflow":
-            path = latest_file(config.workflow_log_dir, "rabbitbot_workflow_*.log")
+            workflow = get_latest_workflow_status(config.workflow_control_dir)
+            path = workflow_log_for_status(config.workflow_log_dir, workflow)
         else:
             raise HTTPException(status_code=400, detail="不支持的日志目标")
         return {

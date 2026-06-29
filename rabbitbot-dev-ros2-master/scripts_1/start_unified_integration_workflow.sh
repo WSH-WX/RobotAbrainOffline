@@ -4,7 +4,7 @@
 # 运行模型：
 #   1. 统一容器只作为基础服务底座，容器内入口固定 AUTO_START_WORKFLOW=0。
 #   2. 本脚本等待 Neo4j、TTS、Memory Agent、Robot Agent 就绪；VLM/Embedding/STT 默认跳过。
-#   3. workflow 通过 docker exec 在当前终端前台启动，联调/非联调模式由本次执行传入。
+#   3. workflow 通过 docker exec 在当前终端前台启动，有机器人/无机器人模式由本次执行传入。
 #
 # 常用环境变量：
 #   START_AFTER_CREATE=0            只创建容器，不启动服务和 workflow
@@ -19,7 +19,7 @@
 # workflow 运行环境变量速查：
 # - RABBITBOT_STRICT_DOCX_SCRIPT：是否启用严格 DOCX 剧本模式，默认启用。
 # - RABBITBOT_SCRIPTED_TOUR：是否启用脚本化导览推进，默认启用。
-# - RABBITBOT_WORKFLOW_NON_INTEGRATION：是否使用非联调手动确认导航模式。
+# - RABBITBOT_WORKFLOW_NON_INTEGRATION：是否使用无机器人手动确认导航模式（兼容旧变量名）。
 # - RABBITBOT_WORKFLOW_VERBOSE：是否打印调试级 workflow 过程日志。
 # - RABBITBOT_WORKFLOW_PROFILE：是否写入 workflow profile JSONL，默认启用。
 # - RABBITBOT_WORKFLOW_PROFILE_LOG：显式指定 workflow profile JSONL 路径。
@@ -546,7 +546,7 @@ pkill -f "[s]cripts/start_kuavo_agno_workflow.bash" 2>/dev/null || true
 run_workflow_foreground() {
     local mode_label="联调"
     if [ "${RABBITBOT_WORKFLOW_NON_INTEGRATION}" = "1" ]; then
-        mode_label="非联调"
+        mode_label="无机器人"
     fi
 
     docker_exec_args=()

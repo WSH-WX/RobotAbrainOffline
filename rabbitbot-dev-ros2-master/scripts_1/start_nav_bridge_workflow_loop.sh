@@ -4,12 +4,14 @@
 # 主终端运行本脚本后，会先拉起导航桥接，持续显示导航输出；其它终端通过：
 #   bash scripts_1/send_nav_workflow_command.sh go
 #   bash scripts_1/send_nav_workflow_command.sh back
-# 控制 workflow 开始和剧本结束后的返航。
+#   bash scripts_1/send_nav_workflow_command.sh arrive
+# 控制 workflow 开始、无机器人模式点位到达确认和剧本结束后的返航。
 #
 # 为降低 go 后开场延迟，本脚本会在等待 go 前预启动 workflow，让 Python 和 AppContext
 # 初始化完成后默认进入 QA 状态，听到“开始导览”后再释放剧本导览；如需恢复旧外部 go 闸门，
 # 设置 RABBITBOT_NAV_WORKFLOW_VOICE_START=0。相关可调变量：
 #   RABBITBOT_NAV_WORKFLOW_VOICE_START：默认 1，启动后先进入 QA 并等待“开始导览”语音口令。
+#   RABBITBOT_NAV_WORKFLOW_NO_ROBOT：默认 0；设为 1 时进入无机器人模式，跳过真实导航桥接，点位到达由 arrive 命令确认。
 #   RABBITBOT_NAV_WORKFLOW_GATE_READY_TIMEOUT_SECONDS：旧外部 go 模式下等待 workflow 预启动就绪的超时秒数。
 #   RABBITBOT_WORKFLOW_START_GATE_POLL_SECONDS：workflow 内部等待 go 闸门文件的轮询间隔。
 #   RABBITBOT_NAV_WORKFLOW_STATUS_POLL_SECONDS：workflow 运行期间检查状态和预接收 back 的轮询间隔。
@@ -70,7 +72,12 @@ COMMAND_POLL_SECONDS="${RABBITBOT_NAV_WORKFLOW_COMMAND_POLL_SECONDS:-0.2}"
 WORKFLOW_STATUS_POLL_SECONDS="${RABBITBOT_NAV_WORKFLOW_STATUS_POLL_SECONDS:-0.2}"
 WAIT_DEFAULT_SECONDS="${WAIT_DEFAULT_SECONDS:-420}"
 WAIT_VLM_SECONDS="${WAIT_VLM_SECONDS:-600}"
+RABBITBOT_NAV_WORKFLOW_NO_ROBOT="${RABBITBOT_NAV_WORKFLOW_NO_ROBOT:-0}"
 RABBITBOT_WORKFLOW_NON_INTEGRATION="${RABBITBOT_WORKFLOW_NON_INTEGRATION:-0}"
+if [ "${RABBITBOT_NAV_WORKFLOW_NO_ROBOT}" = "1" ]; then
+    RABBITBOT_WORKFLOW_NON_INTEGRATION="1"
+    RABBITBOT_UNIFIED_START_ROBOT_AGENT="0"
+fi
 RABBITBOT_WORKFLOW_VERBOSE="${RABBITBOT_WORKFLOW_VERBOSE:-0}"
 RABBITBOT_UNIFIED_ATTACH_STDIN="${RABBITBOT_UNIFIED_ATTACH_STDIN:-0}"
 RABBITBOT_TTS_STRICT_FAILURE="${RABBITBOT_TTS_STRICT_FAILURE:-0}"
@@ -120,6 +127,8 @@ current_host_gate_file=""
 current_host_gate_ready_file=""
 current_return_request_file=""
 current_host_return_request_file=""
+current_manual_arrival_file=""
+current_host_manual_arrival_file=""
 current_nav_log=""
 current_nav_start_epoch="0"
 last_runtime_health_check_ms=0
@@ -477,7 +486,7 @@ runtime_health_ok() {
     if ! base_services_health_ok; then
         failed=1
     fi
-    if ! nav_bridge_health_ok; then
+    if [ "${RABBITBOT_NAV_WORKFLOW_NO_ROBOT}" != "1" ] && ! nav_bridge_health_ok; then
         failed=1
     fi
     if [ "${failed}" = "1" ]; then
@@ -613,16 +622,20 @@ trap 'cleanup EXIT' EXIT
 
 prepare_runtime() {
     mkdir -p "${CONTROL_DIR}" "${RUN_DIR}" "${HOST_LOG_DIR}" "${HOST_WORKFLOW_RUN_DIR}" "${HOST_WORKFLOW_CONTROL_DIR}"
-    resolve_nav_pcd_path
-    if [ -e "${NAV_PCD_PATH}" ]; then
-        log_info "导航地图文件存在：NAV_PCD_PATH=${NAV_PCD_PATH}"
+    if [ "${RABBITBOT_NAV_WORKFLOW_NO_ROBOT}" = "1" ]; then
+        log_info "无机器人模式已启用：跳过导航桥接启动和地图可见性检查，workflow 导航点由 arrive 命令确认。"
     else
-        log_warn "导航地图在 Orin 本地不可见：NAV_PCD_PATH=${NAV_PCD_PATH}；若地图由机器人/Unitree 导航服务侧读取且定位成功，这是可接受状态。迁移到新 Orin 时仍需确认该路径在机器人侧存在，或更新 runtime/portable.env 的 RABBITBOT_NAV_MAP_PATH。"
-    fi
-    require_path "${NAV_BRIDGE_SCRIPT}"
-    if [ "${NAV_BRIDGE_RUNTIME}" != "compose" ]; then
-        require_path "${ROS_SETUP}"
-        require_path "${WS_SETUP}"
+        resolve_nav_pcd_path
+        if [ -e "${NAV_PCD_PATH}" ]; then
+            log_info "导航地图文件存在：NAV_PCD_PATH=${NAV_PCD_PATH}"
+        else
+            log_warn "导航地图在 Orin 本地不可见：NAV_PCD_PATH=${NAV_PCD_PATH}；若地图由机器人/Unitree 导航服务侧读取且定位成功，这是可接受状态。迁移到新 Orin 时仍需确认该路径在机器人侧存在，或更新 runtime/portable.env 的 RABBITBOT_NAV_MAP_PATH。"
+        fi
+        require_path "${NAV_BRIDGE_SCRIPT}"
+        if [ "${NAV_BRIDGE_RUNTIME}" != "compose" ]; then
+            require_path "${ROS_SETUP}"
+            require_path "${WS_SETUP}"
+        fi
     fi
     require_path "${PROJECT_DIR}/scripts_1/start_unified_integration_workflow.sh"
     rm -f "${COMMAND_FILE}"
@@ -630,6 +643,7 @@ prepare_runtime() {
     log_info "控制命令文件：${COMMAND_FILE}"
     log_info "其它终端发送 go：bash ${PROJECT_DIR}/scripts_1/send_nav_workflow_command.sh go"
     log_info "其它终端发送 back：bash ${PROJECT_DIR}/scripts_1/send_nav_workflow_command.sh back"
+    log_info "无机器人模式确认到达：bash ${PROJECT_DIR}/scripts_1/send_nav_workflow_command.sh arrive"
 }
 
 cleanup_stale_workflow_control_files() {
@@ -637,7 +651,7 @@ cleanup_stale_workflow_control_files() {
     set +e
     deleted_output="$(find "${HOST_WORKFLOW_CONTROL_DIR}" -maxdepth 1 -type f \( \
         -name "*.status" -o -name "*.pid" -o -name "*.ready" -o -name "*.exit_code" -o \
-        -name "*.finished_at" -o -name "*.go" -o -name "workflow_runner_*.sh" \) -print -delete 2>&1)"
+        -name "*.finished_at" -o -name "*.go" -o -name "*.arrive" -o -name "workflow_runner_*.sh" \) -print -delete 2>&1)"
     find_status=$?
     set -e
 
@@ -744,7 +758,9 @@ recover_runtime_services() {
         restart_unified_services "${reason}"
         recovered=1
     fi
-    if ! nav_bridge_health_ok; then
+    if [ "${RABBITBOT_NAV_WORKFLOW_NO_ROBOT}" = "1" ]; then
+        log_info "无机器人模式跳过导航桥接恢复：reason=${reason}"
+    elif ! nav_bridge_health_ok; then
         restart_nav_bridge "${reason}"
         recovered=1
     fi
@@ -766,6 +782,7 @@ ensure_unified_services() {
         RABBITBOT_WORKFLOW_VERBOSE="${RABBITBOT_WORKFLOW_VERBOSE}" \
         RABBITBOT_UNIFIED_ATTACH_STDIN="${RABBITBOT_UNIFIED_ATTACH_STDIN}" \
         RABBITBOT_UNIFIED_START_STT="${RABBITBOT_UNIFIED_START_STT}" \
+        RABBITBOT_UNIFIED_START_ROBOT_AGENT="${RABBITBOT_UNIFIED_START_ROBOT_AGENT:-}" \
         WAIT_DEFAULT_SECONDS="${WAIT_DEFAULT_SECONDS}" \
         WAIT_VLM_SECONDS="${WAIT_VLM_SECONDS}" \
         bash scripts_1/start_unified_integration_workflow.sh
@@ -843,14 +860,16 @@ launch_workflow_detached() {
     current_host_gate_ready_file="${current_host_control_dir}/${current_run_id}.ready"
     current_return_request_file="${current_control_dir}/${current_run_id}.return_to_start"
     current_host_return_request_file="${current_host_control_dir}/${current_run_id}.return_to_start"
+    current_manual_arrival_file="${current_control_dir}/${current_run_id}.arrive"
+    current_host_manual_arrival_file="${current_host_control_dir}/${current_run_id}.arrive"
 
     mkdir -p "${current_host_control_dir}" "$(dirname "${current_host_workflow_log}")"
-    rm -f "${current_status_file}" "${current_exit_code_file}" "${current_pid_file}" "${current_finished_at_file}" "${current_host_gate_file}" "${current_host_gate_ready_file}" "${current_host_return_request_file}"
+    rm -f "${current_status_file}" "${current_exit_code_file}" "${current_pid_file}" "${current_finished_at_file}" "${current_host_gate_file}" "${current_host_gate_ready_file}" "${current_host_return_request_file}" "${current_host_manual_arrival_file}"
     if ! : >"${current_host_workflow_log}"; then
         log_error "无法创建 workflow 宿主日志：${current_host_workflow_log}，请检查目录权限"
         return 1
     fi
-    docker exec "${CONTAINER_NAME}" bash -lc "mkdir -p '${current_control_dir}' '$(dirname "${current_workflow_log}")' && rm -f '${current_control_dir}/${current_run_id}.status' '${current_control_dir}/${current_run_id}.exit_code' '${current_control_dir}/${current_run_id}.pid' '${current_control_dir}/${current_run_id}.finished_at' '${current_gate_file}' '${current_gate_ready_file}' '${current_return_request_file}'" >/dev/null
+    docker exec "${CONTAINER_NAME}" bash -lc "mkdir -p '${current_control_dir}' '$(dirname "${current_workflow_log}")' && rm -f '${current_control_dir}/${current_run_id}.status' '${current_control_dir}/${current_run_id}.exit_code' '${current_control_dir}/${current_run_id}.pid' '${current_control_dir}/${current_run_id}.finished_at' '${current_gate_file}' '${current_gate_ready_file}' '${current_return_request_file}' '${current_manual_arrival_file}'" >/dev/null
 
     local start_ms
     local dialogue_config
@@ -884,6 +903,7 @@ launch_workflow_detached() {
         -e RABBITBOT_WORKFLOW_START_GATE_FILE="${current_gate_file}" \
         -e RABBITBOT_WORKFLOW_START_GATE_READY_FILE="${current_gate_ready_file}" \
         -e RABBITBOT_WORKFLOW_RETURN_REQUEST_FILE="${current_return_request_file}" \
+        -e RABBITBOT_WORKFLOW_MANUAL_ARRIVAL_FILE="${current_manual_arrival_file}" \
         -e RABBITBOT_WORKFLOW_START_GATE_POLL_SECONDS="${WORKFLOW_GATE_POLL_SECONDS}" \
         -e PYTHONUNBUFFERED=1 \
         "${CONTAINER_NAME}" bash -lc '
@@ -975,6 +995,20 @@ inject_return_to_start_command() {
     inject_stt_text_command "返回起点" "${1:-${RABBITBOT_NAV_WORKFLOW_BACK_TEXT}}"
 }
 
+
+signal_manual_arrival_command() {
+    if [ "${RABBITBOT_NAV_WORKFLOW_NO_ROBOT}" != "1" ]; then
+        log_warn "收到 arrive 命令但当前不是无机器人模式，已忽略"
+        return 1
+    fi
+    if [ -z "${current_host_manual_arrival_file}" ]; then
+        log_warn "收到 arrive 命令但当前 workflow 到达确认文件未初始化，已忽略"
+        return 1
+    fi
+    date "+%Y-%m-%d %H:%M:%S" >"${current_host_manual_arrival_file}"
+    log_info "无机器人模式已发送点位到达确认：run_id=${current_run_id}, file=${current_host_manual_arrival_file}"
+}
+
 wait_go_or_back() {
     WAITED_COMMAND=""
     log_info "等待命令：go 启动 workflow；此阶段收到 back 将直接返航"
@@ -1033,10 +1067,13 @@ monitor_workflow_until_finished() {
                     log_warn "workflow 正在运行，忽略重复 go 命令"
                 fi
                 ;;
+            arrive)
+                signal_manual_arrival_command || true
+                ;;
             "")
                 ;;
             *)
-                handle_unexpected_command "${command}" "back"
+                handle_unexpected_command "${command}" "back 或 arrive"
                 ;;
         esac
 
@@ -1217,6 +1254,10 @@ return_to_start_with_recovery() {
 
 complete_return_to_start_or_wait_retry() {
     local reason="${1:-back返航}"
+    if [ "${RABBITBOT_NAV_WORKFLOW_NO_ROBOT}" = "1" ]; then
+        log_info "无机器人模式跳过真实返航导航：reason=${reason}"
+        return 0
+    fi
     while true; do
         if return_to_start_with_recovery "${reason}"; then
             return 0
@@ -1229,7 +1270,11 @@ complete_return_to_start_or_wait_retry() {
 
 main() {
     prepare_runtime
-    start_nav_bridge
+    if [ "${RABBITBOT_NAV_WORKFLOW_NO_ROBOT}" = "1" ]; then
+        log_info "无机器人模式启动：不拉起导航桥接。"
+    else
+        start_nav_bridge
+    fi
     ensure_unified_services
     runtime_health_ok "启动完成复查"
 

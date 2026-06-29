@@ -133,7 +133,7 @@ def _workflow_log(message, verbose=False):
 # workflow 运行环境变量速查：
 # - RABBITBOT_STRICT_DOCX_SCRIPT：是否启用严格 DOCX 剧本模式，默认启用。
 # - RABBITBOT_SCRIPTED_TOUR：是否启用脚本化导览推进，默认启用。
-# - RABBITBOT_WORKFLOW_NON_INTEGRATION：是否使用非联调手动确认导航模式。
+# - RABBITBOT_WORKFLOW_NON_INTEGRATION：是否使用无机器人手动确认导航模式（兼容旧变量名）。
 # - RABBITBOT_WORKFLOW_VERBOSE：是否打印调试级 workflow 过程日志。
 # - RABBITBOT_WORKFLOW_PROFILE：是否写入 workflow profile JSONL，默认启用。
 # - RABBITBOT_WORKFLOW_PROFILE_LOG：显式指定 workflow profile JSONL 路径。
@@ -1004,7 +1004,29 @@ def _wait_manual_navigation_success(location_name):
     if not _workflow_non_integration_enabled():
         return False
 
-    prompt = f"[非联调模式] 请在确认到达“{location_name}”后按任意键，workflow 将视为导航成功..."
+    arrival_file = os.getenv("RABBITBOT_WORKFLOW_MANUAL_ARRIVAL_FILE", "").strip()
+    if arrival_file:
+        path = Path(arrival_file)
+        start_ts = time.time()
+        _workflow_log(f"[无机器人模式] 等待到达确认：location={location_name}, file={path}")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if path.exists():
+                path.unlink()
+        except OSError as exc:
+            _workflow_log(f"[无机器人模式] 清理旧到达确认文件失败：location={location_name}, file={path}, error_type={type(exc).__name__}, error={exc}")
+        while True:
+            if path.exists():
+                try:
+                    path.unlink()
+                except OSError as exc:
+                    _workflow_log(f"[无机器人模式] 删除到达确认文件失败：location={location_name}, file={path}, error_type={type(exc).__name__}, error={exc}")
+                elapsed = time.time() - start_ts
+                _workflow_log(f"[无机器人模式] 已确认到达：location={location_name}, elapsed={elapsed:.3f}s")
+                return True
+            time.sleep(0.2)
+
+    prompt = f"[无机器人模式] 请在确认到达“{location_name}”后按任意键，workflow 将视为导航成功..."
     print(prompt, flush=True)
     try:
         import sys
@@ -1020,7 +1042,7 @@ def _wait_manual_navigation_success(location_name):
             termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
         print()
     except Exception:
-        input(f"[非联调模式] 请在确认到达“{location_name}”后按回车继续...")
+        input(f"[无机器人模式] 请在确认到达“{location_name}”后按回车继续...")
     return True
 
 

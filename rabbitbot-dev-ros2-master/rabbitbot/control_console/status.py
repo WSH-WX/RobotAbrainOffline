@@ -222,6 +222,16 @@ def runtime_nav_log_lines(nav_log: Path | None, nav_container_name: str, limit: 
     return [], None
 
 
+def workflow_log_for_status(workflow_log_dir: Path, workflow: WorkflowStatus) -> Path | None:
+    if workflow.run_id:
+        exact_path = workflow_log_dir / f"rabbitbot_workflow_{workflow.run_id}.log"
+        if exact_path.is_file():
+            logger.debug("当前 workflow 日志按 run_id 命中：run_id=%s, path=%s", workflow.run_id, exact_path)
+            return exact_path
+        logger.debug("当前 workflow 日志按 run_id 未命中，回退最新日志：run_id=%s, path=%s", workflow.run_id, exact_path)
+    return latest_file(workflow_log_dir, "rabbitbot_workflow_*.log")
+
+
 def get_latest_workflow_status(control_dir: Path) -> WorkflowStatus:
     try:
         files = [path for path in control_dir.iterdir() if path.is_file()]

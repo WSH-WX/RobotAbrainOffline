@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 向导航 + workflow 编排脚本发送控制命令。
-# 支持命令：go、back、quit。
+# 支持命令：go、back、arrive、quit。
 
 set -euo pipefail
 
@@ -9,10 +9,10 @@ CONTROL_DIR="${RABBITBOT_NAV_WORKFLOW_CONTROL_DIR:-/tmp/rabbitbot_nav_workflow_c
 COMMAND_FILE="${RABBITBOT_NAV_WORKFLOW_COMMAND_FILE:-${CONTROL_DIR}/command}"
 
 case "${COMMAND}" in
-    go|back|quit|exit)
+    go|back|arrive|quit|exit)
         ;;
     *)
-        echo "用法：$0 {go|back|quit}" >&2
+        echo "用法：$0 {go|back|arrive|quit}" >&2
         exit 2
         ;;
 esac

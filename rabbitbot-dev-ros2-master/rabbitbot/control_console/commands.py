@@ -7,11 +7,13 @@ import subprocess
 
 logger = logging.getLogger(__name__)
 
-ALLOWED_COMMANDS = {"go", "back"}
+ALLOWED_COMMANDS = {"go", "back", "arrive"}
 TASK_LABELS = {"guide": "导览", "dialogue": "对话", "vision": "视觉导航"}
 PLACEHOLDER_TASKS = {"dialogue", "vision"}
 LOOP_SERVICE_NAME = "rabbitbot-loop.service"
 MAP_ENV_KEY = "NAV_PCD_PATH"
+NO_ROBOT_ENV_KEY = "RABBITBOT_NAV_WORKFLOW_NO_ROBOT"
+WORKFLOW_MANUAL_ENV_KEY = "RABBITBOT_WORKFLOW_NON_INTEGRATION"
 
 
 class CommandError(RuntimeError):
@@ -54,13 +56,73 @@ def read_map_path(map_env_file: Path, default_map_path: str) -> str:
     return current
 
 
+def _quote_env_value(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _read_env_lines(env_file: Path) -> list[str]:
+    try:
+        return env_file.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+
+
+def _write_loop_env_values(env_file: Path, updates: dict[str, str]) -> None:
+    lines = _read_env_lines(env_file)
+    written: set[str] = set()
+    output: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            output.append(line)
+            continue
+        key, _ = stripped.split("=", 1)
+        key = key.strip()
+        if key in updates:
+            output.append(f'{key}="{_quote_env_value(updates[key])}"')
+            written.add(key)
+        else:
+            output.append(line)
+    for key, value in updates.items():
+        if key not in written:
+            output.append(f'{key}="{_quote_env_value(value)}"')
+    env_file.parent.mkdir(parents=True, exist_ok=True)
+    env_file.write_text("\n".join(output).rstrip() + "\n", encoding="utf-8")
+
+
 def write_map_path(map_env_file: Path, map_path: str) -> str:
     value = validate_map_path(map_path)
-    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
-    map_env_file.parent.mkdir(parents=True, exist_ok=True)
-    map_env_file.write_text(f'{MAP_ENV_KEY}="{escaped}"\n', encoding="utf-8")
+    _write_loop_env_values(map_env_file, {MAP_ENV_KEY: value})
     logger.info("已写入控制台地图环境文件：env_file=%s, map_path=%s", map_env_file, value)
     return value
+
+
+def read_loop_no_robot_mode(map_env_file: Path) -> bool:
+    for line in _read_env_lines(map_env_file):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        if key.strip() != NO_ROBOT_ENV_KEY:
+            continue
+        return _unquote_env_value(value).strip().lower() in {"1", "true", "yes", "on"}
+    return False
+
+
+def write_loop_mode(map_env_file: Path, no_robot_mode: bool) -> bool:
+    value = "1" if no_robot_mode else "0"
+    updates = {
+        NO_ROBOT_ENV_KEY: value,
+        WORKFLOW_MANUAL_ENV_KEY: value,
+    }
+    _write_loop_env_values(map_env_file, updates)
+    logger.info(
+        "已写入控制台启动模式环境文件：env_file=%s, no_robot_mode=%s, workflow_manual=%s",
+        map_env_file,
+        no_robot_mode,
+        value,
+    )
+    return no_robot_mode
 
 
 def send_workflow_command(command: str, script: Path, extra_args: list[str] | None = None) -> dict:
@@ -160,11 +222,17 @@ def start_loop_service(
     service_name: str = LOOP_SERVICE_NAME,
     systemctl_path: Path = Path("/usr/bin/systemctl"),
     sudo_path: Path | None = Path("/usr/bin/sudo"),
+    map_env_file: Path | None = None,
+    no_robot_mode: bool = False,
 ) -> dict:
     if service_name != LOOP_SERVICE_NAME:
         raise CommandError(f"不支持启动的服务：{service_name}")
-    output = _run_loop_service_action("start", service_name, systemctl_path, sudo_path, "启动")
-    return {"ok": True, "service": service_name, "message": output or "已启动导航主程序"}
+    if map_env_file is not None:
+        write_loop_mode(map_env_file, no_robot_mode)
+    action = "restart" if no_robot_mode else "start"
+    output = _run_loop_service_action(action, service_name, systemctl_path, sudo_path, "启动")
+    message = "已启动无机器人模式，导览到点时请点击到达下一个点位" if no_robot_mode else "已启动导航主程序"
+    return {"ok": True, "service": service_name, "no_robot_mode": no_robot_mode, "message": output or message}
 
 
 def restart_loop_service(
@@ -173,6 +241,7 @@ def restart_loop_service(
     sudo_path: Path | None = Path("/usr/bin/sudo"),
     map_path: str | None = None,
     map_env_file: Path | None = None,
+    no_robot_mode: bool | None = None,
 ) -> dict:
     if service_name != LOOP_SERVICE_NAME:
         raise CommandError(f"不支持重启的服务：{service_name}")
@@ -182,6 +251,10 @@ def restart_loop_service(
         if map_env_file is None:
             raise CommandError("缺少地图配置文件路径")
         active_map_path = write_map_path(map_env_file, map_path)
+    if no_robot_mode is not None:
+        if map_env_file is None:
+            raise CommandError("缺少启动模式配置文件路径")
+        write_loop_mode(map_env_file, no_robot_mode)
 
     output = _run_loop_service_action("restart", service_name, systemctl_path, sudo_path, "重启")
 
