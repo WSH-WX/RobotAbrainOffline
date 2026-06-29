@@ -57,8 +57,9 @@ def test_status_does_not_require_login(tmp_path):
     assert response.status_code == 200
     body = response.json()
     assert body["map_path"] == "/home/unitree/test9.pcd"
-    service_keys = {item["key"] for item in body["services"]}
-    assert {"tts", "stt", "memory", "neo4j"}.issubset(service_keys)
+    service_by_key = {item["key"]: item for item in body["services"]}
+    assert {"tts", "stt", "memory", "neo4j", "vlm"}.issubset(service_by_key)
+    assert service_by_key["vlm"]["required"] is True
 
 
 def test_status_prefers_runtime_map_env_file(tmp_path):

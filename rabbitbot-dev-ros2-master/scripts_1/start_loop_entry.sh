@@ -30,13 +30,16 @@ if [ "${RUNTIME_MODE}" = "portable" ]; then
     export NAV_PCD_PATH="${NAV_PCD_PATH:-${RABBITBOT_NAV_MAP_PATH:-/home/unitree/test9.pcd}}"
     export IMAGE_NAME="${IMAGE_NAME:-${RABBITBOT_PORTABLE_CORE_IMAGE:-ghcr.io/aaronai/rabbitbot-core-portable:20260611}}"
     export CONTAINER_NAME="${CONTAINER_NAME:-${RABBITBOT_PORTABLE_CORE_CONTAINER_NAME:-rabbitbot-unified-runtime}}"
-    export RABBITBOT_UNIFIED_START_VLM="${RABBITBOT_UNIFIED_START_VLM:-${RABBITBOT_ENABLE_VLM:-0}}"
+    # loop 默认先进入 QA 状态；QA 依赖 8000 VLM 模型服务，因此主循环默认启用 VLM。
+    # 如需现场临时跳过，可显式设置 RABBITBOT_UNIFIED_START_VLM=0 或 RABBITBOT_NAV_WORKFLOW_START_VLM=0。
+    RABBITBOT_NAV_WORKFLOW_START_VLM="${RABBITBOT_NAV_WORKFLOW_START_VLM:-1}"
+    export RABBITBOT_UNIFIED_START_VLM="${RABBITBOT_UNIFIED_START_VLM:-${RABBITBOT_NAV_WORKFLOW_START_VLM}}"
     export RABBITBOT_UNIFIED_START_STT="${RABBITBOT_UNIFIED_START_STT:-${RABBITBOT_ENABLE_STT:-0}}"
     # portable 端口拓扑：core 不启动 robot_app.py；28180 由 nav bridge 提供（主循环先启动 nav bridge，再复用/启动 core，最后预启动 workflow）。
     export RABBITBOT_UNIFIED_START_ROBOT_AGENT="${RABBITBOT_UNIFIED_START_ROBOT_AGENT:-0}"
     export RABBITBOT_ROBOT_AGENT_URL="${RABBITBOT_ROBOT_AGENT_URL:-http://127.0.0.1:28180}"
     export NAV_BRIDGE_SCRIPT="${NAV_BRIDGE_SCRIPT:-${PROJECT_DIR}/scripts_1/start_nav_bridge_portable.sh}"
-    echo "[INFO] 使用 portable 模式启动主循环：image=${IMAGE_NAME}, nav_script=${NAV_BRIDGE_SCRIPT}, interface=${NAV_INTERFACE}, map=${NAV_PCD_PATH}, core_robot_agent=${RABBITBOT_UNIFIED_START_ROBOT_AGENT}"
+    echo "[INFO] 使用 portable 模式启动主循环：image=${IMAGE_NAME}, nav_script=${NAV_BRIDGE_SCRIPT}, interface=${NAV_INTERFACE}, map=${NAV_PCD_PATH}, core_robot_agent=${RABBITBOT_UNIFIED_START_ROBOT_AGENT}, vlm=${RABBITBOT_UNIFIED_START_VLM}"
 else
     echo "[INFO] 使用 legacy 模式启动主循环"
 fi

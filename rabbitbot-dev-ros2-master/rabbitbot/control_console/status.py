@@ -378,7 +378,7 @@ def get_runtime_service_statuses() -> list[ServiceStatus]:
         ("tts", "TTS", 28185, True),
         ("stt", "STT", 28184, True),
         ("memory", "Memory", 28182, True),
-        ("vlm", "VLM", 8000, False),
+        ("vlm", "VLM", 8000, True),
         ("embedding", "Embedding", 8005, False),
     ]
     statuses: list[ServiceStatus] = []

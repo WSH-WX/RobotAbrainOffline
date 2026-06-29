@@ -15,7 +15,7 @@
 - 本轮新增前端“开始程序(无机器人模式)”和“到达下一个点位(无机器人模式)”按钮。
 - 本轮将项目中文称呼从“非联调模式”统一为“无机器人模式”；旧环境变量 `RABBITBOT_WORKFLOW_NON_INTEGRATION` 保留为兼容实现名。
 - 前端日志面板已改为“当前运行日志”：有当前 workflow run 时显示对应 workflow 日志；workflow 尚未创建时显示 `rabbitbot-loop.service` 启动日志，避免用户点击开始程序后看不到服务启动进度。
-- 本轮新增前端“服务状态”面板，位于“导览讲解词”面板上方，显示 Neo4j、TTS、STT、Memory、VLM、Embedding 的在线状态。
+- 前端“服务状态”面板位于“导览讲解词”面板上方，显示 Neo4j、TTS、STT、Memory、VLM、Embedding 的在线状态；VLM 已按 QA 主流程必需服务显示。
 
 未完成：
 
@@ -57,7 +57,7 @@
 - 无机器人模式只替代真实导航到点确认，不代表禁用 QA、STT、TTS、Memory 或剧本逻辑。
 - “到达下一个点位(无机器人模式)”按钮发送 `arrive`，只在无机器人模式下生效；真实机器人模式下 loop 会记录 warning 并忽略。
 - 日志面板文字已改为“当前运行日志”，默认请求 `/api/logs?target=runtime&lines=160`；`target=workflow` 仍保留严格按当前 run_id 读取，不回退旧日志。
-- “服务状态”面板使用 `/api/status` 返回的 `services` 字段；VLM 和 Embedding 标记为可选服务，离线时不代表导览主流程必然不可用。
+- “服务状态”面板使用 `/api/status` 返回的 `services` 字段；VLM 是默认 QA 主流程必需服务，Embedding 仍为可选服务。
 
 ## 本轮修改详情：控制台无机器人模式和当前 workflow 日志
 
@@ -143,6 +143,35 @@ Aaron 点击“开始程序(无机器人模式)”后，日志面板没有更新
 ### 新增或调整日志点
 
 - `get_systemd_journal_lines()` 在 DEBUG 级别记录读取 loop journal 的行数；读取失败或 journalctl 返回非零时记录 WARNING，包含 unit、返回码或异常类型，便于排查控制台为何无法显示 loop 启动日志。
+
+
+## 本轮修改详情：loop 默认启动 VLM
+
+### 背景和目标
+
+Aaron 反馈最近运行日志显示“跳过等待 VLM 服务 (8000)”，但当前 workflow 设计是启动后先进入 QA，听到“开始导览”再导览；QA 依赖 VLM 模型服务，因此默认跳过 VLM 是错误行为。
+
+### 已完成内容
+
+- 修改 `scripts_1/start_loop_entry.sh`：loop 主入口默认 `RABBITBOT_NAV_WORKFLOW_START_VLM=1`，并据此设置 `RABBITBOT_UNIFIED_START_VLM=1`；只有显式设置 `RABBITBOT_UNIFIED_START_VLM=0` 或 `RABBITBOT_NAV_WORKFLOW_START_VLM=0` 时才跳过 VLM。
+- 修改 `scripts_1/start_nav_bridge_workflow_loop.sh`：补充 `RABBITBOT_NAV_WORKFLOW_START_VLM` 说明；默认启用 VLM；`ensure_unified_services()` 显式透传 `RABBITBOT_UNIFIED_START_VLM` 到 unified 启动脚本，并在日志中记录 `vlm/stt` 开关。
+- 修改 `rabbitbot/control_console/status.py`：服务状态面板中 VLM 从可选服务改为必需服务，避免 QA 主流程依赖被误判为可选。
+- 修改 `tests/control_console/test_app.py`：覆盖 VLM 作为必需服务返回。
+
+### 已验证事实
+
+- 已通过 shell 语法检查：`scripts_1/start_loop_entry.sh`、`scripts_1/start_nav_bridge_workflow_loop.sh`、`scripts_1/start_unified_integration_workflow.sh`。
+- 已通过 Python 语法检查：`rabbitbot/control_console/status.py`。
+- 控制台测试已通过：`PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q tests/control_console/test_app.py tests/control_console/test_commands.py`，结果为 `51 passed`。
+
+### 注意事项
+
+- 本轮没有重启 `rabbitbot-loop.service`；新默认值会在下一次点击“开始程序”“开始程序(无机器人模式)”或手动重启 loop 后生效。
+- 当前现场仍存在 TTS 28185 启动失败问题；即使 VLM 默认启动，workflow 进入 QA 前仍需要先解决 TTS/STT/Memory 等基础服务就绪问题。
+
+### 新增或调整日志点
+
+- loop 的 `ensure_unified_services()` 现在会记录 `vlm` 和 `stt` 开关，后续从“当前运行日志”可直接判断是否按 QA 主流程启用了 VLM。
 
 ## 最近历史摘要
 
