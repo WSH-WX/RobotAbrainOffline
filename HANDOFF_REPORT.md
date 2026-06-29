@@ -119,6 +119,49 @@ Aaron 要求通过电平判断麦克风侧是否正常。本轮短暂停止 STT 
 
 新增或调整日志点：本轮为运行状态诊断和交接报告整理，未修改业务代码，未新增或调整代码日志点。
 
+## 本轮修改详情：修复 DJI Mic Mini 右声道 STT 输入
+
+### 背景和目标
+
+Aaron 要求执行修复建议，解决 DJI Mic Mini 有电平但 STT 不触发识别的问题。前序诊断确认 DJI 右声道有信号、左声道为 0，而 STT 旧逻辑固定读取左声道。
+
+### 已完成内容
+
+- 修改 `rabbitbot-dev-ros2-master/stt_app_funasr.py`：默认采集 2 声道，按 RMS 自动选择电平最大的声道；保留 `STT_INPUT_CHANNEL_SELECT_MODE` 和 `STT_INPUT_CHANNEL_INDEX` 以支持固定声道或混音模式。
+- 增加 STT 最近输入电平状态，`/exec` 新增 `get_last_rms` 诊断任务，便于 workflow 或现场排查读取当前输入电平。
+- 修改 `rabbitbot-dev-ros2-master/scripts/start_stt_funasr_app.bash`：默认 `STT_INPUT_GAIN` 从 `1.0` 调整为 `8.0`，用于补偿 DJI 现场约 -48 dBFS 的低电平输入，仍允许环境变量覆盖。
+- 修改 `rabbitbot-dev-ros2-master/scripts_1/start_unified_integration_workflow.sh`：统一容器创建时记录 `/dev/snd` 音频挂载日志，便于确认 ALSA 字符设备已暴露给容器。
+- 已重建 `rabbitbot-unified-runtime` 容器，使 `/dev/snd` 绑定刷新；当前 STT 已自然恢复运行。
+
+### 已验证的事实
+
+- `python3 -m py_compile stt_app_funasr.py` 通过。
+- `bash -n scripts/start_stt_funasr_app.bash` 通过。
+- `bash -n scripts_1/start_unified_integration_workflow.sh` 通过。
+- STT 最新日志显示输入设备为 `DJI MIC MINI: USB Audio (hw:0,0)`，`input_channels=2`，`channel_select=max_rms`，`input_gain=8.0`。
+- STT 最新日志显示 `device_max_channels=2, stream_channels=2`，并使用 48000Hz 输入重采样到 16000Hz。
+- `curl http://127.0.0.1:28184/docs` 返回正常，`get_last_rms` 返回 `0.00738514`。
+- TTS `/docs` 同步可达；统一启动循环已恢复基础服务。
+
+### 新增或调整日志点
+
+- STT 启动配置日志新增输入声道数、声道选择模式、固定声道索引和电平日志间隔，便于确认实际加载的音频策略。
+- STT 麦克风配置日志新增设备最大输入声道、实际流声道数、声道选择模式和固定声道索引，便于定位设备枚举或声道降级问题。
+- STT 录音中新增节流 INFO 电平日志，记录选中声道、RMS、Peak、各声道 RMS 和声道数，便于现场判断是否读到右声道。
+- 统一容器创建流程新增 `/dev/snd` 挂载 INFO 日志，便于排查容器内音频设备不可见问题。
+- 未新增 DEBUG/TRACE 持久化日志，电平日志仅在录音期间按 `STT_LEVEL_LOG_INTERVAL` 节流输出。
+
+### 阻塞问题和未完成内容
+
+- 已验证 STT 读到 DJI 设备和非零 RMS，但尚未由 Aaron 现场对着麦克风说话并确认完整语音识别文本输出。
+- 尝试直接挂载 `/proc/asound` 到容器 `/proc/asound` 会被 Docker proc 安全策略拒绝；已回退该方案，实际可行路径是重建容器刷新 `/dev/snd` 绑定。
+
+### 建议的下一步
+
+- Aaron 对着 DJI Mic Mini 说话时，观察 `rabbitbot_stt.log` 是否出现 `STT 输入电平`、`Speech detected` 和识别文本。
+- 若仍不触发识别，优先查看 `get_last_rms` 与 `STT 输入电平` 日志；如果 RMS 明显低于 `STT_MIN_RMS=0.022`，再考虑继续调低门限或提高接收端/发射端增益。
+- 若容器重启后再次枚举不到 DJI，先重建 `rabbitbot-unified-runtime` 容器刷新 `/dev/snd`，不要使用 `/proc/asound` 挂载方案。
+
 ## 最近历史摘要
 
 - `8672472 记录导览打断恢复耗时核查`：记录当前日志中提问打断和恢复导览耗时。
@@ -131,6 +174,7 @@ Aaron 要求通过电平判断麦克风侧是否正常。本轮短暂停止 STT 
 
 ## 其它信息
 
-- 本轮未点击真实前端“关闭程序”按钮，未主动停止 `rabbitbot-loop.service`，也未主动重启 Docker 容器。
-- 本轮已重启 `rabbitbot-control-console.service` 进程以加载新代码；方式为终止旧 MainPID，由 systemd `Restart=always` 自动拉起新进程。
+- 本轮未点击真实前端“关闭程序”按钮，未主动停止 `rabbitbot-loop.service`。
+- 本轮为刷新音频设备绑定，已删除并由启动循环重建 `rabbitbot-unified-runtime`；恢复过程曾短暂中断 Neo4j/TTS/STT/Memory/VLM/Embedding，最终基础服务已恢复。
+- 本轮未修改 `rabbitbot-control-console.service` 代码，也未再次重启控制台服务。
 - 生成时间：2026-06-29

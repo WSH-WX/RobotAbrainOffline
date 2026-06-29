@@ -426,6 +426,7 @@ create_container_if_needed() {
             -v /dev/snd:/dev/snd
             --device-cgroup-rule 'c 116:* rwm'
         )
+        log_info "统一容器音频挂载包含 /dev/snd，并允许 ALSA 字符设备访问"
     fi
 
     dep_args=()
