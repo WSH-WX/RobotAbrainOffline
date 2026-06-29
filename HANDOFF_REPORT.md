@@ -14,7 +14,7 @@
 - 前端“返航”按钮发送 `back`，loop 在语音启动模式下转换为向 STT `/exec` 注入“返回起点”。导览完成后按 `back_points` 返回；没有 `back_points` 时按导览点位逆序返回。
 - 本轮新增前端“开始程序(无机器人模式)”和“到达下一个点位(无机器人模式)”按钮。
 - 本轮将项目中文称呼从“非联调模式”统一为“无机器人模式”；旧环境变量 `RABBITBOT_WORKFLOW_NON_INTEGRATION` 保留为兼容实现名。
-- 前端“当前 Workflow 最近日志”已改为严格读取当前 workflow `run_id` 对应日志；如果没有当前 run 或当前日志文件缺失，不再回退显示历史 workflow 日志。
+- 前端日志面板已改为“当前运行日志”：有当前 workflow run 时显示对应 workflow 日志；workflow 尚未创建时显示 `rabbitbot-loop.service` 启动日志，避免用户点击开始程序后看不到服务启动进度。
 - 本轮新增前端“服务状态”面板，位于“导览讲解词”面板上方，显示 Neo4j、TTS、STT、Memory、VLM、Embedding 的在线状态。
 
 未完成：
@@ -46,7 +46,7 @@
 - 从前端点击“开始程序(无机器人模式)”，确认状态显示“无机器人模式就绪”。
 - 在 QA 状态点击“导览”，确认效果等同于说“开始导览”。
 - 每到一个剧本导航点时点击“到达下一个点位(无机器人模式)”，确认 workflow 日志出现等待和确认到达记录，并继续下一段台词。
-- 打开“当前 Workflow 最近日志”，确认显示的是 `logs/nav_workflow_control/rabbitbot_workflow_<run_id>.log`；如果 workflow 尚未启动，应显示暂无日志，而不是 2026-06-16 等历史日志。
+- 打开“当前运行日志”：如果 workflow 已创建，应显示 `logs/nav_workflow_control/rabbitbot_workflow_<run_id>.log`；如果还在基础服务启动阶段，应显示 `rabbitbot-loop.service` journal，便于看到是否卡在 TTS/STT/Memory。
 - 查看“服务状态”面板，确认 TTS(28185)、STT(28184)、Memory(28182)、Neo4j(7687) 与实际服务状态一致。
 - 若要切回真实机器人模式，点击“开始程序”或“一键重启”，确认 `runtime/rabbitbot-loop.env` 中 `RABBITBOT_NAV_WORKFLOW_NO_ROBOT="0"`。
 
@@ -56,7 +56,7 @@
 - `RABBITBOT_WORKFLOW_NON_INTEGRATION` 仍保留，原因是代码和历史脚本已有该变量；中文说明统一改为“无机器人模式”。
 - 无机器人模式只替代真实导航到点确认，不代表禁用 QA、STT、TTS、Memory 或剧本逻辑。
 - “到达下一个点位(无机器人模式)”按钮发送 `arrive`，只在无机器人模式下生效；真实机器人模式下 loop 会记录 warning 并忽略。
-- “最近日志”文字已改为“当前 Workflow 最近日志”，默认请求 `/api/logs?target=workflow&lines=160`；当前 workflow 不存在时不再回退旧日志。
+- 日志面板文字已改为“当前运行日志”，默认请求 `/api/logs?target=runtime&lines=160`；`target=workflow` 仍保留严格按当前 run_id 读取，不回退旧日志。
 - “服务状态”面板使用 `/api/status` 返回的 `services` 字段；VLM 和 Embedding 标记为可选服务，离线时不代表导览主流程必然不可用。
 
 ## 本轮修改详情：控制台无机器人模式和当前 workflow 日志
@@ -120,6 +120,29 @@ Aaron 反馈“当前 Workflow 最近日志”显示的是 2026-06-16 的旧日�
 ### 新增或调整日志点
 
 - `workflow_log_for_status()` 在 DEBUG 级别记录“run_id 为空不回退历史日志”和“当前 run_id 日志未命中不回退历史日志”，用于排查日志面板为何显示暂无当前 workflow 日志。
+
+
+## 本轮修改详情：运行日志显示 loop 启动阶段
+
+### 背景和目标
+
+Aaron 点击“开始程序(无机器人模式)”后，日志面板没有更新。现场复查发现并非前端没有刷新，而是 workflow 尚未创建：`rabbitbot-loop.service` 仍在等待 unified 基础服务，TTS 28185 一直未启动成功，所以 `workflow_control` 目录没有新的 run_id，也没有新的 `rabbitbot_workflow_<run_id>.log`。
+
+### 已完成内容
+
+- 修改 `rabbitbot/control_console/status.py`：新增 `get_systemd_journal_lines()`，用短超时读取 `rabbitbot-loop.service` journal，供 workflow 尚未创建时显示启动进度。
+- 修改 `rabbitbot/control_console/app.py`：日志面板文案改为“当前运行日志”；前端请求 `/api/logs?target=runtime&lines=160`；后端 `target=runtime` 优先返回当前 workflow 日志，若没有当前 workflow 日志则返回 loop journal。
+- 修改 `tests/control_console/test_app.py`：新增 runtime 日志优先使用当前 workflow、无当前 run 时回退 loop journal 的测试。
+
+### 已验证事实
+
+- 当前点击无机器人模式后，`rabbitbot-loop.service` 反复卡在 `等待 TTS /exec 服务 (28185) 就绪`，并出现过 `TTS /exec 服务 (28185) 启动超时 (420 秒)`。
+- 当前服务状态面板显示 Neo4j 在线，TTS/STT/Memory 离线；这与 loop 尚未进入 workflow 阶段一致。
+- 控制台测试已通过：`PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q tests/control_console/test_app.py tests/control_console/test_commands.py`，结果为 `51 passed`。
+
+### 新增或调整日志点
+
+- `get_systemd_journal_lines()` 在 DEBUG 级别记录读取 loop journal 的行数；读取失败或 journalctl 返回非零时记录 WARNING，包含 unit、返回码或异常类型，便于排查控制台为何无法显示 loop 启动日志。
 
 ## 最近历史摘要
 

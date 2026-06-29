@@ -13,6 +13,7 @@ from .status import (
     detect_main_loop_running,
     get_latest_workflow_status,
     get_runtime_service_statuses,
+    get_systemd_journal_lines,
     get_tail_lines,
     workflow_log_for_status,
     detect_nav_bridge_status_from_lines,
@@ -113,7 +114,7 @@ def _html() -> str:
       </section>
       <section class="panel" style="margin-top:16px">
         <div class="top" style="margin-bottom:10px">
-          <div class="label">当前 Workflow 最近日志</div>
+          <div class="label">当前运行日志</div>
           <button id="logsToggleBtn" class="refresh" onclick="toggleLogs()">显示日志</button>
         </div>
         <pre id="logs" class="log" hidden></pre>
@@ -226,7 +227,7 @@ function waitForServicesReady(button,startedAt){
 }
 function refreshLogs(){
   if(!logsVisible){return;}
-  requestJson('GET','/api/logs?target=workflow&lines=160',null,function(logError,body){
+  requestJson('GET','/api/logs?target=runtime&lines=160',null,function(logError,body){
     if(logError){setText('logs',logError.message);return;}
     setText('logs',(body.lines&&body.lines.join(String.fromCharCode(10)))||'暂无日志');
   });
@@ -468,17 +469,43 @@ def create_app(config: ConsoleConfig | None = None) -> FastAPI:
         bounded_lines = max(1, min(lines, 400))
         if target == "nav":
             path = latest_file(config.nav_log_dir, "nav_bridge_*.log")
-        elif target == "workflow":
+            return {
+                "ok": True,
+                "target": target,
+                "source": "file" if path else "none",
+                "path": str(path) if path else None,
+                "lines": get_tail_lines(path, bounded_lines) if path else [],
+            }
+        if target == "workflow":
             workflow = get_latest_workflow_status(config.workflow_control_dir)
             path = workflow_log_for_status(config.workflow_log_dir, workflow)
-        else:
-            raise HTTPException(status_code=400, detail="不支持的日志目标")
-        return {
-            "ok": True,
-            "target": target,
-            "path": str(path) if path else None,
-            "lines": get_tail_lines(path, bounded_lines) if path else [],
-        }
+            return {
+                "ok": True,
+                "target": target,
+                "source": "file" if path else "none",
+                "path": str(path) if path else None,
+                "lines": get_tail_lines(path, bounded_lines) if path else [],
+            }
+        if target == "runtime":
+            workflow = get_latest_workflow_status(config.workflow_control_dir)
+            path = workflow_log_for_status(config.workflow_log_dir, workflow)
+            if path:
+                return {
+                    "ok": True,
+                    "target": target,
+                    "source": "workflow",
+                    "path": str(path),
+                    "lines": get_tail_lines(path, bounded_lines),
+                }
+            unit = config.loop_service_name
+            return {
+                "ok": True,
+                "target": target,
+                "source": "systemd",
+                "path": f"journal:{unit}",
+                "lines": get_systemd_journal_lines(unit, bounded_lines),
+            }
+        raise HTTPException(status_code=400, detail="不支持的日志目标")
 
     return app
 

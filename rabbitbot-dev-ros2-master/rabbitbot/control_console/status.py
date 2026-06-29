@@ -350,6 +350,28 @@ def is_port_open(host: str, port: int, timeout: float = 0.25) -> bool:
         return False
 
 
+def get_systemd_journal_lines(unit: str, limit: int = 120) -> list[str]:
+    safe_limit = max(1, min(limit, 400))
+    try:
+        result = subprocess.run(
+            ["journalctl", "-u", unit, "-n", str(safe_limit), "--no-pager", "--output", "short-iso"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        logger.warning("读取 systemd 日志失败：unit=%s, error_type=%s, error=%s", unit, type(exc).__name__, exc)
+        return [f"无法读取 {unit} 日志：{type(exc).__name__}"]
+    text = "\n".join(part for part in (result.stdout, result.stderr) if part)
+    lines = [strip_ansi(line) for line in text.splitlines()]
+    if result.returncode != 0:
+        logger.warning("读取 systemd 日志返回非零：unit=%s, returncode=%s, lines=%s", unit, result.returncode, len(lines))
+    else:
+        logger.debug("读取 systemd 日志完成：unit=%s, lines=%s", unit, len(lines))
+    return lines[-safe_limit:]
+
+
 def get_runtime_service_statuses() -> list[ServiceStatus]:
     service_specs = [
         ("neo4j", "Neo4j", 7687, True),

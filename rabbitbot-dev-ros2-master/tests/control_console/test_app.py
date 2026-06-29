@@ -308,6 +308,43 @@ def test_logs_do_not_fallback_to_old_workflow_when_current_log_missing(tmp_path)
     assert response.json()["lines"] == []
 
 
+def test_runtime_logs_use_workflow_log_when_current_run_exists(tmp_path):
+    config = make_config(tmp_path)
+    (config.workflow_control_dir / "20260609_110000.status").write_text("running\n", encoding="utf-8")
+    (config.workflow_control_dir / "20260609_110000.ready").write_text("ready\n", encoding="utf-8")
+    (config.workflow_log_dir / "rabbitbot_workflow_20260609_110000.log").write_text("one\ntwo\nthree\n", encoding="utf-8")
+    client = TestClient(create_app(config))
+
+    response = client.get("/api/logs?target=runtime&lines=2")
+
+    assert response.status_code == 200
+    assert response.json()["source"] == "workflow"
+    assert response.json()["path"].endswith("rabbitbot_workflow_20260609_110000.log")
+    assert response.json()["lines"] == ["two", "three"]
+
+
+def test_runtime_logs_fallback_to_loop_journal_when_no_current_run(tmp_path, monkeypatch):
+    from rabbitbot.control_console import app as console_app
+
+    config = make_config(tmp_path)
+    calls = []
+
+    def fake_journal(unit, lines):
+        calls.append((unit, lines))
+        return ["loop starting", "waiting TTS"]
+
+    monkeypatch.setattr(console_app, "get_systemd_journal_lines", fake_journal)
+    client = TestClient(create_app(config))
+
+    response = client.get("/api/logs?target=runtime&lines=2")
+
+    assert response.status_code == 200
+    assert response.json()["source"] == "systemd"
+    assert response.json()["path"] == "journal:rabbitbot-loop.service"
+    assert response.json()["lines"] == ["loop starting", "waiting TTS"]
+    assert calls == [("rabbitbot-loop.service", 2)]
+
+
 def test_main_module_exposes_run_function():
     from rabbitbot.control_console.__main__ import run
 
