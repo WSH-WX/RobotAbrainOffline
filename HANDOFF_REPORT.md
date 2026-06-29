@@ -64,6 +64,7 @@
 - 修复模型目录缺失与 `ensure_models.sh` 下载实现，当前模型运行态指向 `/mnt/disk1/models`，并用硬链接补齐 air 包模型入口。
 - 多轮排查 Unitree DDS、`eno1`、TTS ret=3104、STT 设备、DJI MIC MINI capture、BT67 回退策略和 portable 服务收敛问题。
 - 新增 VLM QA workflow，并完成语音问答链路的基础脚本、日志、端口和服务归属治理。
+- VLM QA 所需模型目录已修复：运行态模型目录指向 `/mnt/disk1/models`，`ensure_models.sh` 已改用 `huggingface_hub.snapshot_download()`，并用硬链接补齐 air 包模型入口。
 
 ### 已验证的历史事实
 
@@ -82,66 +83,9 @@
 
 - 后续先按当前目标选择入口：portable 部署复核用 `deploy/check_air_project.sh`，VLM QA 用 `scripts_1/start_unified_vlm_qa_workflow.sh`，导览主循环用 `rabbitbot-loop.service`。
 - 涉及服务归属问题时，优先确认 core/nav 容器、端口、`runtime/portable.env`、`eno1` 和日志最新 run_id。
-- 不要把本机运行态配置、模型目录、虚拟环境或构建产物重新纳入 Git。
+- 不要把本机运行态配置、模型目录、虚
 
-### 历史注意事项
-
-- 本摘要压缩了最近五轮之前的详细交接内容；若需要追溯更细的历史命令或现场时间线，应从 Git 历史中的旧版 `HANDOFF_REPORT.md` 查看。
-- 压缩时间：2026-06-29
-
-## 本轮补充：补齐 VLM 问答所需模型目录
-
-### 背景和目标
-
-Aaron 启动 `scripts_1/start_unified_vlm_qa_workflow.sh` 时遇到 `模型目录不存在：/mnt/disk1/gt/air_robot_gt_projects/models`，随后直接运行 `deploy/ensure_models.sh` 又因为默认未启用按需模型而跳过下载。本轮目标是把 VLM 问答所需模型准备到位，并让启动脚本不再卡在模型目录检查。
-
-### 当前状态
-
-已完成：
-
-- 已确认现有完整模型实际位于 `/mnt/disk1/models`，包含：
-  - `Qwen2.5-VL-7B-Instruct-GPTQ-Int4`
-  - `Qwen3-Embedding-0.6B`
-  - `SenseVoiceSmall`
-- 已将 `rabbitbot-dev-ros2-master/runtime/portable.env` 的 `RABBITBOT_MODELS_CACHE_DIR` 从 `/mnt/disk1/gt/air_robot_gt_projects/models` 改为 `/mnt/disk1/models`，使运行态配置指向实际模型目录。
-- 已在 `/mnt/disk1/gt/air_robot_gt_projects/models` 下用同盘硬链接方式补齐 manifest 中的三项模型目录，避免重复占用一份大模型空间。
-- 已强制运行 `bash deploy/ensure_models.sh qwen_vlm qwen_embedding sensevoice`，三项模型均显示已存在并跳过下载。
-- 已修复 `deploy/ensure_models.sh`：下载缺失模型时不再调用已弃用且会失败的 `huggingface-cli download`，改用 `huggingface_hub.snapshot_download()`。
-- 已执行 `bash -n deploy/ensure_models.sh`，语法检查通过。
-- 已进行受控启动冒烟测试：`start_unified_vlm_qa_workflow.sh` 已能识别 `模型目录可用：/mnt/disk1/models`，并进入 `等待 VLM 服务 (8000)` 阶段，不再报模型目录不存在。
-- 冒烟测试结束后已停止本轮启动的 `rabbitbot-unified-runtime` 容器。
-
-未完成：
-
-- 本轮没有等待 VLM 完整加载完成，也没有启动实际 VLM 问答 workflow。
-- 本轮没有重新下载网络模型文件，因为 `/mnt/disk1/models` 已有完整模型；本轮采用硬链接补齐 air 包期望路径。
-
-### 已验证的事实
-
-- `deploy/ensure_models.sh qwen_vlm qwen_embedding sensevoice` 输出三项模型已存在，count=3。
-- `start_unified_vlm_qa_workflow.sh` 不再报 `/mnt/disk1/gt/air_robot_gt_projects/models` 缺失，而是使用 `/mnt/disk1/models`。
-- 当前运行容器仍为原有 caddy、redis、portable nav、air_vln_container、sound_docker；本轮启动的 `rabbitbot-unified-runtime` 已停止。
-- 当前 28182、28184、28186、8000、7687 等本轮可能占用端口无监听残留。
-
-### 阻塞问题
-
-无模型目录层面的阻塞。后续真实问答运行仍可能受 VLM 加载耗时、TTS DDS 接口或现场音频链路影响。
-
-### 建议的下一步
-
-- 重新运行 `/mnt/disk1/gt/air_robot_gt_projects/rabbitbot-dev-ros2-master/scripts_1/start_unified_vlm_qa_workflow.sh`，等待 VLM、STT、TTS 基础服务 ready。
-- 如果未来某项模型目录被删除，可再次运行 `bash deploy/ensure_models.sh qwen_vlm qwen_embedding sensevoice`；修复后的脚本会使用 `snapshot_download()` 下载。
-- 如果要迁移到新机器，应同时迁移 `/mnt/disk1/models` 或重新运行模型下载脚本。
-
-### 注意事项
-
-- `runtime/portable.env` 是本机运行态配置，被 Git 忽略；本轮改动不会进入提交，但已在交接报告记录。
-- `/mnt/disk1/gt/air_robot_gt_projects/models` 中的模型是硬链接补齐，不是重复复制；不要只按 `du` 单次显示误判为额外占用了一整份空间。
-- 本轮没有启动导览导航 workflow，没有发送 `go/back`，没有触发机器人移动。
-
-### 其它信息
-
-本轮新增/调整的日志点：未新增业务日志。`deploy/ensure_models.sh` 仍保留原有下载开始、模型已存在、下载完成和总数日志；修复点是底层下载实现从 CLI 改为 Python API，以避免 Hugging Face CLI 兼容失败。
+轮新增/调整的日志点：未新增业务日志。`deploy/ensure_models.sh` 仍保留原有下载开始、模型已存在、下载完成和总数日志；修复点是底层下载实现从 CLI 改为 Python API，以避免 Hugging Face CLI 兼容失败。
 
 ## 本轮补充：TTS 不能播放根因排查
 
@@ -408,6 +352,52 @@ Aaron 要求调整导览期间逻辑：启动 `rabbitbot-loop.service` 后默认
 - Python 侧 `RABBITBOT_GUIDE_START_BY_VOICE` 默认值保持为 0，避免直接手动运行 workflow 时改变旧行为；只有 loop 脚本默认显式传入 1。
 - 新增日志点避免记录完整原始口令内容，只记录触发文本长度、阶段、scene、step_index、timeout、状态变化和异常类型，便于排查且避免过量日志。
 - 本轮未修改模型、运行态 env、systemd unit 或 Docker 镜像。
+
+### 其它信息
+
+- 生成时间：2026-06-29
+
+## 本轮补充：go 命令映射为开始导览口令
+
+### 背景和目标
+
+Aaron 明确要求前端“导览”按钮发送的 `go` 命令效果等同于 QA 状态下对麦克风说“开始导览”，即在默认 QA 状态中启动支持中途打断并恢复的导览流程，而不是沿用旧外部 go 闸门语义。
+
+### 当前状态
+
+已完成：
+
+- 已修改 `rabbitbot-dev-ros2-master/scripts_1/start_nav_bridge_workflow_loop.sh`：在默认语音启动模式 `RABBITBOT_NAV_WORKFLOW_VOICE_START=1` 下，workflow 运行期间收到 `go` 命令时，不再忽略，而是调用 STT `/exec` 注入文本。
+- 新增 `RABBITBOT_NAV_WORKFLOW_GO_TEXT`，默认值为 `开始导览`；如需改按钮注入文案，可通过该变量覆盖。
+- 新增 `RABBITBOT_STT_EXEC_URL`，默认 `http://127.0.0.1:28184/exec`，用于调用 STT `inject_text_async`。
+- 已修改 `rabbitbot-dev-ros2-master/rabbitbot/agno_agents/workflow.py`：导览已经启动后再次收到“开始导览”类口令会被忽略并记录日志，避免重复点击按钮把口令当作普通问题打断当前导览。
+
+未完成：
+
+- 本轮未重启 `rabbitbot-loop.service`，未通过前端实际点击“导览”做现场验证。
+- 本轮未验证 STT 服务运行态是否已经监听 28184；实际点击按钮前仍需保证 loop 已启动且 STT 服务就绪。
+
+### 已验证的事实
+
+- `python3 -m py_compile rabbitbot/agno_agents/workflow.py scripts/run_kuavo_agno_workflow.py` 通过。
+- `bash -n scripts_1/start_nav_bridge_workflow_loop.sh scripts_1/send_nav_workflow_command.sh` 通过。
+- `git diff --check` 通过。
+- 当前后端“导览”按钮仍通过 `/api/task` 调用 `send_workflow_command("go")`；现在 loop 会把这个 `go` 转成 STT 注入的“开始导览”。
+
+### 阻塞问题
+
+- 无代码层面阻塞。现场验证仍依赖 `rabbitbot-loop.service`、core 容器、STT 28184、TTS 和导航服务正常。
+
+### 建议的下一步
+
+- 启动 `rabbitbot-loop.service` 后，在前端点击“导览”，检查 loop 日志是否出现“将 go 命令转换为开始导览口令”和“开始导览口令已注入 STT”。
+- 确认 workflow 日志随后出现“语音口令启动导览”，并进入所选剧本。
+- 如需恢复旧外部 go 闸门行为，设置 `RABBITBOT_NAV_WORKFLOW_VOICE_START=0`。
+
+### 注意事项
+
+- 新增日志不会记录完整原始口令，只记录文本长度、STT URL、STT 注入响应和重复口令忽略状态。
+- 如果 STT 注入失败，loop 会记录 WARNING，但不会终止 workflow；这便于现场继续用麦克风说“开始导览”兜底。
 
 ### 其它信息
 

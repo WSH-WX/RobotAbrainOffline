@@ -75,6 +75,8 @@ RABBITBOT_WORKFLOW_VERBOSE="${RABBITBOT_WORKFLOW_VERBOSE:-0}"
 RABBITBOT_UNIFIED_ATTACH_STDIN="${RABBITBOT_UNIFIED_ATTACH_STDIN:-0}"
 RABBITBOT_TTS_STRICT_FAILURE="${RABBITBOT_TTS_STRICT_FAILURE:-0}"
 RABBITBOT_NAV_WORKFLOW_VOICE_START="${RABBITBOT_NAV_WORKFLOW_VOICE_START:-1}"
+RABBITBOT_NAV_WORKFLOW_GO_TEXT="${RABBITBOT_NAV_WORKFLOW_GO_TEXT:-开始导览}"
+RABBITBOT_STT_EXEC_URL="${RABBITBOT_STT_EXEC_URL:-http://127.0.0.1:28184/exec}"
 if [ "${RABBITBOT_NAV_WORKFLOW_VOICE_START}" = "1" ]; then
     # 语音启动导览必须依赖 STT 常驻；即使 portable.env 默认关闭 STT，这里也要为 loop 场景打开。
     RABBITBOT_UNIFIED_START_STT="1"
@@ -942,6 +944,21 @@ wait_workflow_gate_ready() {
     return 1
 }
 
+inject_guide_start_command() {
+    local command_text="${1:-${RABBITBOT_NAV_WORKFLOW_GO_TEXT}}"
+    local payload
+    local response
+    payload="$(python3 -c 'import json,sys; print(json.dumps({"task":"inject_text_async","lang":"zh","text":sys.argv[1],"timeout":30}, ensure_ascii=False))' "${command_text}")"
+    log_info "将 go 命令转换为开始导览口令：text_len=${#command_text}, stt_url=${RABBITBOT_STT_EXEC_URL}"
+    response="$(curl --max-time 5 -sS -X POST "${RABBITBOT_STT_EXEC_URL}" --form-string "task=${payload}" 2>&1 || true)"
+    if printf '%s' "${response}" | grep -q '"out_text"'; then
+        log_info "开始导览口令已注入 STT：response=${response}"
+        return 0
+    fi
+    log_warn "开始导览口令注入 STT 可能失败：response=${response}"
+    return 1
+}
+
 wait_go_or_back() {
     WAITED_COMMAND=""
     log_info "等待命令：go 启动 workflow；此阶段收到 back 将直接返航"
@@ -990,7 +1007,11 @@ monitor_workflow_until_finished() {
                 log_info "已预接收 back 命令，workflow 结束后自动返航"
                 ;;
             go)
-                log_warn "workflow 正在运行，忽略重复 go 命令"
+                if [ "${RABBITBOT_NAV_WORKFLOW_VOICE_START}" = "1" ]; then
+                    inject_guide_start_command "${RABBITBOT_NAV_WORKFLOW_GO_TEXT}" || true
+                else
+                    log_warn "workflow 正在运行，忽略重复 go 命令"
+                fi
                 ;;
             "")
                 ;;

@@ -2524,6 +2524,12 @@ def create_main_workflow(ctx: Any) -> Workflow:
                     time.sleep(1)
                     #out_text = audio_input_execute(stt_agent, "speech_to_text", timeout=300)
                     out_text = await listen_user_input_for_workflow("main_loop")
+        if guide_started() and is_guide_start_command(out_text):
+            _workflow_log(f"忽略重复开始导览口令: text_len={len(out_text or '')}")
+            WorkflowTimePoints.PLAN_START = time.time()
+            _profile_end(loop_span, step="audio_input_step", result="duplicate_guide_start_ignored")
+            return StepOutput(content=f"{SCRIPTED_TOUR_STEP_DONE}")
+
         chat_queue.put(out_text, "用户")
 
         #tts_sound(tts_agent, f"{before_text}我听到了，但是可能要思考一会。请稍等片刻", "zh")
