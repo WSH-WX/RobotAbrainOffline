@@ -15,13 +15,13 @@
 - 前端已支持“开始程序(无机器人模式)”和“到达下一个点位(无机器人模式)”；中文称呼统一为“无机器人模式”，旧变量 `RABBITBOT_WORKFLOW_NON_INTEGRATION` 保留兼容。
 - 前端“当前运行日志”会优先显示当前 workflow 日志；workflow 尚未创建时显示 `rabbitbot-loop.service` journal。
 - 前端“服务状态”面板位于“导览讲解词”上方，显示 Neo4j、TTS、STT、Memory、VLM、Embedding 的在线状态。
-- loop QA 默认启用 VLM；本轮进一步把 Embedding 改为默认启用，并将控制台服务状态中的 Embedding 标记为必需服务。
+- loop QA 默认启用 VLM 和 Embedding；本轮进一步把 TTS 内置声卡回退默认设为允许，确保没有外接声卡时 TTS 也能尽量启动。
 
 未完成：
 
 - 本轮未重启 `rabbitbot-loop.service`、未重启控制台、未停止或重建 `rabbitbot-unified-runtime`，以避免影响当前服务状态。
 - 本轮未做机器人实机导航、返航、语音拾音、TTS 播报或动作验证。
-- 当前现场仍需解决 TTS 28185 启动失败后，才能完整进入 QA/导览。
+- 本轮将 TTS 内置声卡回退默认打开，并按要求重启相关容器/服务；仍需以实际端口和日志确认 TTS 28185 最终就绪。
 
 ## 已验证的事实
 
@@ -31,20 +31,20 @@
 - 无机器人模式下 loop 会跳过导航桥接启动和导航桥接健康检查，但仍启动 unified 基础服务、STT、TTS、Memory、Neo4j、VLM、Embedding 和 workflow。
 - workflow 手动到达确认优先等待 `RABBITBOT_WORKFLOW_MANUAL_ARRIVAL_FILE`；前端 `arrive` 命令会写该文件推进当前点位。
 - Neo4j 在线不代表 loop 正在运行；它由 `rabbitbot-unified-runtime` 容器提供，停止 `rabbitbot-loop.service` 不会自动停止该容器。
-- 最近现场日志显示 loop 卡在等待 TTS 28185：出现过 `TTS /exec 服务 (28185) 启动超时 (420 秒)`，当时只有 Neo4j 7687 在线。
+- 最近现场日志显示 loop 卡在等待 TTS 28185：出现过 `TTS /exec 服务 (28185) 启动超时 (420 秒)`，提示可设置 `RABBITBOT_TTS_ALLOW_BUILTIN=1`。
 - 直接运行 `python3 -m pytest` 会受远端 anyio/pytest 插件版本冲突影响，需设置 `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`。
 - 本轮验证已通过：shell 语法检查、`rabbitbot/control_console/status.py` 语法检查、控制台目标测试 `51 passed`、`git diff --check`。
 
 ## 阻塞问题
 
 - 现场实机链路仍依赖 `eno1`、机器人网络、Unitree DDS、导航核心、TTS/STT 设备和容器服务状态。
-- 当前主要阻塞是 TTS 28185 未正常启动；workflow 创建前会停在 unified 基础服务就绪阶段。
+- 当前主要风险是 TTS 28185 是否能在内置声卡回退打开后正常启动；workflow 创建前会等待 unified 基础服务就绪。
 - 如果 Embedding 模型目录缺失或显存/端口资源不足，下一次启动会在 Embedding 8005 等待阶段暴露问题；可临时显式设置 `RABBITBOT_UNIFIED_START_EMBEDDING=0` 或 `RABBITBOT_NAV_WORKFLOW_START_EMBEDDING=0` 跳过。
 - 如果 `rabbitbot-control-console.service` 运行用户没有写 `runtime/rabbitbot-loop.env` 的权限，前端启动模式写入会失败；需查看控制台服务日志确认权限。
 
 ## 建议的下一步
 
-- 优先排查 TTS 28185 未启动：查看 `logs/unified_runtime/rabbitbot_tts.log`、`rabbitbot-unified-runtime` 容器日志和 TTS 后端配置。
+- 重启后优先查看服务状态面板和 `logs/unified_runtime/rabbitbot_tts.log`，确认 TTS 28185 是否已就绪，以及实际选中的音频输出设备。
 - 从前端点击“开始程序(无机器人模式)”，确认“当前运行日志”显示 unified 基础服务启动过程，并确认日志中出现 `embedding=1`。
 - 待 TTS/STT/Memory/VLM/Embedding 就绪后，在 QA 状态点击“导览”，确认效果等同于说“开始导览”。
 - 无机器人模式下，每到一个剧本导航点时点击“到达下一个点位(无机器人模式)”，确认 workflow 日志出现等待和确认到达记录。
@@ -52,12 +52,30 @@
 
 ## 注意事项
 
-- 本轮只改默认配置和日志文案，没有主动重启任何现场服务；新默认值会在下一次启动 loop 或统一容器入口时生效。
+- 本轮会按 Aaron 要求重启相关容器/服务；如 TTS 使用内置声卡回退启动成功，现场仍需确认实际播报声音是否从可听设备输出。
 - `RABBITBOT_NAV_WORKFLOW_START_EMBEDDING` 是 loop 场景的默认开关，默认 `1`；`RABBITBOT_UNIFIED_START_EMBEDDING` 仍可直接覆盖最终传入容器的值。
 - `RABBITBOT_NAV_WORKFLOW_NO_ROBOT=1` 是明确无机器人模式开关；`RABBITBOT_WORKFLOW_NON_INTEGRATION` 仍保留为兼容变量名。
 - “到达下一个点位(无机器人模式)”按钮发送 `arrive`，只在无机器人模式下生效；真实机器人模式下 loop 会记录 warning 并忽略。
 - “当前运行日志”默认请求 `/api/logs?target=runtime&lines=160`；`target=workflow` 仍严格按当前 `run_id` 读取，不回退旧日志。
 - 服务状态面板是短超时端口探测，不等同于 systemd 或 Docker 状态；Neo4j 7687 在线通常表示 `rabbitbot-unified-runtime` 容器仍在提供数据库。
+
+
+## 本轮修改详情：默认允许 TTS 内置声卡回退
+
+### 背景和目标
+
+Aaron 反馈 TTS 日志提示“如需临时允许内置声卡回退，请设置 RABBITBOT_TTS_ALLOW_BUILTIN=1”，并要求无论如何启动程序都默认打开该开关，完成后重启相关容器/服务。
+
+### 已完成内容
+
+- 修改 `scripts_1/start_unified_integration_workflow.sh`：创建统一容器时默认传入 `RABBITBOT_TTS_ALLOW_BUILTIN=1`，仍允许调用方显式设为 `0`。
+- 修改 `scripts/start_tts_app.bash`：TTS 脚本自身默认 `RABBITBOT_TTS_ALLOW_BUILTIN=1`，覆盖直接在容器内启动 TTS 的路径。
+- 调整 TTS 启动失败提示：现在说明默认已允许内置声卡回退，如需强制外接声卡再显式设为 `0`。
+
+### 新增或调整日志点
+
+- TTS 音频设备扫描失败提示已同步更新，避免日志继续建议设置一个已经默认开启的变量。
+- 没有新增高频日志，也没有开启 DEBUG/TRACE 持久化写盘。
 
 ## 本轮修改详情：默认启用 Embedding
 
