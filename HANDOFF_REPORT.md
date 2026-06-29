@@ -1094,3 +1094,59 @@ Aaron 指出 `RABBITBOT_TTS_BACKEND=auto` 只判断 Unitree 网卡名是否存�
 - `RABBITBOT_UNITREE_TTS_AUTO_PROBE=0` 可临时跳过音频服务探测，但不建议现场常态使用；否则又会退回“链路看起来可用但机器人音频服务不可用”的不可靠状态。
 - 本轮新增/调整日志点：`TTS启动检查` 会记录 auto 判定开始、接口状态、carrier/IP 检查结果、桥接程序构建状态、Unitree 音频服务探测开始/成功/失败、stdout/stderr 摘要和最终 effective 后端。这些日志用于快速定位 TTS 是因物理链路、IP、SDK/桥接构建还是机器人音频服务失败而回退。
 - 生成时间：2026-06-16 13:55:00
+
+## 本轮补充：ShuHao-orin 项目只读核查
+
+### 背景和目标
+
+Aaron 要求登录 `ShuHao-orin`，阅读 `/mnt/disk1/gt/air_robot_gt_projects/HANDOFF_REPORT.md` 以及该目录所属项目。本轮目标是只读梳理项目结构、交接报告、当前分支、运行配置和当前服务状态，不触发机器人动作，不重启服务，不修改业务代码。
+
+### 当前状态
+
+已完成：
+
+- 已确认项目根目录为 `/mnt/disk1/gt/air_robot_gt_projects`，当前 Git 分支为 `feature/qa-vlm-workflow`。
+- 已阅读顶层 `HANDOFF_REPORT.md` 的近期补充，重点包含 portable 部署、VLM QA workflow、模型目录修复、TTS/STT 音频链路、TTS auto 健康检查等内容。
+- 已阅读顶层 `README.md`，确认该目录是 RabbitBot 自主运行包，保留 `legacy` 与 `portable` 两条运行路径。
+- 已阅读主项目 `rabbitbot-dev-ros2-master/HANDOFF_REPORT.md` 的近期内容，确认最新工作集中在 VLM QA、portable core/nav 容器收敛、STT 设备选择解耦和 TTS auto 选择加固。
+- 已查看 `third_party/manifest.lock`、`runtime/portable.env.example`、当前本机 `runtime/portable.env`、关键部署脚本和启动脚本清单。
+- 已查看当前容器、关键端口和 `eno1` 网卡状态。
+
+未完成：
+
+- 本轮未执行 `deploy/check_air_project.sh`，未启动或重启任何 systemd 服务，未启动 VLM QA workflow。
+- 本轮未做实机语音、TTS 播报、STT 拾音、导航或机器人动作验证。
+- 本轮未修改业务代码。
+
+### 已验证的事实
+
+- 当前 Git 工作区在写入本节前是干净状态，分支为 `feature/qa-vlm-workflow`，最新提交为 `df67d94 加固 TTS auto 后端健康检查`。
+- 顶层目录包含 `rabbitbot-dev-ros2-master`、`models`、`custom_action_ws`、`unitree_slam_example_new`、`unitree_sdk2`、`vln`、`pyorbbecsdk-v2-py310`、`deploy` 和 `third_party`。
+- 当前 `runtime/portable.env` 设置：`RABBITBOT_RUNTIME_MODE=portable`，core 镜像为 `ghcr.io/aaronai/rabbitbot-core-portable:20260611`，nav 镜像为 `ghcr.io/aaronai/rabbitbot-nav-portable:20260611`，模型目录为 `/mnt/disk1/models`，`RABBITBOT_TTS_BACKEND=auto`，`RABBITBOT_UNITREE_TTS_SPEAKER_ID=1`。
+- 当前运行容器只看到 `rabbitbot-portable-rabbitbot-nav-1`、`caddy`、`redis`；未看到 `rabbitbot-unified-runtime` core 容器正在运行。
+- 当前关键端口只确认 `28180` 在监听；未看到 `8000`、`28182`、`28184`、`28185`、`7687` 监听。
+- 当前 `eno1` 状态为 `DOWN`，这会阻塞 Unitree DDS、机器人本体 TTS 和导航实机链路。
+- 当前顶层 README 仍说明 portable 默认通过 core/nav 两个自包含镜像运行，全新 Orin 运行期不再要求宿主存在 `py38/py310/vln/pyorbbecsdk/unitree_sdk2` 等目录。
+
+### 阻塞问题
+
+- 当前 `eno1` 为 `DOWN`，如果需要实机导航、Unitree 本体 TTS 或 DDS 相关验证，必须先恢复机器人网络链路。
+- 当前 core 容器未运行，VLM、STT、TTS、Memory、Neo4j 等 core 侧服务当前不可用；如果要继续 VLM QA 或语音链路验证，需要按项目脚本重新拉起 core 基础服务或 workflow。
+
+### 建议的下一步
+
+- 若目标是恢复 VLM QA，先运行 `cd /mnt/disk1/gt/air_robot_gt_projects/rabbitbot-dev-ros2-master && bash scripts_1/start_unified_vlm_qa_workflow.sh`，再检查 `8000/28184/28185` 和 workflow 日志。
+- 若目标是验证机器人本体 TTS 或导航，先恢复 `eno1` 链路，确认 `ip -brief addr show dev eno1` 不再是 `DOWN`，再启动相关服务。
+- 若目标是做 portable 部署复核，先执行 `PORTABLE_CHECK_MODE=clean_orin bash deploy/check_air_project.sh` 或按当前机器角色选择 builder/clean_orin 模式。
+- 后续修改业务代码时，应继续保持新增日志覆盖关键启动路径、设备选择、容器复用判断、网络/DDS 探测、TTS/STT/VLM 请求链路和失败原因。
+
+### 注意事项
+
+- 本轮只读核查未触发机器人移动、未发送 `go/back`、未启动或停止容器服务。
+- 顶层 `HANDOFF_REPORT.md` 已经很长；后续若继续追加多轮记录，建议单独安排一次交接报告压缩，把最近五轮之前的历史内容折叠成摘要，避免继续膨胀。
+- 本轮新增/调整日志点：未新增业务日志；本次只记录交接报告。已确认现有日志设计覆盖 TTS auto 后端选择、STT 设备选择、VLM QA workflow 阶段、TTS 请求返回、容器兼容性检查等关键排查路径。
+
+### 其它信息
+
+- 生成时间：2026-06-29
+
