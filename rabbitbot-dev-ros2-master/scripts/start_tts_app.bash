@@ -236,7 +236,7 @@ def scan_once():
             matched = preferred_name in name.lower()
         else:
             matched = not builtin
-        if matched or (allow_builtin and not preferred_name):
+        if matched or (allow_builtin and builtin):
             candidates.append({
                 "index": index,
                 "name": name,
@@ -285,7 +285,10 @@ while True:
         stable_seen = 0
         last_key = None
         if preferred_name:
-            log(f"未检测到指定 TTS 输出设备: {preferred_name}")
+            if allow_builtin:
+                log(f"未检测到指定 TTS 输出设备: {preferred_name}，继续尝试内置声卡回退")
+            else:
+                log(f"未检测到指定 TTS 输出设备: {preferred_name}")
         else:
             log("未检测到外接 TTS 输出设备")
 

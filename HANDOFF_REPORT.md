@@ -21,7 +21,7 @@
 
 - 本轮未重启 `rabbitbot-loop.service`、未重启控制台、未停止或重建 `rabbitbot-unified-runtime`，以避免影响当前服务状态。
 - 本轮未做机器人实机导航、返航、语音拾音、TTS 播报或动作验证。
-- 本轮将 TTS 内置声卡回退默认打开，并按要求重启相关容器/服务；仍需以实际端口和日志确认 TTS 28185 最终就绪。
+- 本轮将 TTS 内置声卡回退默认打开，并修复指定 `TTS_DEVICE_NAME=bt67` 不存在时未继续回退内置声卡的问题；已按要求重启相关容器/服务。
 
 ## 已验证的事实
 
@@ -60,6 +60,23 @@
 - 服务状态面板是短超时端口探测，不等同于 systemd 或 Docker 状态；Neo4j 7687 在线通常表示 `rabbitbot-unified-runtime` 容器仍在提供数据库。
 
 
+
+
+## 本轮修改详情：TTS 指定设备缺失时继续内置回退
+
+### 背景和目标
+
+重启后确认 `rabbitbot-unified-runtime` 已带有 `RABBITBOT_TTS_ALLOW_BUILTIN=1`，但 TTS 仍因 `TTS_DEVICE_NAME=bt67` 不存在而拒绝启动。目标是让指定设备缺失时仍能按默认内置声卡回退继续启动。
+
+### 已完成内容
+
+- 修改 `scripts/start_tts_app.bash`：当指定设备未匹配且 `RABBITBOT_TTS_ALLOW_BUILTIN=1` 时，把 Orin/HDMI/APE 等内置输出设备加入 fallback 候选。
+- 调整扫描日志：指定设备缺失且允许回退时，日志明确写出“继续尝试内置声卡回退”。
+
+### 新增或调整日志点
+
+- TTS 设备扫描失败路径增加是否继续内置回退的说明，便于区分“指定设备缺失但可回退”和“指定设备缺失且禁止回退”。
+- 没有新增高频日志，也没有开启 DEBUG/TRACE 持久化写盘。
 
 ## 本轮修改详情：当前运行日志只显示本次运行
 
