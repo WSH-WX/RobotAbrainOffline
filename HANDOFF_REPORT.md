@@ -14,7 +14,7 @@
 - 前端“返航”按钮发送 `back`，loop 在语音启动模式下转换为向 STT `/exec` 注入“返回起点”。导览完成后按 `back_points` 返回；没有 `back_points` 时按导览点位逆序返回。
 - 本轮新增前端“开始程序(无机器人模式)”和“到达下一个点位(无机器人模式)”按钮。
 - 本轮将项目中文称呼从“非联调模式”统一为“无机器人模式”；旧环境变量 `RABBITBOT_WORKFLOW_NON_INTEGRATION` 保留为兼容实现名。
-- 前端“当前 Workflow 最近日志”已改为读取当前 workflow `run_id` 对应日志，而不是固定显示导航桥接日志。
+- 前端“当前 Workflow 最近日志”已改为严格读取当前 workflow `run_id` 对应日志；如果没有当前 run 或当前日志文件缺失，不再回退显示历史 workflow 日志。
 - 本轮新增前端“服务状态”面板，位于“导览讲解词”面板上方，显示 Neo4j、TTS、STT、Memory、VLM、Embedding 的在线状态。
 
 未完成：
@@ -46,7 +46,7 @@
 - 从前端点击“开始程序(无机器人模式)”，确认状态显示“无机器人模式就绪”。
 - 在 QA 状态点击“导览”，确认效果等同于说“开始导览”。
 - 每到一个剧本导航点时点击“到达下一个点位(无机器人模式)”，确认 workflow 日志出现等待和确认到达记录，并继续下一段台词。
-- 打开“当前 Workflow 最近日志”，确认显示的是 `logs/nav_workflow_control/rabbitbot_workflow_<run_id>.log`。
+- 打开“当前 Workflow 最近日志”，确认显示的是 `logs/nav_workflow_control/rabbitbot_workflow_<run_id>.log`；如果 workflow 尚未启动，应显示暂无日志，而不是 2026-06-16 等历史日志。
 - 查看“服务状态”面板，确认 TTS(28185)、STT(28184)、Memory(28182)、Neo4j(7687) 与实际服务状态一致。
 - 若要切回真实机器人模式，点击“开始程序”或“一键重启”，确认 `runtime/rabbitbot-loop.env` 中 `RABBITBOT_NAV_WORKFLOW_NO_ROBOT="0"`。
 
@@ -56,7 +56,7 @@
 - `RABBITBOT_WORKFLOW_NON_INTEGRATION` 仍保留，原因是代码和历史脚本已有该变量；中文说明统一改为“无机器人模式”。
 - 无机器人模式只替代真实导航到点确认，不代表禁用 QA、STT、TTS、Memory 或剧本逻辑。
 - “到达下一个点位(无机器人模式)”按钮发送 `arrive`，只在无机器人模式下生效；真实机器人模式下 loop 会记录 warning 并忽略。
-- “最近日志”文字已改为“当前 Workflow 最近日志”，默认请求 `/api/logs?target=workflow&lines=160`。
+- “最近日志”文字已改为“当前 Workflow 最近日志”，默认请求 `/api/logs?target=workflow&lines=160`；当前 workflow 不存在时不再回退旧日志。
 - “服务状态”面板使用 `/api/status` 返回的 `services` 字段；VLM 和 Embedding 标记为可选服务，离线时不代表导览主流程必然不可用。
 
 ## 本轮修改详情：控制台无机器人模式和当前 workflow 日志
@@ -101,6 +101,25 @@ Aaron 要求在前端增加“服务状态面板”，显示 TTS、STT、Memory 
 ### 新增或调整日志点
 
 - `get_runtime_service_statuses()` 使用 DEBUG 记录服务探测摘要 `online/total`，默认 INFO 下不刷屏；用于需要排查控制台状态轮询时确认后端是否完成服务探测。
+
+
+## 本轮修改详情：修正当前 workflow 日志回退旧文件
+
+### 背景和目标
+
+Aaron 反馈“当前 Workflow 最近日志”显示的是 2026-06-16 的旧日志，而不是点击“开始程序”或“开始程序(无机器人模式)”后的当前日志。本轮目标是避免没有当前 workflow 时误读历史日志。
+
+### 已完成内容
+
+- 已复查运行态接口：`/api/status` 返回 `workflow.run_id=null`，`workflow_control` 目录当前没有状态文件；旧逻辑在这种情况下回退读取最新 workflow 日志，因此拿到了 `rabbitbot_workflow_20260616_143251.log`。
+- 修改提交后已重载 `rabbitbot-control-console.service`：因 sudo restart 无免密权限，确认 unit 为 `Restart=always` 且进程用户为 `nvidia` 后，向旧控制台进程发送 TERM，由 systemd 自动拉起新进程。
+- 重载后已验证 `/api/logs?target=workflow&lines=8` 返回 `path=null`、`lines=[]`，不再返回 2026-06-16 旧日志。
+- 修改 `rabbitbot/control_console/status.py`：`workflow_log_for_status()` 在 `run_id` 为空或当前 `run_id` 对应日志不存在时返回 `None`，不再回退历史 workflow 日志。
+- 修改 `tests/control_console/test_app.py`：新增无当前 run 和当前日志缺失两种测试，确保不会显示旧 workflow 日志。
+
+### 新增或调整日志点
+
+- `workflow_log_for_status()` 在 DEBUG 级别记录“run_id 为空不回退历史日志”和“当前 run_id 日志未命中不回退历史日志”，用于排查日志面板为何显示暂无当前 workflow 日志。
 
 ## 最近历史摘要
 

@@ -237,13 +237,17 @@ def runtime_nav_log_lines(nav_log: Path | None, nav_container_name: str, limit: 
 
 
 def workflow_log_for_status(workflow_log_dir: Path, workflow: WorkflowStatus) -> Path | None:
-    if workflow.run_id:
-        exact_path = workflow_log_dir / f"rabbitbot_workflow_{workflow.run_id}.log"
-        if exact_path.is_file():
-            logger.debug("当前 workflow 日志按 run_id 命中：run_id=%s, path=%s", workflow.run_id, exact_path)
-            return exact_path
-        logger.debug("当前 workflow 日志按 run_id 未命中，回退最新日志：run_id=%s, path=%s", workflow.run_id, exact_path)
-    return latest_file(workflow_log_dir, "rabbitbot_workflow_*.log")
+    if not workflow.run_id:
+        logger.debug("当前 workflow run_id 为空，不回退历史 workflow 日志：dir=%s", workflow_log_dir)
+        return None
+
+    exact_path = workflow_log_dir / f"rabbitbot_workflow_{workflow.run_id}.log"
+    if exact_path.is_file():
+        logger.debug("当前 workflow 日志按 run_id 命中：run_id=%s, path=%s", workflow.run_id, exact_path)
+        return exact_path
+
+    logger.debug("当前 workflow 日志按 run_id 未命中，不回退历史 workflow 日志：run_id=%s, path=%s", workflow.run_id, exact_path)
+    return None
 
 
 def get_latest_workflow_status(control_dir: Path) -> WorkflowStatus:

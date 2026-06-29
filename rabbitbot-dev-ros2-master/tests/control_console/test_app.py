@@ -282,6 +282,31 @@ def test_logs_return_current_workflow_log_by_run_id(tmp_path):
     assert response.json()["lines"] == ["two", "three"]
 
 
+def test_logs_do_not_fallback_to_old_workflow_when_no_current_run(tmp_path):
+    config = make_config(tmp_path)
+    (config.workflow_log_dir / "rabbitbot_workflow_20260616_143251.log").write_text("old workflow\n", encoding="utf-8")
+    client = TestClient(create_app(config))
+
+    response = client.get("/api/logs?target=workflow&lines=2")
+
+    assert response.status_code == 200
+    assert response.json()["path"] is None
+    assert response.json()["lines"] == []
+
+
+def test_logs_do_not_fallback_to_old_workflow_when_current_log_missing(tmp_path):
+    config = make_config(tmp_path)
+    (config.workflow_control_dir / "20260629_120000.status").write_text("running\n", encoding="utf-8")
+    (config.workflow_control_dir / "20260629_120000.ready").write_text("ready\n", encoding="utf-8")
+    (config.workflow_log_dir / "rabbitbot_workflow_20260616_143251.log").write_text("old workflow\n", encoding="utf-8")
+    client = TestClient(create_app(config))
+
+    response = client.get("/api/logs?target=workflow&lines=2")
+
+    assert response.status_code == 200
+    assert response.json()["path"] is None
+    assert response.json()["lines"] == []
+
 
 def test_main_module_exposes_run_function():
     from rabbitbot.control_console.__main__ import run
