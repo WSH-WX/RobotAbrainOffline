@@ -73,6 +73,7 @@
 - `eno1` 链路状态直接影响 Unitree DDS、导航核心和机器人本体 TTS。
 - 28180 在 portable 模式下应归属 nav bridge；core 不应启动 `robot_app.py` 抢占该端口。
 - TTS/STT/VLM QA 排查已经形成较完整日志链路，能区分容器归属、设备选择、TTS 后端选择、Unitree 返回码和 workflow 阶段耗时。
+- TTS 历史排查已确认 SDK/桥接程序存在，`ret=3104` 更符合机器人网络链路或机器人侧音频服务问题；同时已梳理 Unitree、本地 Kokoro、workflow 调用层和 `/exec` 协议边界。
 
 ### 历史阻塞摘要
 
@@ -85,111 +86,9 @@
 - 涉及服务归属问题时，优先确认 core/nav 容器、端口、`runtime/portable.env`、`eno1` 和日志最新 run_id。
 - 不要把本机运行态配置、模型目录、虚
 
-轮新增/调整的日志点：未新增业务日志。`deploy/ensure_models.sh` 仍保留原有下载开始、模型已存在、下载完成和总数日志；修复点是底层下载实现从 CLI 改为 Python API，以避免 Hugging Face CLI 兼容失败。
+轮新增/调整的日志点：未新增业务日志。
 
-## 本轮补充：TTS 不能播放根因排查
-
-### 背景和目标
-
-Aaron 反馈当前 TTS 不能播放，要求确认根因是否仍是缺少 `unitree_sdk2`。本轮目标是在 ShuHao-orin 当前运行态下检查 portable core 镜像、统一容器、TTS 日志、Unitree TTS 桥接程序和机器人网络链路，区分依赖缺失、构建失败、接口返回错误和现场链路问题。
-
-### 当前状态
-
-已完成：
-
-- 已确认当前 Git 分支为 `feature/qa-vlm-workflow`，HEAD 为 `aa664a1`。
-- 已确认当前运行的 `rabbitbot-unified-runtime` 容器使用镜像 `ghcr.io/aaronai/rabbitbot-core-portable:20260611`，镜像 ID 为 `sha256:9c7cb9f9c774d435d393d7500b5e5c5c75f959b4f40a06a116b69faf332df15c`，与此前包含 `unitree_sdk2` 的新 core 镜像一致。
-- 已确认容器内存在 `/workspace/projects/unitree_sdk2`，且 `/workspace/projects/unitree_sdk2/lib/aarch64/libunitree_sdk2.a` 存在。
-- 已确认 `rabbitbot-dev-ros2-master/build/unitree_g1_tts_bridge` 可执行文件存在，`ldd` 能解析到 `/workspace/projects/unitree_sdk2/thirdparty/lib/aarch64/libddsc.so.0` 与 `libddscxx.so.0`。
-- 已确认当前 TTS 服务 28185 已启动，日志显示 `stage=bridge_binary_ready`，说明不是桥接程序缺失或 SDK 缺失导致启动失败。
-- 已手工在容器内执行 Unitree TTS 桥接程序，返回 `Unitree G1 TTS请求完成: ret=3104`，进程退出码为 32。
-- 已确认当前宿主 `eno1` 为 `NO-CARRIER` / `DOWN`，地址仍配置为 `192.168.123.222/24`，但链路无载波。
-- 已确认容器内对机器人网段地址 `192.168.123.161` ping 失败，100% 丢包。
-- 已查 NetworkManager 日志：`eno1` 曾在 09:56:14 连接并激活，11:48:47 再次显示 link connected，但 12:16:19 因 `carrier-changed` 变为 unavailable。
-- 已对比历史 TTS 日志：早些时候 `rabbitbot-dev-ros2-master/logs/rabbitbot_tts.log` 中多次 TTS 请求返回 `ret=0`，包括 02:46 到 02:58 的播报测试；当前 `unified_runtime/rabbitbot_tts.log` 在 13:06 后开始出现 `ret=3104`。
-
-未完成：
-
-- 本轮未修复现场物理链路，也未重启机器人或机器人侧音频服务。
-- 本轮没有改业务代码；只做运行态诊断和报告记录。
-
-### 已验证的事实
-
-- 当前 TTS 不能播放的直接失败点不是缺少 `unitree_sdk2`。SDK 目录、静态库、第三方动态库、桥接程序和 TTS 服务启动链路均已验证存在且可运行。
-- 当前失败表现是 Unitree SDK2 `AudioClient.SetVolume()` 与 `AudioClient.TtsMaker()` 调用机器人本体音频服务返回 `ret=3104`。
-- 当前 `eno1` 没有物理载波，机器人 DDS 网络不可达；这与 TTS 失败时间线吻合。
-- 历史日志证明同一套 TTS 代码和 SDK 在链路正常时可以返回 `ret=0`，因此当前问题更符合机器人网络链路断开、机器人侧音频服务不可达或忙碌，而不是 core 镜像缺 SDK。
-
-### 阻塞问题
-
-当前阻塞是现场机器人网络链路不可用：`eno1` 为 `NO-CARRIER/DOWN`，导致 Unitree 本体 TTS 通过 DDS 调机器人音频服务失败。需要恢复机器人网线、交换机或机器人侧网络状态后，才能继续验证 TTS 是否恢复为 `ret=0`。
-
-### 建议的下一步
-
-- 现场先检查机器人网线、交换机、电源和机器人网络口，确认 `ip -brief addr show dev eno1` 不再显示 `DOWN`，并保持 `192.168.123.222/24`。
-- 链路恢复后，先运行容器内桥接程序小测试，命令为：`docker exec rabbitbot-unified-runtime bash -lc "cd /workspace/projects/rabbitbot-dev-ros2-master && ./build/unitree_g1_tts_bridge --network eno1 --text 诊断测试 --speaker 1 --volume -1 --timeout 3"`，期望返回 `ret=0`。
-- 如果链路恢复后仍返回 `ret=3104`，下一步应排查机器人本体音频服务是否运行、是否被占用、speaker 编号是否匹配，以及是否需要重启机器人侧音频服务或整机。
-- 若只是需要临时验证问答链路，可考虑把 TTS 后端临时切到非 Unitree 本体输出，但这不等价于修复机器人本体播报。
-
-### 注意事项
-
-- 不能只看镜像 tag 判断 SDK 是否更新；本轮已用镜像 ID 和容器内文件验证，当前运行容器确实是包含 `unitree_sdk2` 的新 core 镜像。
-- `ret=3104` 是桥接程序成功运行后由 Unitree 音频接口返回的错误码，不是本地 C++ 程序构建失败。
-- 本轮新增/调整日志点：未新增业务日志；排查使用了现有 TTS 日志中的 `stage=bridge_binary_ready`、`tts_request_start`、`tts_request_retry_without_volume`、`tts_request_error`、`ret=3104`，以及 NetworkManager 的 `eno1 carrier-changed` 日志。这些日志足以区分 SDK 缺失、桥接程序缺失、接口返回错误和物理链路断开。
-- 生成时间：2026-06-16 13:20:00
-
-## 本轮补充：TTS 服务代码逻辑梳理
-
-### 背景和目标
-
-Aaron 暂时不继续排查机器人网络链路，希望先优化 TTS 服务本身。本轮目标是只读梳理当前 TTS 服务相关代码，明确启动链路、HTTP 接口、Unitree 本体后端、本地 Kokoro 后端、workflow 调用层以及已暴露的不可靠点，为后续重构或加固做准备。
-
-### 当前状态
-
-已完成：
-
-- 已阅读 `scripts_1/unified_runtime/start_unified_container.sh` 中 TTS 启动入口。
-- 已阅读 `scripts/start_tts_app.bash` 中后端自动选择和本地声卡扫描逻辑。
-- 已阅读 `tts_app.py` 中 FastAPI `/exec` 与 `/v1/chat/completions` 接口、启动预热、快捷语音逻辑。
-- 已阅读 `rabbitbot/audio/unitree_g1_tts.py` 中 Unitree G1 本体 TTS 后端逻辑。
-- 已阅读 `scripts/unitree_g1_tts_bridge.cpp` 与 `scripts/build_unitree_g1_tts_bridge.sh` 中 C++ 桥接和 SDK2 构建逻辑。
-- 已阅读 `rabbitbot/audio/run_tts_espnet.py` 中本地 Kokoro/Cloud TTS 合成、播放队列、停止逻辑。
-- 已阅读 `rabbitbot/tools/sound_agno.py` 与 `rabbitbot/provider.py` 中 workflow 对 TTS 的调用、错误降级和回声清理逻辑。
-- 已快速查看 `sound/tts_server_kokoro.py`，确认它是历史 `/v1` 风格的独立 TTS 服务，不是当前 portable core 默认 `/exec` 服务。
-
-未完成：
-
-- 本轮没有修改 TTS 业务代码。
-- 本轮没有运行新的 TTS 实机播报测试。
-- 本轮没有设计最终优化方案，仅完成现有逻辑梳理。
-
-### 已验证的事实
-
-- 当前 portable core 默认由 `start_unified_container.sh` 启动 `scripts/start_tts_app.bash`，服务端口为 28185，并要求 `/exec` 探活成功。
-- `start_tts_app.bash` 的 `auto` 模式只检查 Unitree 网卡名是否存在，不检查链路载波、IP、DDS 可达性或机器人音频服务可用性；只要接口存在就会选择 `unitree` 后端。
-- `tts_app.py` 在模块导入阶段同步初始化 TTS 引擎、执行 warmup、注册大量 FastSound 文案，并可能执行启动播报；Uvicorn 真正开始监听前会先完成这些初始化步骤。
-- Unitree 后端是同步调用：每个 `text_to_speech` 请求会启动一次 C++ 桥接进程，先尝试带音量调用，失败后再不带音量重试；成功后用文本长度估算播放时长维护本地 `pending_until`。
-- Unitree 后端没有真实播放完成回调，也没有真实停止接口；`wait_speech` 和 `stop` 都只是本地估算或本地状态清理。
-- 本地 Kokoro 后端是异步流水：HTTP 请求只把文本放进队列并返回 `tts_index`；后台文本线程合成 wav，后台播放线程重采样并写入 sounddevice 输出流。
-- workflow 调用层通过 `TTSAgent` POST 到 `/exec`，解析 `out_text`；请求异常、超时或响应不能解析时默认返回空字符串，再由 `sound_agno.py` 降级为 `-1` 或跳过等待，除非启用 `RABBITBOT_TTS_STRICT_FAILURE`。
-- 历史 `sound/tts_server_kokoro.py` 暴露的是 `/v1` JSON 接口，和当前 workflow 默认 `/exec` 表单接口不兼容；启动脚本现在会检查 28185 是否为 `/exec` 兼容服务，避免误用历史服务。
-
-### 阻塞问题
-
-无代码阅读层面的阻塞。后续若要优化可靠性，需要先决定是继续强化 Unitree 本体 TTS，还是抽象出统一 TTS 状态机同时兼容 Unitree 与本地 Kokoro 输出。
-
-### 建议的下一步
-
-- 优先把 TTS 后端选择从“接口存在”升级为“健康检查通过”，至少区分网卡存在、链路有载波、IP 配置、桥接程序可执行、机器人音频接口可用。
-- 将 Unitree 播报从同步 HTTP 请求内直接执行改为队列式 worker，避免单次 DDS 卡顿或重试阻塞 `/exec` 请求线程。
-- 为 Unitree 后端建立明确状态：启动就绪、机器人可达、音频接口错误、正在播报、估算等待中、降级可用，并暴露健康接口或状态任务。
-- 统一 `/exec` 与历史 `/v1` 服务边界，避免 28185 上出现“端口存在但协议不兼容”的假就绪。
-- 改造错误返回：服务端应返回结构化错误码和阶段，调用层不要只依赖 `out_text` 是否可转整数。
-
-### 注意事项
-
-- 当前 TTS 可靠性问题不只在 Unitree SDK 或网络，还包括后端选择、同步阻塞、缺少真实播放状态、错误语义不清和调用层默认吞错。
-- 本轮新增/调整日志点：未新增业务日志；但梳理确认现有关键日志分布在启动脚本的后端选择日志、`Unitree本体TTS` 阶段日志、本地 `TTS服务链路` 阶段日志、workflow `TTS请求链路` 日志和 `/exec` 探活日志。后续优化时应优先围绕这些阶段补齐结构化状态与错误码。
+、本地 `TTS服务链路` 阶段日志、workflow `TTS请求链路` 日志和 `/exec` 探活日志。后续优化时应优先围绕这些阶段补齐结构化状态与错误码。
 - 生成时间：2026-06-16 13:45:00
 
 ## 本轮补充：TTS auto 后端健康检查加固
@@ -398,6 +297,56 @@ Aaron 明确要求前端“导览”按钮发送的 `go` 命令效果等同于 Q
 
 - 新增日志不会记录完整原始口令，只记录文本长度、STT URL、STT 注入响应和重复口令忽略状态。
 - 如果 STT 注入失败，loop 会记录 WARNING，但不会终止 workflow；这便于现场继续用麦克风说“开始导览”兜底。
+
+### 其它信息
+
+- 生成时间：2026-06-29
+
+## 本轮补充：back 命令映射为返回起点口令
+
+### 背景和目标
+
+Aaron 要求“返航”按钮发送的 `back` 命令效果等同于向 STT 28184 注入“返回起点”；同时现场对麦克风说“返回起点”和点击“返航”按钮应统一触发同一逻辑：若机器人已经完成一轮导览并位于导览终点，则按照剧本 `back_points` 返回点序列返航；若没有 `back_points`，则按剧本导览点位顺序的逆序返航。
+
+### 当前状态
+
+已完成：
+
+- 已修改 `rabbitbot-dev-ros2-master/scripts_1/start_nav_bridge_workflow_loop.sh`：在默认语音启动模式下，workflow 运行期间收到 `back` 命令时，不再直接排队旧返航命令，而是调用 STT `/exec` 注入“返回起点”。
+- 新增 `RABBITBOT_NAV_WORKFLOW_BACK_TEXT`，默认值为 `返回起点`，可覆盖按钮注入文案。
+- 复用 `RABBITBOT_STT_EXEC_URL`，默认 `http://127.0.0.1:28184/exec`，与 `go -> 开始导览` 使用同一 STT 注入通道。
+- 已修改 `rabbitbot-dev-ros2-master/rabbitbot/agno_agents/workflow.py`：导览完成后不再立刻退出，而是保持 QA 状态等待“返回起点/返航/回到起点/回起点/返回原点”等返航口令。
+- workflow 收到返航口令且确认导览已完成后，会写入 `RABBITBOT_WORKFLOW_RETURN_REQUEST_FILE`；loop 监测到该文件后执行现有 `return_to_start`。
+- 当前 `return_to_start` 已满足返航点序列规则：优先读取台词 JSON 顶层 `back_points`；未配置时按剧本导览点位顺序逆序生成返航路径。
+- 如果导览尚未完成就收到“返回起点”，workflow 会记录并忽略，不会提前返航。
+
+未完成：
+
+- 本轮未重启 `rabbitbot-loop.service`，未在前端实际点击“返航”，也未用麦克风现场说“返回起点”验证实机链路。
+- 本轮未验证 28180 导航桥接实机返航动作；仍依赖现场网络、定位和导航核心状态。
+
+### 已验证的事实
+
+- `python3 -m py_compile rabbitbot/agno_agents/workflow.py scripts/run_kuavo_agno_workflow.py` 通过。
+- `bash -n scripts_1/start_nav_bridge_workflow_loop.sh scripts_1/send_nav_workflow_command.sh` 通过。
+- `git diff --check` 通过。
+- STT 服务已有 `inject_text_async` 队列，`get_text_async` 会优先消费注入文本；本轮复用该能力。
+
+### 阻塞问题
+
+- 无代码层面阻塞。现场验证仍要求 `rabbitbot-loop.service`、STT 28184、TTS、28180 nav bridge 和机器人网络状态正常。
+
+### 建议的下一步
+
+- 启动 `rabbitbot-loop.service`，完成一轮导览后点击前端“返航”，观察 loop 日志是否出现“将 返回起点 命令转换为 STT 注入口令”和 workflow 日志“已写入返航请求文件”。
+- 完成一轮导览后对麦克风说“返回起点”，确认产生同样的返航请求文件并进入 `return_to_start`。
+- 检查返航日志中的 `source`：若台词配置了 `back_points`，应为 `dialogue_back_points`；否则应为 `reverse_go_points`。
+
+### 注意事项
+
+- STT 注入日志只记录文本长度、STT URL、响应长度和状态，不打印完整口令文本或原始 STT 响应。
+- 如果 STT 注入失败，loop 只记录 WARNING，不终止 workflow；现场仍可通过麦克风重试。
+- 旧外部 go/back 闸门模式仍可通过 `RABBITBOT_NAV_WORKFLOW_VOICE_START=0` 回退。
 
 ### 其它信息
 

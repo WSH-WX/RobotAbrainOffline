@@ -1601,6 +1601,7 @@ def create_main_workflow(ctx: Any) -> Workflow:
 
     SCRIPTED_TOUR_STEP_DONE = "<SCRIPTED_TOUR_STEP_DONE>"
     SCRIPTED_TOUR_FINISHED = "<SCRIPTED_TOUR_FINISHED>"
+    SCRIPTED_TOUR_RETURN_TO_START = "<SCRIPTED_TOUR_RETURN_TO_START>"
     SCRIPTED_TOUR_ORDER = [
         "起始板块",
         "多功能展示区",
@@ -1656,6 +1657,49 @@ def create_main_workflow(ctx: Any) -> Workflow:
         if not normalized_text:
             return False
         return any(command in normalized_text for command in guide_start_commands())
+
+    def guide_return_commands():
+        raw_value = os.getenv("RABBITBOT_GUIDE_RETURN_COMMANDS", "返回起点,返航,回到起点,回起点,返回原点")
+        commands = [normalize_guide_start_text(item) for item in raw_value.split(",") if normalize_guide_start_text(item)]
+        return commands or ["返回起点"]
+
+    def is_guide_return_command(text):
+        normalized_text = normalize_guide_start_text(text)
+        if not normalized_text:
+            return False
+        return any(command in normalized_text for command in guide_return_commands())
+
+    def guide_tour_completed_for_return():
+        return bool(
+            guide_started()
+            and (
+                getattr(ctx, "guide_tour_completed_wait_return", False)
+                or getattr(ctx, "docx_script_done", False)
+                or getattr(ctx, "scripted_tour_done", False)
+            )
+        )
+
+    def write_return_request_file(trigger_text):
+        request_file = os.getenv("RABBITBOT_WORKFLOW_RETURN_REQUEST_FILE", "").strip()
+        trigger_len = len((trigger_text or "").strip())
+        if not request_file:
+            _workflow_log(f"收到返回起点口令但缺少返航请求文件配置: trigger_len={trigger_len}")
+            return False
+        request_path = Path(request_file)
+        try:
+            request_path.parent.mkdir(parents=True, exist_ok=True)
+            request_path.write_text(
+                f"return_to_start\n"
+                f"pid={os.getpid()}\n"
+                f"time={datetime.now().isoformat()}\n"
+                f"trigger_len={trigger_len}\n",
+                encoding="utf-8",
+            )
+            _workflow_log(f"已写入返航请求文件: path={request_path}, trigger_len={trigger_len}")
+            return True
+        except OSError as exc:
+            _workflow_log(f"返航请求文件写入失败: path={request_path}, error_type={type(exc).__name__}, error={exc}")
+            return False
 
     async def start_scripted_tour_by_voice(trigger_text):
         if getattr(ctx, "scripted_tour_started", False):
@@ -2513,6 +2557,12 @@ def create_main_workflow(ctx: Any) -> Workflow:
                 script_kind, script_text = await run_scripted_tour_next_step()
                 if script_kind == "done":
                     WorkflowTimePoints.PLAN_START = time.time()
+                    if script_text == SCRIPTED_TOUR_FINISHED and guide_start_by_voice_enabled():
+                        ctx.guide_tour_completed_wait_return = True
+                        _profile_summary_print(reason="docx_finished_wait_return")
+                        _workflow_log("导览已完成，保持 QA 状态等待返回起点口令")
+                        _profile_end(loop_span, step="audio_input_step", result="script_done_wait_return")
+                        return StepOutput(content=f"{SCRIPTED_TOUR_STEP_DONE}")
                     _profile_end(loop_span, step="audio_input_step", result="script_done")
                     if script_text == SCRIPTED_TOUR_FINISHED:
                         _profile_summary_print(reason="docx_finished")
@@ -2528,6 +2578,19 @@ def create_main_workflow(ctx: Any) -> Workflow:
             _workflow_log(f"忽略重复开始导览口令: text_len={len(out_text or '')}")
             WorkflowTimePoints.PLAN_START = time.time()
             _profile_end(loop_span, step="audio_input_step", result="duplicate_guide_start_ignored")
+            return StepOutput(content=f"{SCRIPTED_TOUR_STEP_DONE}")
+        if guide_started() and is_guide_return_command(out_text):
+            if guide_tour_completed_for_return():
+                if write_return_request_file(out_text):
+                    WorkflowTimePoints.PLAN_START = time.time()
+                    _profile_end(loop_span, step="audio_input_step", result="return_to_start_requested")
+                    return StepOutput(content=f"{SCRIPTED_TOUR_RETURN_TO_START}")
+                WorkflowTimePoints.PLAN_START = time.time()
+                _profile_end(loop_span, step="audio_input_step", result="return_request_file_error")
+                return StepOutput(content=f"{SCRIPTED_TOUR_STEP_DONE}")
+            _workflow_log(f"导览尚未完成，忽略返回起点口令: text_len={len(out_text or '')}")
+            WorkflowTimePoints.PLAN_START = time.time()
+            _profile_end(loop_span, step="audio_input_step", result="return_to_start_ignored_before_finished")
             return StepOutput(content=f"{SCRIPTED_TOUR_STEP_DONE}")
 
         chat_queue.put(out_text, "用户")
@@ -2561,7 +2624,7 @@ def create_main_workflow(ctx: Any) -> Workflow:
         text = text_lst[2].replace("\n", "")
 
         _workflow_log(f"in_text: {text}", verbose=True)
-        if text in {SCRIPTED_TOUR_STEP_DONE, SCRIPTED_TOUR_FINISHED}:
+        if text in {SCRIPTED_TOUR_STEP_DONE, SCRIPTED_TOUR_FINISHED, SCRIPTED_TOUR_RETURN_TO_START}:
             _workflow_log(f"plan_executor: scripted tour control token {text}, skip planner", verbose=True)
             return StepOutput(content=text)
         if getattr(ctx, "post_docx_chat_mode", False):
@@ -3945,6 +4008,11 @@ def create_main_workflow(ctx: Any) -> Workflow:
         if getattr(ctx, "post_docx_chat_mode", False):
             result = StepOutput(content=CompletionCheckModel(task_completed=False))
             _profile_end(completion_span, skipped=True)
+            return result
+        if SCRIPTED_TOUR_RETURN_TO_START in previous_steps:
+            result = StepOutput(content=CompletionCheckModel(task_completed=True))
+            _profile_summary_print(reason="return_to_start_requested")
+            _profile_end(completion_span, skipped=True, task_completed=True, reason="return_to_start_requested")
             return result
         if SCRIPTED_TOUR_FINISHED in previous_steps:
             result = StepOutput(content=CompletionCheckModel(task_completed=True))

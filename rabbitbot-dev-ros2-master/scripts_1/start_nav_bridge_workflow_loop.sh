@@ -76,6 +76,7 @@ RABBITBOT_UNIFIED_ATTACH_STDIN="${RABBITBOT_UNIFIED_ATTACH_STDIN:-0}"
 RABBITBOT_TTS_STRICT_FAILURE="${RABBITBOT_TTS_STRICT_FAILURE:-0}"
 RABBITBOT_NAV_WORKFLOW_VOICE_START="${RABBITBOT_NAV_WORKFLOW_VOICE_START:-1}"
 RABBITBOT_NAV_WORKFLOW_GO_TEXT="${RABBITBOT_NAV_WORKFLOW_GO_TEXT:-开始导览}"
+RABBITBOT_NAV_WORKFLOW_BACK_TEXT="${RABBITBOT_NAV_WORKFLOW_BACK_TEXT:-返回起点}"
 RABBITBOT_STT_EXEC_URL="${RABBITBOT_STT_EXEC_URL:-http://127.0.0.1:28184/exec}"
 if [ "${RABBITBOT_NAV_WORKFLOW_VOICE_START}" = "1" ]; then
     # 语音启动导览必须依赖 STT 常驻；即使 portable.env 默认关闭 STT，这里也要为 loop 场景打开。
@@ -117,6 +118,8 @@ current_gate_file=""
 current_gate_ready_file=""
 current_host_gate_file=""
 current_host_gate_ready_file=""
+current_return_request_file=""
+current_host_return_request_file=""
 current_nav_log=""
 current_nav_start_epoch="0"
 last_runtime_health_check_ms=0
@@ -838,14 +841,16 @@ launch_workflow_detached() {
     current_gate_ready_file="${current_control_dir}/${current_run_id}.ready"
     current_host_gate_file="${current_host_control_dir}/${current_run_id}.go"
     current_host_gate_ready_file="${current_host_control_dir}/${current_run_id}.ready"
+    current_return_request_file="${current_control_dir}/${current_run_id}.return_to_start"
+    current_host_return_request_file="${current_host_control_dir}/${current_run_id}.return_to_start"
 
     mkdir -p "${current_host_control_dir}" "$(dirname "${current_host_workflow_log}")"
-    rm -f "${current_status_file}" "${current_exit_code_file}" "${current_pid_file}" "${current_finished_at_file}" "${current_host_gate_file}" "${current_host_gate_ready_file}"
+    rm -f "${current_status_file}" "${current_exit_code_file}" "${current_pid_file}" "${current_finished_at_file}" "${current_host_gate_file}" "${current_host_gate_ready_file}" "${current_host_return_request_file}"
     if ! : >"${current_host_workflow_log}"; then
         log_error "无法创建 workflow 宿主日志：${current_host_workflow_log}，请检查目录权限"
         return 1
     fi
-    docker exec "${CONTAINER_NAME}" bash -lc "mkdir -p '${current_control_dir}' '$(dirname "${current_workflow_log}")' && rm -f '${current_control_dir}/${current_run_id}.status' '${current_control_dir}/${current_run_id}.exit_code' '${current_control_dir}/${current_run_id}.pid' '${current_control_dir}/${current_run_id}.finished_at' '${current_gate_file}' '${current_gate_ready_file}'" >/dev/null
+    docker exec "${CONTAINER_NAME}" bash -lc "mkdir -p '${current_control_dir}' '$(dirname "${current_workflow_log}")' && rm -f '${current_control_dir}/${current_run_id}.status' '${current_control_dir}/${current_run_id}.exit_code' '${current_control_dir}/${current_run_id}.pid' '${current_control_dir}/${current_run_id}.finished_at' '${current_gate_file}' '${current_gate_ready_file}' '${current_return_request_file}'" >/dev/null
 
     local start_ms
     local dialogue_config
@@ -878,6 +883,7 @@ launch_workflow_detached() {
         -e RABBITBOT_WORKFLOW_RUN_ID="${current_run_id}" \
         -e RABBITBOT_WORKFLOW_START_GATE_FILE="${current_gate_file}" \
         -e RABBITBOT_WORKFLOW_START_GATE_READY_FILE="${current_gate_ready_file}" \
+        -e RABBITBOT_WORKFLOW_RETURN_REQUEST_FILE="${current_return_request_file}" \
         -e RABBITBOT_WORKFLOW_START_GATE_POLL_SECONDS="${WORKFLOW_GATE_POLL_SECONDS}" \
         -e PYTHONUNBUFFERED=1 \
         "${CONTAINER_NAME}" bash -lc '
@@ -944,19 +950,29 @@ wait_workflow_gate_ready() {
     return 1
 }
 
-inject_guide_start_command() {
-    local command_text="${1:-${RABBITBOT_NAV_WORKFLOW_GO_TEXT}}"
+inject_stt_text_command() {
+    local command_name="$1"
+    local command_text="$2"
     local payload
     local response
     payload="$(python3 -c 'import json,sys; print(json.dumps({"task":"inject_text_async","lang":"zh","text":sys.argv[1],"timeout":30}, ensure_ascii=False))' "${command_text}")"
-    log_info "将 go 命令转换为开始导览口令：text_len=${#command_text}, stt_url=${RABBITBOT_STT_EXEC_URL}"
+    log_info "将 ${command_name} 命令转换为 STT 注入口令：text_len=${#command_text}, stt_url=${RABBITBOT_STT_EXEC_URL}"
     response="$(curl --max-time 5 -sS -X POST "${RABBITBOT_STT_EXEC_URL}" --form-string "task=${payload}" 2>&1 || true)"
+    local response_len=${#response}
     if printf '%s' "${response}" | grep -q '"out_text"'; then
-        log_info "开始导览口令已注入 STT：response=${response}"
+        log_info "${command_name} 口令已注入 STT：response_len=${response_len}"
         return 0
     fi
-    log_warn "开始导览口令注入 STT 可能失败：response=${response}"
+    log_warn "${command_name} 口令注入 STT 可能失败：response_len=${response_len}"
     return 1
+}
+
+inject_guide_start_command() {
+    inject_stt_text_command "开始导览" "${1:-${RABBITBOT_NAV_WORKFLOW_GO_TEXT}}"
+}
+
+inject_return_to_start_command() {
+    inject_stt_text_command "返回起点" "${1:-${RABBITBOT_NAV_WORKFLOW_BACK_TEXT}}"
 }
 
 wait_go_or_back() {
@@ -1003,8 +1019,12 @@ monitor_workflow_until_finished() {
         command="$(read_pending_command || true)"
         case "${command}" in
             back)
-                queued_back_after_workflow=1
-                log_info "已预接收 back 命令，workflow 结束后自动返航"
+                if [ "${RABBITBOT_NAV_WORKFLOW_VOICE_START}" = "1" ]; then
+                    inject_return_to_start_command "${RABBITBOT_NAV_WORKFLOW_BACK_TEXT}" || true
+                else
+                    queued_back_after_workflow=1
+                    log_info "已预接收 back 命令，workflow 结束后自动返航"
+                fi
                 ;;
             go)
                 if [ "${RABBITBOT_NAV_WORKFLOW_VOICE_START}" = "1" ]; then
@@ -1051,6 +1071,10 @@ monitor_workflow_until_finished() {
     exit_code="$(cat "${current_exit_code_file}" 2>/dev/null || true)"
     if [ -z "${exit_code}" ]; then
         exit_code="unknown"
+    fi
+    if [ -s "${current_host_return_request_file}" ]; then
+        queued_back_after_workflow=1
+        log_info "检测到 workflow 返航请求文件，准备按返航点序列返回起点：file=${current_host_return_request_file}"
     fi
     log_info "workflow 已结束：run_id=${current_run_id}, exit_code=${exit_code}"
 }
