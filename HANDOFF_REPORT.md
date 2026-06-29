@@ -22,6 +22,7 @@
 - `get_inst_chat` 已替换为精简现场对话提示词，避免聊天路径出现无端道歉或冗长铺陈。
 - 控制台操作区按钮顺序已调整为：返航、刷新状态、开始程序、一键重启、关闭程序、开始程序(无机器人模式)、到达下一个点位(无机器人模式)。
 - 本轮已通过 SSH 阅读交接报告、README、主项目 README、`pyproject.toml`、控制台 README、关键启动脚本、关键 Python 代码片段和项目文件结构。
+- 本轮已查询当前 `rabbitbot-unified-runtime` 容器内 Neo4j：默认 `neo4j` 数据库在线，但节点数为 0、关系数为 0；`Community`、`Entity`、`Episodic` 标签和 `HAS_MEMBER`、`MENTIONS`、`RELATES_TO` 关系类型当前计数均为 0。
 
 未完成：
 
@@ -41,6 +42,7 @@
 - 相关容器当前包括 `rabbitbot-portable-rabbitbot-nav-1` 和 `rabbitbot-unified-runtime`，二者均在运行。
 - `python3 -m py_compile rabbitbot/control_console/app.py rabbitbot/control_console/status.py rabbitbot/provider.py rabbitbot/agno_agents/prompts.py` 通过。
 - `rabbitbot/control_console/status.py` 将 Neo4j(7687)、TTS(28185)、STT(28184)、Memory(28182)、VLM(8000)、Embedding(8005) 都标记为必需服务。
+- 当前导览相关 Neo4j 库没有实际图数据：`MATCH (n)` 返回 0，`MATCH ()-[r]->()` 返回 0。
 - 远端未安装 `rg`，本轮用 `find`/`grep` 作为替代方式梳理文件和代码位置。
 - 直接运行 `python3 -m pytest` 曾受远端 anyio/pytest 插件版本冲突影响；需要设置 `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`。
 
@@ -100,6 +102,33 @@ Aaron 要求 SSH 到 ShuHao-orin，阅读 `/mnt/disk1/gt/air_robot_gt_projects/H
 ### 新增或调整日志点
 
 - 本轮为只读核查和交接报告整理，不涉及执行流程、外部依赖调用、文件读写业务逻辑或高频路径，未新增或调整代码日志点。
+
+
+## 本轮修改详情：核查 Neo4j 是否有导览数据
+
+### 背景和目标
+
+Aaron 询问当前导览的 Neo4j 中是否有数据。目标是在不导出原始节点内容、不读取运行时 env 敏感配置的前提下，确认数据库是否已有节点和关系。
+
+### 已完成内容
+
+- 通过 `rabbitbot-unified-runtime` 容器内 `cypher-shell` 查询默认 `neo4j` 数据库状态、节点数量、关系数量、标签计数和关系类型计数。
+- 查询仅返回数量和元信息，未导出任何节点属性、关系属性或原始文本内容。
+
+### 已验证的事实
+
+- `neo4j` 和 `system` 数据库均 online，其中 `neo4j` 是默认 home 数据库。
+- 当前 `neo4j` 数据库节点数为 0，关系数为 0。
+- `Community`、`Entity`、`Episodic` 标签计数均为 0；`HAS_MEMBER`、`MENTIONS`、`RELATES_TO` 关系类型计数均为 0。
+
+### 未完成 / 注意事项
+
+- 本轮没有执行导览数据导入，也没有清空或修改 Neo4j 数据。
+- 如前端或 Memory 服务仍显示有内容，需要进一步确认是否来自缓存、文件、历史日志或其它数据库实例。
+
+### 新增或调整日志点
+
+- 本轮为数据库只读数量核查和交接报告整理，未修改业务代码，未新增或调整代码日志点。
 
 ## 最近历史摘要
 
