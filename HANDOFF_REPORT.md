@@ -213,3 +213,29 @@ Aaron 反馈聊天路径出现"无端道歉/冗长"等异常（例：问"中国�
 ### 新增或调整日志点
 
 - 本轮为静态提示词文本替换，未涉及执行流程，未新增/调整日志点。
+
+## 本轮修改详情：调整控制台前端按钮顺序并重启服务/容器
+
+### 背景和目标
+
+Aaron 要求把"开始程序(无机器人模式)"和"到达下一个点位(无机器人模式)"两个按钮移到操作区最后，避免与常规按钮混排。改完后重启两个系统服务与 unified-runtime 容器使全部改动生效。
+
+### 已完成内容
+
+- 修改 `rabbitbot-dev-ros2-master/rabbitbot/control_console/app.py`：操作区按钮重排为 返航 → 刷新状态 → 开始程序 → 一键重启 → 关闭程序 → 开始程序(无机器人模式) → 到达下一个点位(无机器人模式)；两个无机器人模式按钮移至末尾。
+- 按钮 id/onclick/class 均未改，仅调整 DOM 顺序，不影响任何前端逻辑。
+- 重启 `rabbitbot-unified-runtime` 容器、`rabbitbot-loop.service`、`rabbitbot-control-console.service`，使本轮及前几轮（无机器人跳过手臂动作、get_inst_chat 提示词替换）改动一并生效。
+
+### 已验证的事实
+
+- `python3 -m py_compile rabbitbot/control_console/app.py` 通过。
+- 控制台测试 `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest tests/control_console/` 全部通过（66 passed）；测试仅断言按钮存在与"服务状态/导览讲解词"相对位置，不涉及本次重排按钮顺序。
+
+### 注意事项
+
+- 两个系统服务即 `rabbitbot-control-console.service`（前端，加载 app.py 改动）与 `rabbitbot-loop.service`（导览 workflow，加载 provider.py/prompts.py 改动）。`rabbitbot-loop.service` 重启前为 inactive，本次重启会将其启动。
+- 工作区代码以挂载方式进入 `rabbitbot-unified-runtime` 容器（容器内路径 `/workspace/projects/rabbitbot-dev-ros2-master`），故重启容器即可让容器内 workflow 读到最新代码。
+
+### 新增或调整日志点
+
+- 本轮为前端 DOM 顺序调整，无执行流程变化，未新增/调整日志点。

@@ -75,12 +75,12 @@ def _html() -> str:
           </div>
           <div class="actions">
             <button class="back" onclick="sendCommand('back')">返航</button>
-            <button id="arriveBtn" class="task" onclick="sendCommand('arrive')">到达下一个点位(无机器人模式)</button>
             <button class="refresh" onclick="refresh()">刷新状态</button>
             <button id="startBtn" class="go" onclick="startProgram(false)">开始程序</button>
-            <button id="startNoRobotBtn" class="task" onclick="startProgram(true)">开始程序(无机器人模式)</button>
             <button id="restartBtn" class="restart" onclick="restartProgram()">一键重启</button>
             <button id="stopBtn" class="back" onclick="stopProgram()">关闭程序</button>
+            <button id="startNoRobotBtn" class="task" onclick="startProgram(true)">开始程序(无机器人模式)</button>
+            <button id="arriveBtn" class="task" onclick="sendCommand('arrive')">到达下一个点位(无机器人模式)</button>
           </div>
           <div class="field">
             <div class="label">重启地图</div>
