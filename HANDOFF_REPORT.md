@@ -13,7 +13,7 @@
 - 前端“导览”按钮发送 `go`，loop 在语音启动模式下向 STT `/exec` 注入“开始导览”。
 - 前端“返航”按钮发送 `back`，loop 在语音启动模式下向 STT `/exec` 注入“返回起点”；导览完成后按 `back_points` 返回，没有 `back_points` 时按导览点位逆序返回。
 - 前端已支持“开始程序(无机器人模式)”和“到达下一个点位(无机器人模式)”；中文称呼统一为“无机器人模式”，旧变量 `RABBITBOT_WORKFLOW_NON_INTEGRATION` 保留兼容。
-- 前端“当前运行日志”会优先显示当前 workflow 日志；workflow 尚未创建时显示 `rabbitbot-loop.service` journal。
+- 前端“当前运行日志”会优先显示当前 workflow 日志；workflow 尚未创建时只显示本次 loop 启动生成的 `logs/current_runtime.log`，不再回退历史 journal。
 - 前端“服务状态”面板位于“导览讲解词”上方，显示 Neo4j、TTS、STT、Memory、VLM、Embedding 的在线状态。
 - loop QA 默认启用 VLM 和 Embedding；本轮进一步把 TTS 内置声卡回退默认设为允许，确保没有外接声卡时 TTS 也能尽量启动。
 
@@ -56,9 +56,30 @@
 - `RABBITBOT_NAV_WORKFLOW_START_EMBEDDING` 是 loop 场景的默认开关，默认 `1`；`RABBITBOT_UNIFIED_START_EMBEDDING` 仍可直接覆盖最终传入容器的值。
 - `RABBITBOT_NAV_WORKFLOW_NO_ROBOT=1` 是明确无机器人模式开关；`RABBITBOT_WORKFLOW_NON_INTEGRATION` 仍保留为兼容变量名。
 - “到达下一个点位(无机器人模式)”按钮发送 `arrive`，只在无机器人模式下生效；真实机器人模式下 loop 会记录 warning 并忽略。
-- “当前运行日志”默认请求 `/api/logs?target=runtime&lines=160`；`target=workflow` 仍严格按当前 `run_id` 读取，不回退旧日志。
+- “当前运行日志”默认请求 `/api/logs?target=runtime&lines=220`，打开后每 500ms 独立刷新；`target=workflow` 仍严格按当前 `run_id` 读取，不回退旧日志。
 - 服务状态面板是短超时端口探测，不等同于 systemd 或 Docker 状态；Neo4j 7687 在线通常表示 `rabbitbot-unified-runtime` 容器仍在提供数据库。
 
+
+
+## 本轮修改详情：当前运行日志只显示本次运行
+
+### 背景和目标
+
+Aaron 反馈“当前运行日志”仍可能显示历史内容，并且启动某个服务时因为一行尚未输出完毕导致页面看不见最新进度。本轮目标是让日志面板只读本次运行日志，并提高刷新频率。
+
+### 已完成内容
+
+- 修改 `scripts_1/start_loop_entry.sh`：每次 loop 启动都会截断并写入 `logs/current_runtime.log`，同时用 `tee` 保留 systemd stdout 和当前运行日志文件。
+- 修改 `rabbitbot/control_console/config.py`：新增 `current_runtime_log` 配置，默认指向 `logs/current_runtime.log`，也可由 `RABBITBOT_CURRENT_RUNTIME_LOG` 覆盖。
+- 修改 `rabbitbot/control_console/app.py`：点击“开始程序”“开始程序(无机器人模式)”和“一键重启”时先清空当前运行日志；`/api/logs?target=runtime` 在无当前 workflow 时只读当前运行日志文件，不再读取历史 journal。
+- 修改前端日志刷新：日志面板打开后每 500ms 独立刷新一次，请求行数提高到 220 行，不再依赖 2 秒一次的状态轮询。
+- 修改 `tests/control_console/test_app.py`：覆盖无当前 workflow 时读取当前运行日志、无当前运行日志时返回空、未换行尾行仍返回、页面包含 500ms 日志刷新定时器。
+
+### 新增或调整日志点
+
+- 控制台清空当前运行日志时记录 INFO，包含日志路径和启动原因；清空失败时记录 WARNING，包含异常类型和错误信息。
+- loop 启动时在当前日志文件和 systemd stdout 中记录 `当前运行日志` 路径，便于确认前端读取来源。
+- 没有新增高频后端日志；前端高频刷新只读取当前日志文件尾部。
 
 ## 本轮修改详情：默认允许 TTS 内置声卡回退
 

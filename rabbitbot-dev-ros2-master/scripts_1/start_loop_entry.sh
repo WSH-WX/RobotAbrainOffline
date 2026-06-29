@@ -4,6 +4,10 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 PORTABLE_ENV_FILE="${RABBITBOT_PORTABLE_ENV_FILE:-${PROJECT_DIR}/runtime/portable.env}"
+CURRENT_RUNTIME_LOG="${RABBITBOT_CURRENT_RUNTIME_LOG:-${PROJECT_DIR}/logs/current_runtime.log}"
+
+mkdir -p "$(dirname "${CURRENT_RUNTIME_LOG}")"
+: > "${CURRENT_RUNTIME_LOG}"
 
 if [ -f "${PORTABLE_ENV_FILE}" ]; then
     set -a
@@ -47,4 +51,8 @@ else
     echo "[INFO] 使用 legacy 模式启动主循环"
 fi
 
-exec "${PROJECT_DIR}/scripts_1/start_nav_bridge_workflow_loop.sh"
+echo "[INFO] 当前运行日志：${CURRENT_RUNTIME_LOG}" | tee -a "${CURRENT_RUNTIME_LOG}"
+set +e
+"${PROJECT_DIR}/scripts_1/start_nav_bridge_workflow_loop.sh" 2>&1 | tee -a "${CURRENT_RUNTIME_LOG}"
+loop_exit_code=${PIPESTATUS[0]}
+exit "${loop_exit_code}"

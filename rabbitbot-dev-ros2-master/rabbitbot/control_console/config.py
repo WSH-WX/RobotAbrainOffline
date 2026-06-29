@@ -18,6 +18,7 @@ class ConsoleConfig:
     nav_log_dir: Path
     nav_container_name: str
     workflow_log_dir: Path
+    current_runtime_log: Path
     loop_service_name: str
     systemctl_path: Path
     sudo_path: Path | None
@@ -47,6 +48,7 @@ class ConsoleConfig:
                 f"{os.environ.get('RABBITBOT_PORTABLE_COMPOSE_PROJECT', 'rabbitbot-portable')}-rabbitbot-nav-1",
             ),
             workflow_log_dir=project_root / "logs" / "nav_workflow_control",
+            current_runtime_log=Path(os.environ.get("RABBITBOT_CURRENT_RUNTIME_LOG", str(project_root / "logs" / "current_runtime.log"))),
             loop_service_name=os.environ.get("RABBITBOT_LOOP_SERVICE", "rabbitbot-loop.service"),
             systemctl_path=Path(os.environ.get("RABBITBOT_CONSOLE_SYSTEMCTL_PATH", "/usr/bin/systemctl")),
             sudo_path=sudo_path,

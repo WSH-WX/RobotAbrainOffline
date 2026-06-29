@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -13,7 +14,6 @@ from .status import (
     detect_main_loop_running,
     get_latest_workflow_status,
     get_runtime_service_statuses,
-    get_systemd_journal_lines,
     get_tail_lines,
     workflow_log_for_status,
     detect_nav_bridge_status_from_lines,
@@ -22,6 +22,9 @@ from .status import (
     parse_latest_pose_from_lines,
     runtime_nav_log_lines,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 class CommandRequest(BaseModel):
@@ -123,6 +126,7 @@ def _html() -> str:
   </div>
 <script>
 var logsVisible=false;
+var logsTimer=null;
 var mapPathTouched=false;
 var dialogueLoaded=false;
 var dialogueCollapsed=false;
@@ -200,7 +204,6 @@ function refresh(){
   requestJson('GET','/api/status',null,function(error,data){
     if(error){showError(error.message);return;}
     renderStatus(data);
-    if(logsVisible){refreshLogs();}
   });
 }
 function waitForServicesReady(button,startedAt){
@@ -212,7 +215,6 @@ function waitForServicesReady(button,startedAt){
       if(servicesReady(data)){
         setText('message','所有服务已加载成功，可执行相关操作');
         button.disabled=false;
-        if(logsVisible){refreshLogs();}
         return;
       }
       setText('message','正在等待所有服务加载完成...');
@@ -227,7 +229,7 @@ function waitForServicesReady(button,startedAt){
 }
 function refreshLogs(){
   if(!logsVisible){return;}
-  requestJson('GET','/api/logs?target=runtime&lines=160',null,function(logError,body){
+  requestJson('GET','/api/logs?target=runtime&lines=220',null,function(logError,body){
     if(logError){setText('logs',logError.message);return;}
     setText('logs',(body.lines&&body.lines.join(String.fromCharCode(10)))||'暂无日志');
   });
@@ -239,7 +241,10 @@ function toggleLogs(){
   if(logsVisible){
     setText('logs','读取中...');
     refreshLogs();
+    if(logsTimer){clearInterval(logsTimer);}
+    logsTimer=setInterval(refreshLogs,500);
   }else{
+    if(logsTimer){clearInterval(logsTimer);logsTimer=null;}
     setText('logs','');
   }
 }
@@ -341,6 +346,15 @@ setInterval(refresh,2000);
 </html>"""
 
 
+def clear_current_runtime_log(path: Path, reason: str) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"[INFO] 已清空当前运行日志：reason={reason}\n", encoding="utf-8")
+        logger.info("已清空当前运行日志：path=%s, reason=%s", path, reason)
+    except OSError as exc:
+        logger.warning("清空当前运行日志失败：path=%s, reason=%s, error_type=%s, error=%s", path, reason, type(exc).__name__, exc)
+
+
 def create_app(config: ConsoleConfig | None = None) -> FastAPI:
     config = config or ConsoleConfig.from_env()
     app = FastAPI(title="RabbitBot Control Console")
@@ -400,6 +414,7 @@ def create_app(config: ConsoleConfig | None = None) -> FastAPI:
     @app.post("/api/start")
     def start() -> dict:
         try:
+            clear_current_runtime_log(config.current_runtime_log, "start")
             return start_loop_service(
                 config.loop_service_name,
                 systemctl_path=config.systemctl_path,
@@ -413,6 +428,7 @@ def create_app(config: ConsoleConfig | None = None) -> FastAPI:
     @app.post("/api/start-no-robot")
     def start_no_robot() -> dict:
         try:
+            clear_current_runtime_log(config.current_runtime_log, "start-no-robot")
             return start_loop_service(
                 config.loop_service_name,
                 systemctl_path=config.systemctl_path,
@@ -426,6 +442,7 @@ def create_app(config: ConsoleConfig | None = None) -> FastAPI:
     @app.post("/api/restart")
     def restart(payload: RestartRequest) -> dict:
         try:
+            clear_current_runtime_log(config.current_runtime_log, "restart")
             return restart_loop_service(
                 config.loop_service_name,
                 systemctl_path=config.systemctl_path,
@@ -497,13 +514,13 @@ def create_app(config: ConsoleConfig | None = None) -> FastAPI:
                     "path": str(path),
                     "lines": get_tail_lines(path, bounded_lines),
                 }
-            unit = config.loop_service_name
+            current_path = config.current_runtime_log
             return {
                 "ok": True,
                 "target": target,
-                "source": "systemd",
-                "path": f"journal:{unit}",
-                "lines": get_systemd_journal_lines(unit, bounded_lines),
+                "source": "current" if current_path.exists() else "none",
+                "path": str(current_path) if current_path.exists() else None,
+                "lines": get_tail_lines(current_path, bounded_lines) if current_path.exists() else [],
             }
         raise HTTPException(status_code=400, detail="不支持的日志目标")
 

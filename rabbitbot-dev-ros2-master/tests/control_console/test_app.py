@@ -13,6 +13,7 @@ def make_config(tmp_path):
     workflow_control_dir = project_root / "logs" / "nav_workflow_control" / "workflow_control"
     nav_log_dir = project_root / "logs" / "nav_workflow_control"
     workflow_log_dir = project_root / "logs" / "nav_workflow_control"
+    current_runtime_log = project_root / "logs" / "current_runtime.log"
     dialogue_dir = project_root / "conf"
     command_script.parent.mkdir(parents=True)
     systemctl_path.parent.mkdir(parents=True)
@@ -39,6 +40,7 @@ def make_config(tmp_path):
         nav_log_dir=nav_log_dir,
         nav_container_name="",
         workflow_log_dir=workflow_log_dir,
+        current_runtime_log=current_runtime_log,
         loop_service_name="rabbitbot-loop.service",
         systemctl_path=systemctl_path,
         sudo_path=None,
@@ -325,26 +327,30 @@ def test_runtime_logs_use_workflow_log_when_current_run_exists(tmp_path):
     assert response.json()["lines"] == ["two", "three"]
 
 
-def test_runtime_logs_fallback_to_loop_journal_when_no_current_run(tmp_path, monkeypatch):
-    from rabbitbot.control_console import app as console_app
-
+def test_runtime_logs_use_current_runtime_log_when_no_current_run(tmp_path):
     config = make_config(tmp_path)
-    calls = []
-
-    def fake_journal(unit, lines):
-        calls.append((unit, lines))
-        return ["loop starting", "waiting TTS"]
-
-    monkeypatch.setattr(console_app, "get_systemd_journal_lines", fake_journal)
+    config.current_runtime_log.parent.mkdir(parents=True, exist_ok=True)
+    config.current_runtime_log.write_text("loop starting\nwaiting TTS without newline", encoding="utf-8")
     client = TestClient(create_app(config))
 
     response = client.get("/api/logs?target=runtime&lines=2")
 
     assert response.status_code == 200
-    assert response.json()["source"] == "systemd"
-    assert response.json()["path"] == "journal:rabbitbot-loop.service"
-    assert response.json()["lines"] == ["loop starting", "waiting TTS"]
-    assert calls == [("rabbitbot-loop.service", 2)]
+    assert response.json()["source"] == "current"
+    assert response.json()["path"].endswith("current_runtime.log")
+    assert response.json()["lines"] == ["loop starting", "waiting TTS without newline"]
+
+
+def test_runtime_logs_return_empty_when_no_current_run_log(tmp_path):
+    config = make_config(tmp_path)
+    client = TestClient(create_app(config))
+
+    response = client.get("/api/logs?target=runtime&lines=2")
+
+    assert response.status_code == 200
+    assert response.json()["source"] == "none"
+    assert response.json()["path"] is None
+    assert response.json()["lines"] == []
 
 
 def test_main_module_exposes_run_function():
@@ -405,3 +411,4 @@ def test_page_shows_console_without_login_form(tmp_path):
     assert '关闭日志' in response.text
     assert 'logsVisible=false' in response.text
     assert '<pre id="logs" class="log" hidden>' in response.text
+    assert 'setInterval(refreshLogs,500)' in response.text
