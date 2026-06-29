@@ -14,7 +14,8 @@
 - 前端“返航”按钮发送 `back`，loop 在语音启动模式下转换为向 STT `/exec` 注入“返回起点”。导览完成后按 `back_points` 返回；没有 `back_points` 时按导览点位逆序返回。
 - 本轮新增前端“开始程序(无机器人模式)”和“到达下一个点位(无机器人模式)”按钮。
 - 本轮将项目中文称呼从“非联调模式”统一为“无机器人模式”；旧环境变量 `RABBITBOT_WORKFLOW_NON_INTEGRATION` 保留为兼容实现名。
-- 本轮将前端“当前 Workflow 最近日志”改为读取当前 workflow `run_id` 对应日志，而不是固定显示导航桥接日志。
+- 前端“当前 Workflow 最近日志”已改为读取当前 workflow `run_id` 对应日志，而不是固定显示导航桥接日志。
+- 本轮新增前端“服务状态”面板，位于“导览讲解词”面板上方，显示 Neo4j、TTS、STT、Memory、VLM、Embedding 的在线状态。
 
 未完成：
 
@@ -46,6 +47,7 @@
 - 在 QA 状态点击“导览”，确认效果等同于说“开始导览”。
 - 每到一个剧本导航点时点击“到达下一个点位(无机器人模式)”，确认 workflow 日志出现等待和确认到达记录，并继续下一段台词。
 - 打开“当前 Workflow 最近日志”，确认显示的是 `logs/nav_workflow_control/rabbitbot_workflow_<run_id>.log`。
+- 查看“服务状态”面板，确认 TTS(28185)、STT(28184)、Memory(28182)、Neo4j(7687) 与实际服务状态一致。
 - 若要切回真实机器人模式，点击“开始程序”或“一键重启”，确认 `runtime/rabbitbot-loop.env` 中 `RABBITBOT_NAV_WORKFLOW_NO_ROBOT="0"`。
 
 ## 注意事项
@@ -55,6 +57,7 @@
 - 无机器人模式只替代真实导航到点确认，不代表禁用 QA、STT、TTS、Memory 或剧本逻辑。
 - “到达下一个点位(无机器人模式)”按钮发送 `arrive`，只在无机器人模式下生效；真实机器人模式下 loop 会记录 warning 并忽略。
 - “最近日志”文字已改为“当前 Workflow 最近日志”，默认请求 `/api/logs?target=workflow&lines=160`。
+- “服务状态”面板使用 `/api/status` 返回的 `services` 字段；VLM 和 Embedding 标记为可选服务，离线时不代表导览主流程必然不可用。
 
 ## 本轮修改详情：控制台无机器人模式和当前 workflow 日志
 
@@ -81,6 +84,23 @@ Aaron 说明之前项目中的“非联调模式”指无机器人导航、剧�
 - loop 收到 `arrive` 时记录 `run_id` 与到达确认文件路径，便于确认前端按钮是否送达当前 workflow。
 - workflow 等待到达确认时记录点位名、确认文件路径、清理旧文件失败、删除确认文件失败和确认耗时，便于排查剧本卡在某个导航点。
 - 当前 workflow 日志选择按 `run_id` 命中或回退最新日志时使用 DEBUG 记录，便于排查页面日志来源。
+
+
+## 本轮修改详情：控制台服务状态面板
+
+### 背景和目标
+
+Aaron 要求在前端增加“服务状态面板”，显示 TTS、STT、Memory 等服务是否在线，并放在“导览讲解词”面板上方。
+
+### 已完成内容
+
+- 修改 `rabbitbot/control_console/status.py`：新增 `ServiceStatus` 和 `get_runtime_service_statuses()`，短超时探测 Neo4j(7687)、TTS(28185)、STT(28184)、Memory(28182)、VLM(8000)、Embedding(8005)。
+- 修改 `rabbitbot/control_console/app.py`：`/api/status` 新增 `services` 字段；前端新增“服务状态”面板，按在线/离线/可选离线显示服务卡片，并放在“导览讲解词”面板上方。
+- 修改 `tests/control_console/test_app.py`：覆盖状态接口返回服务列表，以及页面包含服务状态面板且位置在导览讲解词之前。
+
+### 新增或调整日志点
+
+- `get_runtime_service_statuses()` 使用 DEBUG 记录服务探测摘要 `online/total`，默认 INFO 下不刷屏；用于需要排查控制台状态轮询时确认后端是否完成服务探测。
 
 ## 最近历史摘要
 

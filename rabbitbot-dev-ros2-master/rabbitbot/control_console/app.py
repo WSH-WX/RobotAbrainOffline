@@ -12,6 +12,7 @@ from .dialogue import DialogueError, read_dialogue_editor, resolve_dialogue_path
 from .status import (
     detect_main_loop_running,
     get_latest_workflow_status,
+    get_runtime_service_statuses,
     get_tail_lines,
     workflow_log_for_status,
     detect_nav_bridge_status_from_lines,
@@ -46,7 +47,7 @@ def _html() -> str:
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>RabbitBot 控制台</title>
   <style>
-    :root{font-family:Arial,'Noto Sans SC',sans-serif;color:#172033;background:#eef2f6}body{margin:0}.wrap{max-width:1180px;margin:0 auto;padding:20px}.top{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:16px}.panel{background:white;border:1px solid #d7dde8;border-radius:8px;padding:16px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.card{background:#f7f9fc;border-radius:6px;padding:12px}.label{font-size:12px;color:#667085;text-transform:uppercase}.value{font-size:18px;font-weight:700;margin-top:4px}.actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px}.field{margin-top:16px}.text-input,.dialogue-editor{width:100%;box-sizing:border-box;padding:10px 11px;border:1px solid #cbd5e1;border-radius:6px;font-size:14px;color:#172033;background:#fff}.dialogue-editor{font-family:ui-monospace,Menlo,monospace;min-height:420px;line-height:1.45;resize:vertical}button{border:0;border-radius:6px;color:white;padding:11px 16px;font-size:15px;cursor:pointer}button:disabled{opacity:.45;cursor:not-allowed}.go{background:#137333}.task{background:#0f766e}.placeholder{background:#64748b}.back{background:#b3261e}.refresh{background:#334155}.restart{background:#7c2d12}.log{font-family:ui-monospace,Menlo,monospace;background:#111827;color:#d1d5db;border-radius:6px;padding:12px;line-height:1.5;font-size:12px;min-height:220px;overflow:auto}.error{color:#b3261e}.ok{color:#137333}.pose-line{white-space:pre-line}@media(max-width:820px){.grid,.cards{grid-template-columns:1fr}.top{align-items:flex-start;flex-direction:column}}</style>
+    :root{font-family:Arial,'Noto Sans SC',sans-serif;color:#172033;background:#eef2f6}body{margin:0}.wrap{max-width:1180px;margin:0 auto;padding:20px}.top{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:16px}.panel{background:white;border:1px solid #d7dde8;border-radius:8px;padding:16px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.service-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.service-card{background:#f7f9fc;border-radius:6px;padding:12px;display:flex;justify-content:space-between;gap:10px;align-items:center}.service-name{font-size:14px;font-weight:700}.service-meta{font-size:12px;color:#667085;margin-top:4px}.badge{border-radius:999px;padding:5px 9px;font-size:12px;font-weight:700;white-space:nowrap}.badge-ok{background:#dcfce7;color:#166534}.badge-bad{background:#fee2e2;color:#991b1b}.badge-optional{background:#e2e8f0;color:#334155}.card{background:#f7f9fc;border-radius:6px;padding:12px}.label{font-size:12px;color:#667085;text-transform:uppercase}.value{font-size:18px;font-weight:700;margin-top:4px}.actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px}.field{margin-top:16px}.text-input,.dialogue-editor{width:100%;box-sizing:border-box;padding:10px 11px;border:1px solid #cbd5e1;border-radius:6px;font-size:14px;color:#172033;background:#fff}.dialogue-editor{font-family:ui-monospace,Menlo,monospace;min-height:420px;line-height:1.45;resize:vertical}button{border:0;border-radius:6px;color:white;padding:11px 16px;font-size:15px;cursor:pointer}button:disabled{opacity:.45;cursor:not-allowed}.go{background:#137333}.task{background:#0f766e}.placeholder{background:#64748b}.back{background:#b3261e}.refresh{background:#334155}.restart{background:#7c2d12}.log{font-family:ui-monospace,Menlo,monospace;background:#111827;color:#d1d5db;border-radius:6px;padding:12px;line-height:1.5;font-size:12px;min-height:220px;overflow:auto}.error{color:#b3261e}.ok{color:#137333}.pose-line{white-space:pre-line}@media(max-width:820px){.grid,.cards,.service-grid{grid-template-columns:1fr}.top{align-items:flex-start;flex-direction:column}}</style>
 </head>
 <body>
   <div class="wrap">
@@ -90,6 +91,13 @@ def _html() -> str:
           <div id="pose" class="value pose-line">暂无定位位姿数据</div>
         </section>
       </div>
+      <section class="panel" style="margin-top:16px">
+        <div class="top" style="margin-bottom:10px">
+          <div class="label">服务状态</div>
+          <div id="serviceSummary" class="label">读取中</div>
+        </div>
+        <div id="serviceStatusGrid" class="service-grid"></div>
+      </section>
       <section class="panel" style="margin-top:16px">
         <div class="top" style="margin-bottom:10px">
           <div class="label">导览讲解词</div>
@@ -140,6 +148,35 @@ function showError(message){
 function servicesReady(data){
   return data&&data.main_loop==='running'&&data.workflow&&data.workflow.ready&&(data.no_robot_mode||(data.nav_bridge&&data.nav_bridge.ready));
 }
+
+function renderServiceStatus(services){
+  var grid=document.getElementById('serviceStatusGrid');
+  if(!grid){return;}
+  grid.innerHTML='';
+  services=services||[];
+  var online=0;
+  services.forEach(function(service){
+    if(service.online){online+=1;}
+    var item=document.createElement('div');
+    item.className='service-card';
+    var left=document.createElement('div');
+    var name=document.createElement('div');
+    name.className='service-name';
+    name.textContent=service.label||service.key||'-';
+    var meta=document.createElement('div');
+    meta.className='service-meta';
+    meta.textContent=(service.message||((service.host||'127.0.0.1')+':'+service.port))+(service.required?'':' / 可选');
+    left.appendChild(name);
+    left.appendChild(meta);
+    var badge=document.createElement('div');
+    badge.className='badge '+(service.online?'badge-ok':(service.required?'badge-bad':'badge-optional'));
+    badge.textContent=service.online?'在线':(service.required?'离线':'可选离线');
+    item.appendChild(left);
+    item.appendChild(badge);
+    grid.appendChild(item);
+  });
+  setText('serviceSummary',services.length?('在线 '+online+' / '+services.length):'暂无服务状态');
+}
 function renderStatus(data){
   setText('map','地图：'+data.map_path);
   if(!mapPathTouched&&data.map_path){document.getElementById('mapPathInput').value=data.map_path;}
@@ -147,6 +184,7 @@ function renderStatus(data){
   setText('mainLoop',data.main_loop);
   setText('navBridge',(data.nav_bridge&&data.nav_bridge.message)||(data.nav_bridge.ready?'28180 就绪':'未就绪'));
   setText('workflow',data.workflow.status||'unknown');
+  renderServiceStatus(data.services);
   document.getElementById('guideBtn').disabled=!servicesReady(data);
   document.getElementById('arriveBtn').disabled=!(data.no_robot_mode&&data.main_loop==='running');
   setText('poseStatus',(data.pose&&data.pose.status_message)||(data.pose&&data.pose.localized?'定位成功':'定位未成功：程序会持续重定位，需要遥控机器人的位姿，帮助机器人完成定位'));
@@ -338,6 +376,7 @@ def create_app(config: ConsoleConfig | None = None) -> FastAPI:
             "pose": pose.to_dict(),
             "nav_log_source": nav_source,
             "no_robot_mode": no_robot_mode,
+            "services": [item.to_dict() for item in get_runtime_service_statuses()],
         }
 
 

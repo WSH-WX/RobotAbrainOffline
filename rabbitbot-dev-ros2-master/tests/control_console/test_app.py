@@ -55,7 +55,10 @@ def test_status_does_not_require_login(tmp_path):
     response = client.get("/api/status")
 
     assert response.status_code == 200
-    assert response.json()["map_path"] == "/home/unitree/test9.pcd"
+    body = response.json()
+    assert body["map_path"] == "/home/unitree/test9.pcd"
+    service_keys = {item["key"] for item in body["services"]}
+    assert {"tts", "stt", "memory", "neo4j"}.issubset(service_keys)
 
 
 def test_status_prefers_runtime_map_env_file(tmp_path):
@@ -321,7 +324,11 @@ def test_page_shows_console_without_login_form(tmp_path):
     assert '重启地图' in response.text
     assert 'mapPathInput' in response.text
     assert 'map_path' in response.text
+    assert '服务状态' in response.text
+    assert 'serviceStatusGrid' in response.text
+    assert 'renderServiceStatus' in response.text
     assert '导览讲解词' in response.text
+    assert response.text.index('服务状态') < response.text.index('导览讲解词')
     assert '加载讲解词' in response.text
     assert '保存讲解词' in response.text
     assert '折叠讲解词' in response.text

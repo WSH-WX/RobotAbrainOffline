@@ -59,6 +59,20 @@ class WorkflowStatus:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class ServiceStatus:
+    key: str
+    label: str
+    host: str
+    port: int
+    online: bool
+    required: bool = True
+    message: str | None = None
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
 def strip_ansi(value: str) -> str:
     return ANSI_RE.sub("", value)
 
@@ -330,6 +344,34 @@ def is_port_open(host: str, port: int, timeout: float = 0.25) -> bool:
             return True
     except OSError:
         return False
+
+
+def get_runtime_service_statuses() -> list[ServiceStatus]:
+    service_specs = [
+        ("neo4j", "Neo4j", 7687, True),
+        ("tts", "TTS", 28185, True),
+        ("stt", "STT", 28184, True),
+        ("memory", "Memory", 28182, True),
+        ("vlm", "VLM", 8000, False),
+        ("embedding", "Embedding", 8005, False),
+    ]
+    statuses: list[ServiceStatus] = []
+    for key, label, port, required in service_specs:
+        online = is_port_open("127.0.0.1", port, timeout=0.12)
+        statuses.append(
+            ServiceStatus(
+                key=key,
+                label=label,
+                host="127.0.0.1",
+                port=port,
+                online=online,
+                required=required,
+                message=f"{port} {'在线' if online else '离线'}",
+            )
+        )
+    online_count = sum(1 for item in statuses if item.online)
+    logger.debug("控制台服务状态探测完成：online=%s, total=%s", online_count, len(statuses))
+    return statuses
 
 
 def detect_main_loop_running() -> str:
