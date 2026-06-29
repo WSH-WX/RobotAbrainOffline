@@ -23,6 +23,7 @@
 - 控制台操作区按钮顺序已调整为：返航、刷新状态、开始程序、一键重启、关闭程序、开始程序(无机器人模式)、到达下一个点位(无机器人模式)。
 - 本轮已通过 SSH 阅读交接报告、README、主项目 README、`pyproject.toml`、控制台 README、关键启动脚本、关键 Python 代码片段和项目文件结构。
 - 本轮已查询当前 `rabbitbot-unified-runtime` 容器内 Neo4j：默认 `neo4j` 数据库在线，但节点数为 0、关系数为 0；`Community`、`Entity`、`Episodic` 标签和 `HAS_MEMBER`、`MENTIONS`、`RELATES_TO` 关系类型当前计数均为 0。
+- 本轮已阅读当前 workflow 日志和 profile，确认一次导览中问答打断：`初步介绍` 段从 06:59:10.409 开始，06:59:15.631 标记 interrupt，打断发生在该段开始后约 5.22 秒；从 interrupt 到 06:59:22.935 恢复导览首句播报约 7.30 秒。
 
 未完成：
 
@@ -43,6 +44,7 @@
 - `python3 -m py_compile rabbitbot/control_console/app.py rabbitbot/control_console/status.py rabbitbot/provider.py rabbitbot/agno_agents/prompts.py` 通过。
 - `rabbitbot/control_console/status.py` 将 Neo4j(7687)、TTS(28185)、STT(28184)、Memory(28182)、VLM(8000)、Embedding(8005) 都标记为必需服务。
 - 当前导览相关 Neo4j 库没有实际图数据：`MATCH (n)` 返回 0，`MATCH ()-[r]->()` 返回 0。
+- 本次问答打断的耗时拆分：`plan_llm` 2.700 秒，`chat_llm` 1.405 秒，回答 TTS 播放 `chat_tts` 3.574 秒；回答播报结束到导览首句恢复约 0.159 秒。
 - 远端未安装 `rg`，本轮用 `find`/`grep` 作为替代方式梳理文件和代码位置。
 - 直接运行 `python3 -m pytest` 曾受远端 anyio/pytest 插件版本冲突影响；需要设置 `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`。
 
@@ -129,6 +131,35 @@ Aaron 询问当前导览的 Neo4j 中是否有数据。目标是在不导出原�
 ### 新增或调整日志点
 
 - 本轮为数据库只读数量核查和交接报告整理，未修改业务代码，未新增或调整代码日志点。
+
+
+## 本轮修改详情：核查提问打断和恢复导览耗时
+
+### 背景和目标
+
+Aaron 要求阅读日志，确认导览中提问打断和恢复导览分别用了多久。目标是基于现有 workflow 日志和 `workflow_profile.jsonl` 给出可追踪的耗时结论。
+
+### 已完成内容
+
+- 读取 `logs/current_runtime.log`、`logs/nav_workflow_control/rabbitbot_workflow_20260629_144659.log` 和 `logs/nav_workflow_control/workflow_profile.jsonl`。
+- 定位到一次明确打断：用户提问“中国的首都是哪里”，workflow 在 `初步介绍` 的 segment 0 中被打断，回答后恢复同一导览段。
+- 使用 profile 时间戳计算打断、问答处理和恢复导览耗时。
+
+### 已验证的事实
+
+- `初步介绍` segment 0 开始时间为 2026-06-29 06:59:10.409，interrupt 标记时间为 2026-06-29 06:59:15.631，导览段开始到被打断约 5.22 秒。
+- interrupt 后 `plan_llm` 耗时 2.700 秒，`chat_llm` 耗时 1.405 秒，回答 TTS 播放 `chat_tts` 耗时 3.574 秒。
+- 回答 TTS 结束时间为 2026-06-29 06:59:22.776，恢复导览首句播报开始时间为 2026-06-29 06:59:22.935，回答结束到恢复播报约 0.159 秒。
+- 从 interrupt 标记到恢复导览首句播报开始，总耗时约 7.30 秒。
+
+### 未完成 / 注意事项
+
+- `rabbitbot_workflow_20260629_144659.log` 中“收到打断输入”这一行本身没有独立时间戳，因此本轮以 `workflow_profile.jsonl` 的 span 时间戳作为主依据。
+- 本轮未修改打断或恢复逻辑，只做日志核查。
+
+### 新增或调整日志点
+
+- 本轮为日志只读核查和交接报告整理，未修改业务代码，未新增或调整代码日志点。
 
 ## 最近历史摘要
 
