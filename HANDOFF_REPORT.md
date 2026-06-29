@@ -181,3 +181,35 @@ Aaron 反馈：无机器人模式下导览调用动作时会卡住很久。`logs
 
 - `RobotAgent._post_arm_action()` 命中无机器人短路时输出 `provider动作链路: stage=no_robot_mode_skip, action=..., mode=sync/async`，便于在“当前运行日志”中确认动作被有意跳过、而非真实失败或超时。
 - 未新增高频日志：每个动作仅一行跳过日志，且替代了原本 33~45 秒的超时等待日志。
+
+## 本轮修改详情：替换 get_inst_chat 为精简现场对话提示词
+
+### 背景和目标
+
+Aaron 反馈聊天路径出现"无端道歉/冗长"等异常（例：问"中国的首都是哪里"，模型先道歉再作答）。根因定位为 `get_inst_chat` 原提示词（机二角色 + 大量杭州/上海铺陈 + 动作标记规则）把 7B 模型带偏。目标：删除 `get_inst_chat` 原提示词，替换为 `vlm_qa_workflow.py` 中 `_build_prompt` 的精简现场对话提示词。
+
+### 已完成内容
+
+- 修改 `rabbitbot-dev-ros2-master/rabbitbot/agno_agents/prompts.py`：`get_inst_chat` 整体替换为精简版"RabbitBot 现场对话助手"提示词。
+- 适配（因 agno `instructions` 是系统提示词、用户问题由 `.run(text)` 单独传入）：
+  - 删除 `用户问题：{user_text}` 行；
+  - `{visual_rule}` 用无画面固定句"当前没有可用画面，请只根据用户问题回答。"（chat 路径不带摄像头图像）；
+  - `{answer_max_chars}` 固定为 180（与 `RABBITBOT_QA_MAX_ANSWER_CHARS` 默认值一致）。
+- 保留 `get_inst_chat(entity_lst)` 函数签名以兼容既有调用方（`workflow.py:1539`）；参数现未使用。
+- 按 Aaron 确认：`vlm_qa_workflow.py` 保留不动，仅复制内容，不删除其提示词。
+
+### 已验证的事实
+
+- `python3 -m py_compile rabbitbot/agno_agents/prompts.py` 通过。
+- 运行期渲染 `get_inst_chat(["机器狗","沙盘"])`：无 `{user_text}/{visual_rule}/{answer_max_chars}` 残留占位符，内容正确。
+- `git status` 仅 `prompts.py` 变更，`vlm_qa_workflow.py` 无改动。
+
+### 注意事项（行为变化）
+
+- 新提示词不再包含 `[A:动作名称]` 动作标记规则，因此**聊天路径不再驱动机械臂手势动作**（原 get_inst_chat 才有动作标记）。导览剧本台词里的动作不受影响（走的是另一套 body 动作清单）。
+- 新提示词不再包含"机二"角色设定、能力介绍话术、固定问候/夸奖应答、展厅板块引导、会议/杭州/上海背景知识等；如需保留其中部分（如能力介绍、固定问候），需另行补回。
+- 本轮未重启 loop/控制台/容器；改动需下次启动或重建后生效。
+
+### 新增或调整日志点
+
+- 本轮为静态提示词文本替换，未涉及执行流程，未新增/调整日志点。
