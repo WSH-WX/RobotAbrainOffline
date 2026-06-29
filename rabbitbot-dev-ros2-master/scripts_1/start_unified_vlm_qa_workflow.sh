@@ -65,11 +65,11 @@ export CONTAINER_RABBITBOT_DIR
 export CONTAINER_LOG_DIR
 export RABBITBOT_UNIFIED_START_VLM=1
 export RABBITBOT_UNIFIED_START_STT=1
-export RABBITBOT_UNIFIED_START_EMBEDDING="${RABBITBOT_UNIFIED_START_EMBEDDING:-0}"
+export RABBITBOT_UNIFIED_START_EMBEDDING="${RABBITBOT_UNIFIED_START_EMBEDDING:-1}"
 export RUN_WORKFLOW_AFTER_START=0
 export START_AFTER_CREATE="${START_AFTER_CREATE:-1}"
 
-log_info "启动统一容器问答底座：container=${CONTAINER_NAME}, image=${IMAGE_NAME}, runtime=${RABBITBOT_RUNTIME_MODE}, vlm=1, stt=1"
+log_info "启动统一容器问答底座：container=${CONTAINER_NAME}, image=${IMAGE_NAME}, runtime=${RABBITBOT_RUNTIME_MODE}, vlm=1, embedding=${RABBITBOT_UNIFIED_START_EMBEDDING}, stt=1"
 bash "${SCRIPT_DIR}/start_unified_integration_workflow.sh"
 
 if ! docker ps --format '{{.Names}}' | grep -qx "${CONTAINER_NAME}"; then

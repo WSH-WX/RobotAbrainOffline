@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 单容器实验入口：在一个容器内启动 Neo4j、TTS、Memory Agent、Robot Agent 和 workflow；VLM/Embedding/STT 默认跳过。
+# 单容器实验入口：在一个容器内启动 Neo4j、TTS、Memory Agent、Robot Agent 和 workflow；Embedding 默认启动，VLM/STT 默认跳过。
 
 set -Eeuo pipefail
 
@@ -12,7 +12,7 @@ AUTO_START_WORKFLOW="${AUTO_START_WORKFLOW:-1}"
 RABBITBOT_WORKFLOW_VERBOSE="${RABBITBOT_WORKFLOW_VERBOSE:-0}"
 RABBITBOT_WORKFLOW_NON_INTEGRATION="${RABBITBOT_WORKFLOW_NON_INTEGRATION:-0}"
 RABBITBOT_UNIFIED_START_VLM="${RABBITBOT_UNIFIED_START_VLM:-0}"
-RABBITBOT_UNIFIED_START_EMBEDDING="${RABBITBOT_UNIFIED_START_EMBEDDING:-0}"
+RABBITBOT_UNIFIED_START_EMBEDDING="${RABBITBOT_UNIFIED_START_EMBEDDING:-1}"
 RABBITBOT_UNIFIED_START_STT="${RABBITBOT_UNIFIED_START_STT:-0}"
 # 是否在本容器内启动 Robot Agent（robot_app.py，监听 28180）。
 # legacy 默认 1；portable 模式由宿主以 -e 传入 0，此时 28180 归属 nav bridge 的 humble_robot_agent_bridge。

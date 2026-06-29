@@ -379,7 +379,7 @@ def get_runtime_service_statuses() -> list[ServiceStatus]:
         ("stt", "STT", 28184, True),
         ("memory", "Memory", 28182, True),
         ("vlm", "VLM", 8000, True),
-        ("embedding", "Embedding", 8005, False),
+        ("embedding", "Embedding", 8005, True),
     ]
     statuses: list[ServiceStatus] = []
     for key, label, port, required in service_specs:
