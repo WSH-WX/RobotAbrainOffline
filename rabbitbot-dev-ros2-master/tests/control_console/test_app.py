@@ -408,6 +408,9 @@ def test_page_shows_console_without_login_form(tmp_path):
     assert '服务状态' in response.text
     assert 'serviceStatusGrid' in response.text
     assert 'renderServiceStatus' in response.text
+    assert 'restartService' in response.text
+    assert '/api/service/restart' in response.text
+    assert '位于同一容器，将被一并重启' in response.text
     assert '导览讲解词' in response.text
     assert response.text.index('服务状态') < response.text.index('导览讲解词')
     assert '加载讲解词' in response.text
@@ -443,3 +446,30 @@ def test_restart_preserves_no_robot_mode(tmp_path):
     assert 'RABBITBOT_WORKFLOW_NON_INTEGRATION="1"' in content
     record = config.project_root / "systemctl_args.txt"
     assert record.read_text(encoding="utf-8").splitlines() == ["restart", "rabbitbot-loop.service"]
+
+
+def test_service_restart_restarts_audio_container_for_tts(tmp_path, monkeypatch):
+    # 重启 TTS：compose 栈下应重启 rabbitbot-audio 容器(TTS/STT 同容器)。
+    from rabbitbot.control_console import status as status_mod
+
+    monkeypatch.setenv("RABBITBOT_BASE_RUNTIME", "compose")
+    monkeypatch.setattr(status_mod, "_recent_container_restarts", {})
+    config = make_config(tmp_path)
+    client = TestClient(create_app(config))
+
+    response = client.post("/api/service/restart", json={"key": "tts"})
+
+    assert response.status_code == 200
+    assert response.json()["container"] == "rabbitbot-audio"
+    record = config.project_root / "docker_args.txt"
+    assert record.read_text(encoding="utf-8").splitlines() == ["restart", "-t", "20", "rabbitbot-audio"]
+
+
+def test_service_restart_rejects_unknown_service(tmp_path):
+    # 未知服务 key 应返回 400。
+    config = make_config(tmp_path)
+    client = TestClient(create_app(config))
+
+    response = client.post("/api/service/restart", json={"key": "nope"})
+
+    assert response.status_code == 400

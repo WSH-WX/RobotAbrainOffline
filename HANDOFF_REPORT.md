@@ -38,6 +38,7 @@ RabbitBot 自主运行包，部署在 ShuHao-orin。Git 根 `/mnt/disk1/gt/air_r
 - 导览开场白被打断后**继续(resume)剩余开场白**：被打断→回答提问→重播本句→继续后续开场白，不再吞词（开场回答回调由调用点注入，因 guide_opening_speech 为模块级、取不到嵌套的 chat_execute）。
 - 控制台服务状态面板：新增“启动中”黄色态（主循环启动 180s 窗口内、端口未就绪的服务显示“启动中”，窗口外才“离线”；后端 `ServiceStatus` 增 `state` 字段，按主循环进程 `/proc starttime` 判定启动窗口 `SERVICE_STARTUP_GRACE_SECONDS=180`）；并去除“开始程序”等待超时弹出的“服务仍未全部就绪”聚合提示（面板已逐服务展示状态）。新增 3 个状态判定测试，控制台测试 69 passed。
 - 控制台“一键重启”按钮改名为“一键重启主循环”；`/api/restart` 不再硬编码真机模式，改为读取并沿用重启前的运行模式（无机器人模式则仍以无机器人模式重启 loop，避免一键重启把模式覆盖成真机），新增 `test_restart_preserves_no_robot_mode`，控制台测试 70 passed。
+- 控制台服务状态面板为每个服务加“重启”按钮：弹“是否确认重启…服务？”确认框，同容器服务(TTS/STT、VLM/Embedding)额外提示一并重启；新增 `POST /api/service/restart`(按服务解析容器并 `docker restart -t 20`，免 sudo)，`ServiceStatus` 增 `container` 字段与 `resolve_service_container` 映射(随 `RABBITBOT_BASE_RUNTIME` 切换)，刚重启的容器在宽限期内其服务显示“启动中”。新增 5 个测试，控制台测试 75 passed。
 - 会前已完成：DJI Mic Mini 右声道 STT 输入修复（双声道按 RMS 选道、`STT_INPUT_GAIN=8.0`、新增 `get_last_rms` 诊断接口）。
 
 未完成 / 待办：
@@ -83,7 +84,8 @@ RabbitBot 自主运行包，部署在 ShuHao-orin。Git 根 `/mnt/disk1/gt/air_r
 
 ## 最近历史摘要（提交）
 
-- “一键重启”改名“一键重启主循环”并沿用重启前运行模式（无机器人模式不再被覆盖成真机，本轮提交）
+- 控制台服务状态面板每服务加“重启”按钮（重启对应容器/服务，TTS/STT 等同容器提示一并重启，本轮提交）
+- `6761317` “一键重启”改名“一键重启主循环”并沿用重启前运行模式（无机器人模式不再被覆盖成真机）
 - `c0bda9e` 控制台服务状态新增“启动中”黄色态、去除“服务仍未全部就绪”提示（含 3 个状态测试）
 - `3a9e05d` 开场打断回答失败(NameError)修复：回答回调由调用点注入
 - `33c6bb7` 开场白被打断后继续剩余开场白(resume)，不再吞词

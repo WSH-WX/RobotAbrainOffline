@@ -7,13 +7,15 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-from .commands import CommandError, read_loop_no_robot_mode, read_map_path, restart_loop_service, send_workflow_command, start_loop_service, start_task, stop_loop_service
+from .commands import CommandError, read_loop_no_robot_mode, read_map_path, restart_loop_service, restart_service_container, send_workflow_command, start_loop_service, start_task, stop_loop_service
 from .config import ConsoleConfig
 from .dialogue import DialogueError, read_dialogue_editor, resolve_dialogue_path, write_dialogue_config
 from .status import (
     detect_main_loop_running,
     get_latest_workflow_status,
     get_runtime_service_statuses,
+    mark_container_restarted,
+    resolve_service_container,
     get_tail_lines,
     workflow_log_for_status,
     detect_nav_bridge_status_from_lines,
@@ -43,6 +45,10 @@ class DialogueRequest(BaseModel):
     content: str
 
 
+class ServiceRestartRequest(BaseModel):
+    key: str
+
+
 def _html() -> str:
     return """<!doctype html>
 <html lang="zh-CN">
@@ -51,7 +57,7 @@ def _html() -> str:
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>RabbitBot 控制台</title>
   <style>
-    :root{font-family:Arial,'Noto Sans SC',sans-serif;color:#172033;background:#eef2f6}body{margin:0}.wrap{max-width:1180px;margin:0 auto;padding:20px}.top{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:16px}.panel{background:white;border:1px solid #d7dde8;border-radius:8px;padding:16px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.service-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.service-card{background:#f7f9fc;border-radius:6px;padding:12px;display:flex;justify-content:space-between;gap:10px;align-items:center}.service-name{font-size:14px;font-weight:700}.service-meta{font-size:12px;color:#667085;margin-top:4px}.badge{border-radius:999px;padding:5px 9px;font-size:12px;font-weight:700;white-space:nowrap}.badge-ok{background:#dcfce7;color:#166534}.badge-bad{background:#fee2e2;color:#991b1b}.badge-optional{background:#e2e8f0;color:#334155}.badge-starting{background:#fde68a;color:#92400e}.card{background:#f7f9fc;border-radius:6px;padding:12px}.label{font-size:12px;color:#667085;text-transform:uppercase}.value{font-size:18px;font-weight:700;margin-top:4px}.actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px}.field{margin-top:16px}.text-input,.dialogue-editor{width:100%;box-sizing:border-box;padding:10px 11px;border:1px solid #cbd5e1;border-radius:6px;font-size:14px;color:#172033;background:#fff}.dialogue-editor{font-family:ui-monospace,Menlo,monospace;min-height:420px;line-height:1.45;resize:vertical}button{border:0;border-radius:6px;color:white;padding:11px 16px;font-size:15px;cursor:pointer}button:disabled{opacity:.45;cursor:not-allowed}.go{background:#137333}.task{background:#0f766e}.placeholder{background:#64748b}.back{background:#b3261e}.refresh{background:#334155}.restart{background:#7c2d12}.log{font-family:ui-monospace,Menlo,monospace;background:#111827;color:#d1d5db;border-radius:6px;padding:12px;line-height:1.5;font-size:12px;min-height:220px;overflow:auto}.error{color:#b3261e}.ok{color:#137333}.pose-line{white-space:pre-line}@media(max-width:820px){.grid,.cards,.service-grid{grid-template-columns:1fr}.top{align-items:flex-start;flex-direction:column}}</style>
+    :root{font-family:Arial,'Noto Sans SC',sans-serif;color:#172033;background:#eef2f6}body{margin:0}.wrap{max-width:1180px;margin:0 auto;padding:20px}.top{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:16px}.panel{background:white;border:1px solid #d7dde8;border-radius:8px;padding:16px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.service-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.service-card{background:#f7f9fc;border-radius:6px;padding:12px;display:flex;justify-content:space-between;gap:10px;align-items:center}.service-name{font-size:14px;font-weight:700}.service-meta{font-size:12px;color:#667085;margin-top:4px}.badge{border-radius:999px;padding:5px 9px;font-size:12px;font-weight:700;white-space:nowrap}.badge-ok{background:#dcfce7;color:#166534}.badge-bad{background:#fee2e2;color:#991b1b}.badge-optional{background:#e2e8f0;color:#334155}.badge-starting{background:#fde68a;color:#92400e}.svc-actions{display:flex;align-items:center;gap:8px}.svc-restart{background:#7c2d12;color:#fff;border:0;border-radius:6px;padding:4px 10px;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap}.svc-restart:disabled{opacity:.45;cursor:not-allowed}.card{background:#f7f9fc;border-radius:6px;padding:12px}.label{font-size:12px;color:#667085;text-transform:uppercase}.value{font-size:18px;font-weight:700;margin-top:4px}.actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px}.field{margin-top:16px}.text-input,.dialogue-editor{width:100%;box-sizing:border-box;padding:10px 11px;border:1px solid #cbd5e1;border-radius:6px;font-size:14px;color:#172033;background:#fff}.dialogue-editor{font-family:ui-monospace,Menlo,monospace;min-height:420px;line-height:1.45;resize:vertical}button{border:0;border-radius:6px;color:white;padding:11px 16px;font-size:15px;cursor:pointer}button:disabled{opacity:.45;cursor:not-allowed}.go{background:#137333}.task{background:#0f766e}.placeholder{background:#64748b}.back{background:#b3261e}.refresh{background:#334155}.restart{background:#7c2d12}.log{font-family:ui-monospace,Menlo,monospace;background:#111827;color:#d1d5db;border-radius:6px;padding:12px;line-height:1.5;font-size:12px;min-height:220px;overflow:auto}.error{color:#b3261e}.ok{color:#137333}.pose-line{white-space:pre-line}@media(max-width:820px){.grid,.cards,.service-grid{grid-template-columns:1fr}.top{align-items:flex-start;flex-direction:column}}</style>
 </head>
 <body>
   <div class="wrap">
@@ -160,6 +166,10 @@ function renderServiceStatus(services){
   grid.innerHTML='';
   services=services||[];
   var online=0;
+  var siblingsByContainer={};
+  services.forEach(function(service){
+    if(service.container){(siblingsByContainer[service.container]=siblingsByContainer[service.container]||[]).push(service.label||service.key);}
+  });
   services.forEach(function(service){
     if(service.online){online+=1;}
     var item=document.createElement('div');
@@ -181,11 +191,32 @@ function renderServiceStatus(services){
     else{badgeClass='badge-optional';badgeText='可选离线';}
     badge.className='badge '+badgeClass;
     badge.textContent=badgeText;
+    var actions=document.createElement('div');
+    actions.className='svc-actions';
+    var restartBtn=document.createElement('button');
+    restartBtn.className='svc-restart';
+    restartBtn.textContent='重启';
+    var label=service.label||service.key||'-';
+    var siblings=(siblingsByContainer[service.container]||[]).filter(function(other){return other!==label;});
+    if(!service.container){restartBtn.disabled=true;}
+    restartBtn.onclick=(function(key,lbl,sibs){return function(){restartService(key,lbl,sibs);};})(service.key,label,siblings);
+    actions.appendChild(badge);
+    actions.appendChild(restartBtn);
     item.appendChild(left);
-    item.appendChild(badge);
+    item.appendChild(actions);
     grid.appendChild(item);
   });
   setText('serviceSummary',services.length?('在线 '+online+' / '+services.length):'暂无服务状态');
+}
+function restartService(key,label,siblings){
+  var msg='是否确认重启 '+label+' 服务？';
+  if(siblings&&siblings.length){msg+=String.fromCharCode(10)+'注意：'+label+' 与 '+siblings.join('、')+' 位于同一容器，将被一并重启。';}
+  if(!window.confirm(msg)){return;}
+  setText('message','正在重启 '+label+' 服务...');
+  requestJson('POST','/api/service/restart',{key:key},function(error,body){
+    setText('message',error?error.message:body.message);
+    refresh();
+  });
 }
 function renderStatus(data){
   setText('map','地图：'+data.map_path);
@@ -398,6 +429,20 @@ def create_app(config: ConsoleConfig | None = None) -> FastAPI:
             "no_robot_mode": no_robot_mode,
             "services": [item.to_dict() for item in get_runtime_service_statuses()],
         }
+
+    @app.post("/api/service/restart")
+    def service_restart(payload: ServiceRestartRequest) -> dict:
+        key = (payload.key or "").strip().lower()
+        container = resolve_service_container(key)
+        if container is None:
+            raise HTTPException(status_code=400, detail=f"未知服务：{payload.key}")
+        try:
+            output = restart_service_container(container, docker_path=config.docker_path)
+            mark_container_restarted(container)
+            logger.info("已按服务重启容器：service=%s, container=%s", key, container)
+            return {"ok": True, "service": key, "container": container, "message": output or f"已重启容器 {container}"}
+        except CommandError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
     @app.post("/api/task")

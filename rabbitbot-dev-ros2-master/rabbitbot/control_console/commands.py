@@ -198,6 +198,27 @@ def _restart_runtime_container(container_name: str, docker_path: Path) -> str:
     return output
 
 
+def restart_service_container(container_name: str, docker_path: Path = Path("/usr/bin/docker"), timeout: float = 90.0) -> str:
+    # 重启单个服务所在容器（解耦栈下即重启该容器内对应服务；nvidia 在 docker 组，免 sudo）。
+    if not container_name.strip():
+        raise CommandError("Docker 容器名不能为空")
+    if not docker_path.exists():
+        raise CommandError(f"docker 不存在：{docker_path}")
+    args = [str(docker_path), "restart", "-t", "20", container_name]
+    logger.info("准备重启服务容器：container=%s, docker=%s, timeout=%s", container_name, docker_path, timeout)
+    try:
+        result = subprocess.run(args, check=False, text=True, capture_output=True, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        logger.error("重启服务容器超时：container=%s, timeout=%s", container_name, timeout)
+        raise CommandError(f"重启容器 {container_name} 超时（{timeout:.0f}s）") from exc
+    output = (result.stdout or result.stderr or "").strip()
+    if result.returncode != 0:
+        logger.error("重启服务容器失败：container=%s, returncode=%s, output=%s", container_name, result.returncode, output)
+        raise CommandError(output or f"重启容器 {container_name} 失败，退出码：{result.returncode}")
+    logger.info("重启服务容器完成：container=%s", container_name)
+    return output
+
+
 def _run_loop_service_action(
     action: str,
     service_name: str,

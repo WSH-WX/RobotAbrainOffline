@@ -70,6 +70,7 @@ class ServiceStatus:
     required: bool = True
     message: str | None = None
     state: str = "offline"
+    container: str | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -377,6 +378,47 @@ def get_systemd_journal_lines(unit: str, limit: int = 120) -> list[str]:
 SERVICE_STARTUP_GRACE_SECONDS = 180.0
 
 
+# 服务 -> 角色容器组：同组服务共享一个容器，重启该容器会一并重启同组所有服务。
+SERVICE_CONTAINER_GROUP = {
+    "neo4j": "neo4j",
+    "tts": "audio",
+    "stt": "audio",
+    "memory": "memory",
+    "vlm": "vlm",
+    "embedding": "vlm",
+}
+
+# 最近一次“服务容器重启”的时间戳(容器名 -> epoch)，用于在重启宽限期内把该容器的服务显示为“启动中”。
+# 控制台为单进程 FastAPI，模块级字典即可；多 worker 部署下不共享(可接受)。
+_recent_container_restarts: dict[str, float] = {}
+
+
+def resolve_service_container(key: str) -> str | None:
+    # 把服务 key 解析为其所在容器名：compose 解耦栈下各角色独立容器；unified(旧)下 rabbitbot 服务同在统一容器。
+    group = SERVICE_CONTAINER_GROUP.get(key)
+    if group is None:
+        return None
+    if group == "neo4j":
+        return os.environ.get("RABBITBOT_NEO4J_CONTAINER_NAME", "neo4j")
+    base_runtime = os.environ.get("RABBITBOT_BASE_RUNTIME", "unified").strip().lower()
+    if base_runtime == "compose":
+        compose_container = {
+            "audio": os.environ.get("RABBITBOT_AUDIO_CONTAINER_NAME", "rabbitbot-audio"),
+            "memory": os.environ.get("RABBITBOT_MEMORY_CONTAINER_NAME", "rabbitbot-memory"),
+            "vlm": os.environ.get("RABBITBOT_VLM_CONTAINER_NAME", "rabbitbot-vlm"),
+        }
+        return compose_container.get(group)
+    # unified(旧)：所有 rabbitbot 服务都在统一容器内，重启任一即重启全部。
+    return os.environ.get("RABBITBOT_UNIFIED_CONTAINER_NAME", os.environ.get("CONTAINER_NAME", "rabbitbot-unified-runtime"))
+
+
+def mark_container_restarted(container_name: str) -> None:
+    # 记录容器重启时间，供 get_runtime_service_statuses 在宽限期内把该容器的服务显示为“启动中”。
+    if container_name:
+        _recent_container_restarts[container_name] = time.time()
+        logger.info("记录服务容器重启时间(用于启动中态)：container=%s", container_name)
+
+
 def _boot_epoch() -> float | None:
     # 读取 /proc/stat 的 btime(系统启动的绝对时间戳，单位秒)，用于换算进程启动时间。
     try:
@@ -451,12 +493,21 @@ def get_runtime_service_statuses() -> list[ServiceStatus]:
     startup_window_active = (
         loop_start_epoch is not None and 0 <= (now - loop_start_epoch) < SERVICE_STARTUP_GRACE_SECONDS
     )
+    # 惰性清理过期的容器重启标记，避免无限增长。
+    for stale in [c for c, ts in _recent_container_restarts.items() if now - ts >= SERVICE_STARTUP_GRACE_SECONDS]:
+        _recent_container_restarts.pop(stale, None)
     statuses: list[ServiceStatus] = []
     for key, label, port, required in service_specs:
+        container = resolve_service_container(key)
         online = is_port_open("127.0.0.1", port, timeout=0.12)
+        container_restarting = (
+            container is not None
+            and container in _recent_container_restarts
+            and (now - _recent_container_restarts[container]) < SERVICE_STARTUP_GRACE_SECONDS
+        )
         if online:
             state, state_text = "online", "在线"
-        elif startup_window_active:
+        elif startup_window_active or container_restarting:
             state, state_text = "starting", "启动中"
         else:
             state, state_text = "offline", "离线"
@@ -469,6 +520,7 @@ def get_runtime_service_statuses() -> list[ServiceStatus]:
                 online=online,
                 required=required,
                 state=state,
+                container=container,
                 message=f"{port} {state_text}",
             )
         )
