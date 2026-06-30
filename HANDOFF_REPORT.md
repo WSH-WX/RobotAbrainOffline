@@ -178,3 +178,37 @@ Aaron 要求执行修复建议，解决 DJI Mic Mini 有电平但 STT 不触发�
 - 本轮为刷新音频设备绑定，已删除并由启动循环重建 `rabbitbot-unified-runtime`；恢复过程曾短暂中断 Neo4j/TTS/STT/Memory/VLM/Embedding，最终基础服务已恢复。
 - 本轮未修改 `rabbitbot-control-console.service` 代码，也未再次重启控制台服务。
 - 生成时间：2026-06-29
+
+## 本轮修改详情：解耦统一容器为多容器（docker-compose）
+
+### 背景和目标
+
+原 `rabbitbot-unified-runtime` 单容器内串行运行 Neo4j/VLM/Embedding/TTS/STT/Memory，存在一损俱损、串行启动相互阻塞、生命周期强耦合等问题。Aaron 要求按 neo4j / rabbitbot-vlm / rabbitbot-audio / rabbitbot-memory / rabbitbot-navbridge 五个名字解耦容器，并直接切换实测。
+
+### 已完成内容
+
+- 新增 `rabbitbot-dev-ros2-master/docker/portable/docker-compose.decoupled.yaml`：定义五个解耦容器，全部 `network_mode: host`（服务间仍走 127.0.0.1，无需改任何服务地址）。
+  - `neo4j`：官方 `neo4j:5.26-community` 镜像，独立数据卷 `rabbitbot_neo4j_data`。
+  - `rabbitbot-vlm` / `rabbitbot-audio` / `rabbitbot-memory`：复用 `core-portable` 镜像（本机已无原始最小镜像），各只启动自己的服务子集；GPU(`runtime: nvidia`)、`ipc: host`、源码 bind、py310/py38 依赖卷与原 unified 一致；audio 额外挂 `/dev/snd` + `device_cgroup_rules: c 116:* rwm`。
+  - `rabbitbot-navbridge`：复用 nav 镜像，提供 28180。
+  - 健康检查 + `depends_on`（memory 等 neo4j 与 vlm 健康）+ `restart: unless-stopped`。
+- 新增 `rabbitbot-dev-ros2-master/scripts_1/unified_runtime/start_role_container.sh`：角色入口，按 `RABBITBOT_CONTAINER_ROLE`(vlm/audio/memory) 只启动对应服务。它 `source` 现有 `start_unified_container.sh` 复用全部 helper 与 start_* 函数，零重复。
+- 修改 `rabbitbot-dev-ros2-master/scripts_1/unified_runtime/start_unified_container.sh`：给末尾 `main "$@"` 加“仅直接执行时运行”守卫（`BASH_SOURCE`==`$0`），使其可被 source 而不自动起全部服务；直接执行行为不变，向后兼容。
+
+### 已验证的事实
+
+- `bash -n` 两个脚本语法通过；`docker compose -f docker-compose.decoupled.yaml config` 通过。
+- 直接切换：停掉旧 `rabbitbot-unified-runtime` 与旧 nav 容器后，`docker compose up -d` 起五容器，最终全部 healthy/up：neo4j(7687)、rabbitbot-vlm(8000+8005)、rabbitbot-audio(28184+28185)、rabbitbot-memory(28182)、rabbitbot-navbridge(28180)。
+- 跨容器记忆功能实测通过：经 memory 容器(28182) 写入(→neo4j 容器)、语义查询(→vlm 容器 embedding 8005) 正确召回，清理后 0 节点。
+
+### 注意事项 / 未完成
+
+- 三个 rabbitbot 容器**共用 core-portable 镜像**（容器解耦、镜像未瘦身）；原始最小镜像在本机已不存在，真正拆分最小镜像需重建上游，留作后续。
+- 旧 `rabbitbot-unified-runtime` 容器仅 stop 未删，作为回退；**切勿与解耦栈同时启动**（端口会冲突）。
+- **loop 编排尚未对接解耦栈**：`start_unified_integration_workflow.sh` 仍会去创建/启动 unified 容器；若现在跑 `rabbitbot-loop.service` 会与解耦容器抢端口。后续需改 loop 的“确保基础服务”步骤改为依赖解耦 compose（本轮未改）。
+- 回退方式：`docker compose -f docker/portable/docker-compose.decoupled.yaml down` 后 `docker start rabbitbot-unified-runtime` 与旧 nav 容器。
+
+### 新增或调整日志点
+
+- `start_role_container.sh` 启动时打印 role、project、models、log_dir；每个角色打印将启动哪些服务；依赖等待与就绪复用 `wait_until` 的 INFO/SUCCESS 日志，便于排查“某容器卡在等待依赖”。
+- `start_unified_container.sh` 守卫为纯控制流，无新增运行日志。

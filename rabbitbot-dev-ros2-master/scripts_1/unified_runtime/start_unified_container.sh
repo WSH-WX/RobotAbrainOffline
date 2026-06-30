@@ -300,4 +300,8 @@ main() {
     start_workflow
 }
 
-main "$@"
+# 仅在“直接执行”时运行 main；被其它脚本 source（如 start_role_container.sh 复用本文件的
+# 服务启动函数）时不自动启动全部服务，从而支持容器解耦按角色只起部分服务。
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+    main "$@"
+fi
