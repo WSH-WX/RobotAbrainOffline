@@ -399,3 +399,33 @@ Aaron 要求执行修复建议，解决 DJI Mic Mini 有电平但 STT 不触发�
 ### 新增或调整日志点
 
 - 未新增日志；既有“忽略低音量打断”不再对注入文本触发。
+
+## 本轮修改详情：修复 TTS(Kokoro)本地模型路径致离线下载崩溃
+
+### 背景和目标
+
+logs/unified_runtime/rabbitbot_tts.log 显示 TTS 启动失败：`huggingface_hub LocalEntryNotFoundError`——`run_tts_espnet.py` 走了 Kokoro 在线下载回退分支，离线环境下载失败崩溃，28185 未起。
+
+### 根因
+
+`run_tts_espnet.py` 的 Kokoro 本地模型默认路径错误：`default_models_dir = __file__/../../../models = /workspace/projects/models`，再拼 `kokoro/Kokoro-82M`，即查 `/workspace/projects/models/kokoro/Kokoro-82M`。但实际模型在 `/models/Kokoro-82M`（容器内 /models = 宿主 /mnt/disk1/models 挂载，且无 kokoro/ 子层）。本地检查失败 → 回退 `KPipeline(device=...)` 在线下载 → 离线 LocalEntryNotFoundError。`/models/Kokoro-82M` 实际含 config.json + kokoro-v1_0.pth + voices/zm_yunxi.pt 三件齐全。
+
+### 已完成内容（rabbitbot/audio/run_tts_espnet.py）
+
+- `default_models_dir` 优先取 `RABBITBOT_MODELS_DIR`（容器内=/models），回退相对源码 models 目录。
+- 默认 Kokoro 目录改为 `<models>/Kokoro-82M`（去掉多余 kokoro/ 子层），仍可由 `KOKORO_MODEL_DIR` 覆盖。
+- 回退（本地不全）分支新增诊断日志：打印 dir 与 config/model/voice 各自是否存在，便于排查。
+
+### 已验证的事实
+
+- py_compile 通过；容器内默认路径解析为 `/models/Kokoro-82M`，config.json exists=True。
+- 重建 rabbitbot-audio 后：TTS 日志出现“Initilization completed! / Application startup complete / Uvicorn running on 28185”，无 LocalEntryNotFoundError/回退日志（0 条）；28185 在线；text_to_speech 合成自检返回成功(out_text=1)；容器 healthy。
+
+### 注意事项 / 未完成
+
+- 该修复让 TTS 完全离线用本地 Kokoro 模型，不再尝试联网。
+- 若将来换模型路径，可用 KOKORO_MODEL_DIR 显式指定。
+
+### 新增或调整日志点
+
+- Kokoro 回退分支新增“未找到完整本地模型(config/model/voice)，回退在线下载(离线会失败)”日志，含各文件存在性，便于定位本地模型缺失/路径错误。

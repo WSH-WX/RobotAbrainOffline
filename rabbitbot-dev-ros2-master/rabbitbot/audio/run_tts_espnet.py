@@ -145,12 +145,15 @@ class EspnetTTS(object):
                                     }
                 self.orig_sr = self.text2speech[self.lang].fs
             elif self.tts_engine_type == "kokoro":
-                default_models_dir = os.path.abspath(
-                    os.path.join(os.path.dirname(__file__), "..", "..", "..", "models")
+                # 模型根目录优先用 RABBITBOT_MODELS_DIR(容器内挂载为 /models)，回退到相对源码的 models 目录。
+                default_models_dir = os.environ.get(
+                    "RABBITBOT_MODELS_DIR",
+                    os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "models")),
                 )
+                # 默认本地 Kokoro 模型目录：<models>/Kokoro-82M（与实际部署一致，不含多余 kokoro/ 子层）；可由 KOKORO_MODEL_DIR 覆盖。
                 kokoro_model_dir = os.environ.get(
                     "KOKORO_MODEL_DIR",
-                    os.path.join(default_models_dir, "kokoro", "Kokoro-82M"),
+                    os.path.join(default_models_dir, "Kokoro-82M"),
                 )
                 kokoro_config_path = os.path.join(kokoro_model_dir, "config.json")
                 kokoro_model_path = os.path.join(kokoro_model_dir, "kokoro-v1_0.pth")
@@ -164,6 +167,12 @@ class EspnetTTS(object):
                     self.pipeline = KPipeline(lang_code='z', repo_id="hexgrad/Kokoro-82M", model=kokoro_model)
                     self.voice = kokoro_voice_path
                 else:
+                    # 本地模型不全时回退在线下载，离线环境会失败；打印缺失情况便于排查。
+                    print(
+                        "KokoroTTS: 未找到完整本地模型(config/model/voice)，回退在线下载(离线会失败)："
+                        f"dir={kokoro_model_dir}, config_exists={os.path.exists(kokoro_config_path)}, "
+                        f"model_exists={os.path.exists(kokoro_model_path)}, voice_exists={os.path.exists(kokoro_voice_path)}"
+                    )
                     self.pipeline = KPipeline(lang_code='z', device=self.device)
                     self.voice = "zm_yunxi"
                 self.orig_sr = 24000
