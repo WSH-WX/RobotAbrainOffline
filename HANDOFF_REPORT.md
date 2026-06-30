@@ -245,3 +245,31 @@ Aaron 要求执行修复建议，解决 DJI Mic Mini 有电平但 STT 不触发�
 ### 新增或调整日志点
 
 - `ensure_decoupled_services()` 打印 compose 文件路径、workflow 宿主容器名、停止旧 unified 的告警、就绪汇总，便于确认基础服务来源已切到解耦栈。
+
+## 本轮修改详情：真实机器人模式下 nav 与解耦 compose 协同
+
+### 背景和目标
+
+上一轮 compose 解耦只在无机器人模式打通（该模式 main 跳过 nav）。真实机器人模式下 main 会调 start_nav_bridge，而旧 nav 路径（host 或 portable compose.yaml 的 rabbitbot-nav 容器）会与解耦 compose 的 rabbitbot-navbridge 抢 28180。目标：让 compose 模式下 nav 唯一由解耦栈的 rabbitbot-navbridge 提供。
+
+### 已完成内容（仅改 scripts_1/start_nav_bridge_workflow_loop.sh）
+
+- compose 基础运行方式配置块追加：`NAV_BRIDGE_RUNTIME="compose"`、`RABBITBOT_NAV_BRIDGE_CONTAINER_NAME=rabbitbot-navbridge`、`RABBITBOT_NAVBRIDGE_SERVICE=rabbitbot-navbridge`，使 nav 视为 compose 运行、容器名/服务名对齐解耦栈。
+- start_nav_bridge 启动分支新增 `RABBITBOT_BASE_RUNTIME=compose` 分支：以前台 `docker compose -f docker-compose.decoupled.yaml up --force-recreate rabbitbot-navbridge` 作为进程组拉起 nav（传入 RABBITBOT_DDS_INTERFACE / RABBITBOT_NAV_MAP_PATH）。**复用既有 nav 生命周期**（nav_group_pid 即该前台 compose 进程，停止进程组=停止该容器；stop/restart/health/wait_nav_core_ready 全部既有逻辑无需改动），就绪判断由 wait_nav_core_ready 读取 rabbitbot-navbridge 容器日志。
+- 设计取舍：选“前台进程组”模型而非“detached + docker restart”，以最小改动复用 loop 已有的 nav 健康/重启/就绪等待机制。
+
+### 已验证的事实
+
+- `bash -n` 通过。
+- 真实机器人模式有界干跑（NO_ROBOT=0 + nav 就绪超时 10s，机器人离线）：loop 日志确认走 compose 分支——“28180 当前由已有 portable nav 容器占用；compose 启动会重建该容器并接管端口，继续”“启动导航桥接：runtime=compose”“导航桥接进程组已启动 pgid=…”“端口 28180 已就绪”“等待导航核心…container=rabbitbot-navbridge”“Container rabbitbot-navbridge Recreate”；容器 rabbitbot-navbridge 由 loop 重建并 Up，28180 在线。说明 nav 已唯一由解耦栈提供、无端口冲突、loop 正确对齐到该容器。
+- 干跑后已还原：NO_ROBOT=1、移除临时短超时、停 loop、恢复 6 容器全 up。
+
+### 注意事项 / 未完成
+
+- 机器人离线，**nav 核心 Pose/Ready 无法端到端验证**（无机器人时按预期超时）；wiring 已就绪，待真机上线再验证完整导航/返航。
+- 无机器人模式（默认）完全不受本改动影响：main 跳过 start_nav_bridge，新分支不会执行。
+- 回退：runtime/portable.env 的 RABBITBOT_BASE_RUNTIME 改回 unified。
+
+### 新增或调整日志点
+
+- 复用既有 nav 日志（启动导航桥接 runtime、进程组 pgid、等待导航核心 container=… 等）；新分支未新增高频日志，仅让既有日志的 container 字段指向 rabbitbot-navbridge，便于现场确认 nav 来源是解耦栈。

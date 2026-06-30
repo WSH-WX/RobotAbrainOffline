@@ -62,6 +62,11 @@ RABBITBOT_WORKFLOW_CONTAINER_NAME="${RABBITBOT_WORKFLOW_CONTAINER_NAME:-rabbitbo
 if [ "${RABBITBOT_BASE_RUNTIME}" = "compose" ]; then
     # 解耦模式：导览 workflow 跑在专用 rabbitbot-workflow 容器内，所有 docker exec 都指向它。
     CONTAINER_NAME="${RABBITBOT_WORKFLOW_CONTAINER_NAME}"
+    # nav 也归解耦 compose 管理：运行方式视为 compose，容器名/服务名对齐 rabbitbot-navbridge，
+    # 真实机器人模式下由解耦栈唯一提供 28180，避免与旧 host/portable nav 冲突。
+    NAV_BRIDGE_RUNTIME="compose"
+    RABBITBOT_NAV_BRIDGE_CONTAINER_NAME="${RABBITBOT_NAV_BRIDGE_CONTAINER_NAME:-rabbitbot-navbridge}"
+    RABBITBOT_NAVBRIDGE_SERVICE="${RABBITBOT_NAVBRIDGE_SERVICE:-rabbitbot-navbridge}"
 fi
 CONTAINER_RABBITBOT_DIR="${CONTAINER_RABBITBOT_DIR:-/workspace/projects/rabbitbot-dev-ros2-master}"
 CONTAINER_LOG_DIR="${CONTAINER_LOG_DIR:-${CONTAINER_RABBITBOT_DIR}/logs/unified_runtime}"
@@ -736,7 +741,11 @@ start_nav_bridge() {
     current_nav_start_epoch="$(date +%s)"
     log_info "启动导航桥接：runtime=${NAV_BRIDGE_RUNTIME}, script=${NAV_BRIDGE_SCRIPT}, interface=${NAV_INTERFACE}, map=${NAV_PCD_PATH}"
     log_info "导航桥接日志：${nav_log}"
-    if [ "${NAV_BRIDGE_RUNTIME}" = "compose" ]; then
+    if [ "${RABBITBOT_BASE_RUNTIME}" = "compose" ]; then
+        # 解耦栈：nav 由 docker-compose.decoupled.yaml 的 rabbitbot-navbridge 提供；前台 compose up 作为进程组，
+        # 复用既有 nav 生命周期（停止进程组=停止该容器），就绪由 wait_nav_core_ready 读取该容器日志判断。
+        setsid bash -lc 'RABBITBOT_DDS_INTERFACE="$1" RABBITBOT_NAV_MAP_PATH="$2" docker compose -f "$5" up --force-recreate "$3" 2>&1 | tee -a "$4"' bash "${NAV_INTERFACE}" "${NAV_PCD_PATH}" "${RABBITBOT_NAVBRIDGE_SERVICE:-rabbitbot-navbridge}" "${nav_log}" "${RABBITBOT_DECOUPLED_COMPOSE_FILE}" &
+    elif [ "${NAV_BRIDGE_RUNTIME}" = "compose" ]; then
         setsid bash -lc '"$1" "$2" "$3" 2>&1 | tee -a "$4"' bash "${NAV_BRIDGE_SCRIPT}" "${NAV_INTERFACE}" "${NAV_PCD_PATH}" "${nav_log}" &
     else
         setsid bash -lc 'source "$1" && source "$2" && "$3" "$4" "$5" 2>&1 | tee -a "$6"' bash "${ROS_SETUP}" "${WS_SETUP}" "${NAV_BRIDGE_SCRIPT}" "${NAV_INTERFACE}" "${NAV_PCD_PATH}" "${nav_log}" &
