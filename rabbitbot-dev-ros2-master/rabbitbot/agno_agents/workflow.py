@@ -1348,19 +1348,49 @@ async def guide_opening_speech(ctx: Any):
     leader_calling = _docx_guide_leader_calling()
     raw_name_text = leader_calling
 
-    def speak_handshake_opening():
-        if say(_docx_opening_text("handshake_greeting", {"leader_calling": leader_calling})):
-            return True
-        return say(_docx_opening_text("handshake_welcome", {"leader_calling": leader_calling}))
+    async def _answer_opening_interrupt():
+        # 开场白被打断：取出打断提问，复用 chat 回答后继续(resume)剩余开场白。
+        global pending_user_text
+        question = (pending_user_text or "").strip()
+        pending_user_text = ""
+        if not question:
+            return
+        print(f"开场白被打断，先回答用户提问后继续开场白: {question}")
+        try:
+            await chat_execute(question, ChatSessionInfo.sess_idx)
+        except Exception as exc:
+            print(f"开场打断提问回答失败，继续开场白: error_type={type(exc).__name__}, error={exc}")
 
-    if await _do_arm_during_speech(ctx.robot, "shake_hand", speak_handshake_opening):
-        return {"leader_calling": leader_calling, "raw_name_text": raw_name_text, "raw_visit_text": pending_user_text, "first_visit": True, "start_entity_name": None}
-    if await _do_arm_during_speech(ctx.robot, "face_wave", lambda: say(_docx_opening_text("group_welcome", {"leader_calling": leader_calling}))):
-        return {"leader_calling": leader_calling, "raw_name_text": raw_name_text, "raw_visit_text": pending_user_text, "first_visit": True, "start_entity_name": None}
+    async def _play_opening_line(speech_thunk, action=None):
+        # 播放一句开场白；被打断则回答提问后重播本句(动作不重复)，确保完整播完再继续下一句。
+        current_action = action
+        while True:
+            if current_action:
+                interrupted = await _do_arm_during_speech(ctx.robot, current_action, speech_thunk)
+            else:
+                interrupted = speech_thunk()
+            if not interrupted:
+                return
+            await _answer_opening_interrupt()
+            current_action = None
+
+    # 开场白逐句播报：握手问候、欢迎、群体欢迎、跟随介绍；任一句被打断都回答后继续，不再吞词。
+    await _play_opening_line(
+        lambda: say(_docx_opening_text("handshake_greeting", {"leader_calling": leader_calling})),
+        action="shake_hand",
+    )
+    await _play_opening_line(
+        lambda: say(_docx_opening_text("handshake_welcome", {"leader_calling": leader_calling})),
+    )
+    await _play_opening_line(
+        lambda: say(_docx_opening_text("group_welcome", {"leader_calling": leader_calling})),
+        action="face_wave",
+    )
     raw_visit_text = ""
     first_visit = True
-    if say(_docx_opening_text("follow_intro", {"leader_calling": leader_calling})):
-        return {"leader_calling": leader_calling, "raw_name_text": raw_name_text, "raw_visit_text": raw_visit_text, "first_visit": first_visit, "start_entity_name": None}
+    await _play_opening_line(
+        lambda: say(_docx_opening_text("follow_intro", {"leader_calling": leader_calling})),
+    )
 
     start_entity_name = "点位1"
     start_description = ""
