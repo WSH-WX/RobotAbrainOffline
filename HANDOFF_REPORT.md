@@ -273,3 +273,32 @@ Aaron 要求执行修复建议，解决 DJI Mic Mini 有电平但 STT 不触发�
 ### 新增或调整日志点
 
 - 复用既有 nav 日志（启动导航桥接 runtime、进程组 pgid、等待导航核心 container=… 等）；新分支未新增高频日志，仅让既有日志的 container 字段指向 rabbitbot-navbridge，便于现场确认 nav 来源是解耦栈。
+
+## 本轮修改详情：控制台前端适配解耦栈（容器名/文案随运行方式更新）
+
+### 背景和目标
+
+后端已解耦为多容器，但控制台仍引用旧 `rabbitbot-unified-runtime`：例如“关闭程序”后显示“已关闭导航主程序；已重启 Docker 容器 rabbitbot-unified-runtime”，且 nav 日志读取也指向旧 nav 容器名。需让前端随运行方式自动显示/操作正确的容器。
+
+### 已完成内容（仅改 rabbitbot/control_console/config.py）
+
+- `ConsoleConfig.from_env()` 新增按 `RABBITBOT_BASE_RUNTIME` 区分运行容器与 nav 容器默认名：
+  - compose（解耦栈）：`runtime_container_name` 默认 `rabbitbot-workflow`（可被 RABBITBOT_WORKFLOW_CONTAINER_NAME 覆盖）；`nav_container_name` 默认 `rabbitbot-navbridge`。
+  - unified（旧，默认）：沿用 `rabbitbot-unified-runtime` 与 `rabbitbot-portable-rabbitbot-nav-1`。
+- 控制台服务通过 systemd `EnvironmentFile=runtime/portable.env` 读到 `RABBITBOT_BASE_RUNTIME=compose`，故自动进入 compose 分支。
+- 由于“关闭程序”文案是 `f"已重启 Docker 容器 {runtime_container_name}"`、且 app.py 已把 `config.runtime_container_name`/`config.nav_container_name` 传入相关逻辑，改 config 即让文案与操作（重启 workflow 宿主容器、读 navbridge 日志）一并更新，无需改 commands.py / app.py。
+
+### 已验证的事实
+
+- 行为单测：compose 模式解析为 runtime=rabbitbot-workflow、nav=rabbitbot-navbridge；unified 模式仍为旧名。
+- 控制台测试 `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest tests/control_console/` 全过（66 passed）。
+- 解耦模式下“关闭程序”将：停 loop 服务 + 重启 `rabbitbot-workflow` 容器（清掉 workflow 进程，base 服务不动），文案显示“…；已重启 Docker 容器 rabbitbot-workflow”。
+
+### 注意事项 / 未完成
+
+- 改动需重启 `rabbitbot-control-console.service` 生效（需 sudo 密码，非交互无法执行，须 Aaron 手动重启）；旧实例在重启前仍显示旧容器名。
+- 服务状态面板按端口探测（host 网络端口不变），无需改动。
+
+### 新增或调整日志点
+
+- 本轮为前端配置解析逻辑调整，无执行流程变化，未新增/调整日志点。
