@@ -51,7 +51,7 @@ def _html() -> str:
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>RabbitBot 控制台</title>
   <style>
-    :root{font-family:Arial,'Noto Sans SC',sans-serif;color:#172033;background:#eef2f6}body{margin:0}.wrap{max-width:1180px;margin:0 auto;padding:20px}.top{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:16px}.panel{background:white;border:1px solid #d7dde8;border-radius:8px;padding:16px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.service-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.service-card{background:#f7f9fc;border-radius:6px;padding:12px;display:flex;justify-content:space-between;gap:10px;align-items:center}.service-name{font-size:14px;font-weight:700}.service-meta{font-size:12px;color:#667085;margin-top:4px}.badge{border-radius:999px;padding:5px 9px;font-size:12px;font-weight:700;white-space:nowrap}.badge-ok{background:#dcfce7;color:#166534}.badge-bad{background:#fee2e2;color:#991b1b}.badge-optional{background:#e2e8f0;color:#334155}.card{background:#f7f9fc;border-radius:6px;padding:12px}.label{font-size:12px;color:#667085;text-transform:uppercase}.value{font-size:18px;font-weight:700;margin-top:4px}.actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px}.field{margin-top:16px}.text-input,.dialogue-editor{width:100%;box-sizing:border-box;padding:10px 11px;border:1px solid #cbd5e1;border-radius:6px;font-size:14px;color:#172033;background:#fff}.dialogue-editor{font-family:ui-monospace,Menlo,monospace;min-height:420px;line-height:1.45;resize:vertical}button{border:0;border-radius:6px;color:white;padding:11px 16px;font-size:15px;cursor:pointer}button:disabled{opacity:.45;cursor:not-allowed}.go{background:#137333}.task{background:#0f766e}.placeholder{background:#64748b}.back{background:#b3261e}.refresh{background:#334155}.restart{background:#7c2d12}.log{font-family:ui-monospace,Menlo,monospace;background:#111827;color:#d1d5db;border-radius:6px;padding:12px;line-height:1.5;font-size:12px;min-height:220px;overflow:auto}.error{color:#b3261e}.ok{color:#137333}.pose-line{white-space:pre-line}@media(max-width:820px){.grid,.cards,.service-grid{grid-template-columns:1fr}.top{align-items:flex-start;flex-direction:column}}</style>
+    :root{font-family:Arial,'Noto Sans SC',sans-serif;color:#172033;background:#eef2f6}body{margin:0}.wrap{max-width:1180px;margin:0 auto;padding:20px}.top{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:16px}.panel{background:white;border:1px solid #d7dde8;border-radius:8px;padding:16px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.service-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.service-card{background:#f7f9fc;border-radius:6px;padding:12px;display:flex;justify-content:space-between;gap:10px;align-items:center}.service-name{font-size:14px;font-weight:700}.service-meta{font-size:12px;color:#667085;margin-top:4px}.badge{border-radius:999px;padding:5px 9px;font-size:12px;font-weight:700;white-space:nowrap}.badge-ok{background:#dcfce7;color:#166534}.badge-bad{background:#fee2e2;color:#991b1b}.badge-optional{background:#e2e8f0;color:#334155}.badge-starting{background:#fde68a;color:#92400e}.card{background:#f7f9fc;border-radius:6px;padding:12px}.label{font-size:12px;color:#667085;text-transform:uppercase}.value{font-size:18px;font-weight:700;margin-top:4px}.actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px}.field{margin-top:16px}.text-input,.dialogue-editor{width:100%;box-sizing:border-box;padding:10px 11px;border:1px solid #cbd5e1;border-radius:6px;font-size:14px;color:#172033;background:#fff}.dialogue-editor{font-family:ui-monospace,Menlo,monospace;min-height:420px;line-height:1.45;resize:vertical}button{border:0;border-radius:6px;color:white;padding:11px 16px;font-size:15px;cursor:pointer}button:disabled{opacity:.45;cursor:not-allowed}.go{background:#137333}.task{background:#0f766e}.placeholder{background:#64748b}.back{background:#b3261e}.refresh{background:#334155}.restart{background:#7c2d12}.log{font-family:ui-monospace,Menlo,monospace;background:#111827;color:#d1d5db;border-radius:6px;padding:12px;line-height:1.5;font-size:12px;min-height:220px;overflow:auto}.error{color:#b3261e}.ok{color:#137333}.pose-line{white-space:pre-line}@media(max-width:820px){.grid,.cards,.service-grid{grid-template-columns:1fr}.top{align-items:flex-start;flex-direction:column}}</style>
 </head>
 <body>
   <div class="wrap">
@@ -174,8 +174,13 @@ function renderServiceStatus(services){
     left.appendChild(name);
     left.appendChild(meta);
     var badge=document.createElement('div');
-    badge.className='badge '+(service.online?'badge-ok':(service.required?'badge-bad':'badge-optional'));
-    badge.textContent=service.online?'在线':(service.required?'离线':'可选离线');
+    var badgeClass,badgeText;
+    if(service.online){badgeClass='badge-ok';badgeText='在线';}
+    else if(service.state==='starting'){badgeClass='badge-starting';badgeText='启动中';}
+    else if(service.required){badgeClass='badge-bad';badgeText='离线';}
+    else{badgeClass='badge-optional';badgeText='可选离线';}
+    badge.className='badge '+badgeClass;
+    badge.textContent=badgeText;
     item.appendChild(left);
     item.appendChild(badge);
     grid.appendChild(item);
@@ -220,7 +225,7 @@ function waitForServicesReady(button,startedAt){
       setText('message','正在等待所有服务加载完成...');
     }
     if(Date.now()-startedAt>90000){
-      setText('message','服务仍未全部就绪，请查看状态或打开日志排查');
+      setText('message','');
       button.disabled=false;
       return;
     }

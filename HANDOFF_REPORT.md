@@ -27,7 +27,7 @@ RabbitBot 自主运行包，部署在 ShuHao-orin。Git 根 `/mnt/disk1/gt/air_r
 
 ## 当前状态
 
-实测（截至生成时间）：6 容器全部运行（neo4j/vlm/audio/memory healthy，navbridge/workflow 无 healthcheck 但 Up），7 端口（7687/8000/8005/28182/28184/28185/28180）全 up，`rabbitbot-loop.service` active（QA 待命），`RABBITBOT_BASE_RUNTIME=compose`、`RABBITBOT_NAV_WORKFLOW_NO_ROBOT=1`。
+实测（截至生成时间）：6 容器全部运行（neo4j/vlm/audio/memory healthy，navbridge/workflow 无 healthcheck 但 Up），7 端口（7687/8000/8005/28182/28184/28185/28180）全 up，`rabbitbot-loop.service` 按需启停（当前 inactive，compose 基础服务持续在线），`RABBITBOT_BASE_RUNTIME=compose`、`RABBITBOT_NAV_WORKFLOW_NO_ROBOT=1`。
 
 已完成（本会话）：
 - 解耦多容器 + loop 对接解耦栈 + 真机模式 nav 协同（见上）。
@@ -36,10 +36,11 @@ RabbitBot 自主运行包，部署在 ShuHao-orin。Git 根 `/mnt/disk1/gt/air_r
 - `get_inst_chat` 换成精简现场对话提示词；无机器人模式手臂动作在 `provider.py::_post_arm_action` 入口短路跳过（不再等 28180 超时）。
 - 修复：①“开始程序”按钮触发的 workflow 残留死循环（`kill_stale_workflow` 按进程特征清理残留再启动）；②curl 注入文本被“低音量打断”忽略（STT 记录“上次消费是否注入”，注入时 `get_last_rms` 返回高哨兵 1.0）；③TTS(Kokoro) 本地模型路径错误致离线下载崩溃（默认改用 `RABBITBOT_MODELS_DIR`=`/models` 下的 `Kokoro-82M`）。
 - 导览开场白被打断后**继续(resume)剩余开场白**：被打断→回答提问→重播本句→继续后续开场白，不再吞词（开场回答回调由调用点注入，因 guide_opening_speech 为模块级、取不到嵌套的 chat_execute）。
+- 控制台服务状态面板：新增“启动中”黄色态（主循环启动 180s 窗口内、端口未就绪的服务显示“启动中”，窗口外才“离线”；后端 `ServiceStatus` 增 `state` 字段，按主循环进程 `/proc starttime` 判定启动窗口 `SERVICE_STARTUP_GRACE_SECONDS=180`）；并去除“开始程序”等待超时弹出的“服务仍未全部就绪”聚合提示（面板已逐服务展示状态）。新增 3 个状态判定测试，控制台测试 69 passed。
 - 会前已完成：DJI Mic Mini 右声道 STT 输入修复（双声道按 RMS 选道、`STT_INPUT_GAIN=8.0`、新增 `get_last_rms` 诊断接口）。
 
 未完成 / 待办：
-- **控制台 `config.py` 改动（容器名/日志路径）需重启 `rabbitbot-control-console.service`（sudo）才生效，尚未重启。**
+- **控制台改动（`config.py` 容器名/日志路径、`status.py`/`app.py` 服务状态“启动中”态与去除聚合提示）需重启 `rabbitbot-control-console.service`（sudo）才生效，尚未重启。**
 - 机器人离线：真机导航/返航、nav 核心 Pose/Ready 未端到端验证。
 - 导览数据为空：`combined_data.json` 缺失 + Neo4j 展点 0 节点 → 导览中导航/检测类提问会命中“异常结点”。
 - 已知未修 bug：`workflow.py::navi_execute` 的 `random.sample(ctx.entity_lst, 1)` 在展点为空时崩溃（“Sample larger than population”），挡住导览导航/检测路径；与解耦无关，需修 + 灌入展点数据。
@@ -81,6 +82,7 @@ RabbitBot 自主运行包，部署在 ShuHao-orin。Git 根 `/mnt/disk1/gt/air_r
 
 ## 最近历史摘要（提交）
 
+- 控制台服务状态新增“启动中”黄色态、去除“服务仍未全部就绪”提示（含 3 个状态测试，本轮提交）
 - `3a9e05d` 开场打断回答失败(NameError)修复：回答回调由调用点注入
 - `33c6bb7` 开场白被打断后继续剩余开场白(resume)，不再吞词
 - `e396078` TTS(Kokoro) 本地模型路径修复（离线本地加载）

@@ -224,3 +224,37 @@ def test_parse_latest_pose_does_not_keep_old_success_forever(tmp_path):
     assert pose.source == "pose_log"
     assert pose.x == 4.0
     assert pose.ow == 0.7
+
+def test_service_status_marks_starting_within_startup_window(monkeypatch):
+    # 主循环刚启动(处于启动窗口)且端口未就绪 → 状态应为“启动中”。
+    from rabbitbot.control_console import status as status_mod
+
+    monkeypatch.setattr(status_mod, "get_main_loop_start_epoch", lambda: time.time())
+    monkeypatch.setattr(status_mod, "is_port_open", lambda host, port, timeout=0.12: False)
+    statuses = status_mod.get_runtime_service_statuses()
+    assert statuses
+    assert all(item.state == "starting" for item in statuses)
+    assert all("启动中" in (item.message or "") for item in statuses)
+
+
+def test_service_status_marks_offline_outside_startup_window(monkeypatch):
+    # 主循环未运行(取不到启动时间)且端口未就绪 → 状态应为“离线”。
+    from rabbitbot.control_console import status as status_mod
+
+    monkeypatch.setattr(status_mod, "get_main_loop_start_epoch", lambda: None)
+    monkeypatch.setattr(status_mod, "is_port_open", lambda host, port, timeout=0.12: False)
+    statuses = status_mod.get_runtime_service_statuses()
+    assert statuses
+    assert all(item.state == "offline" for item in statuses)
+    assert all("离线" in (item.message or "") for item in statuses)
+
+
+def test_service_status_marks_online_when_port_open(monkeypatch):
+    # 端口已就绪 → 状态应为“在线”，与启动窗口无关。
+    from rabbitbot.control_console import status as status_mod
+
+    monkeypatch.setattr(status_mod, "get_main_loop_start_epoch", lambda: time.time())
+    monkeypatch.setattr(status_mod, "is_port_open", lambda host, port, timeout=0.12: True)
+    statuses = status_mod.get_runtime_service_statuses()
+    assert statuses
+    assert all(item.state == "online" for item in statuses)

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from pathlib import Path
 import logging
+import os
 import re
 import socket
 import subprocess
@@ -68,6 +69,7 @@ class ServiceStatus:
     online: bool
     required: bool = True
     message: str | None = None
+    state: str = "offline"
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -372,6 +374,68 @@ def get_systemd_journal_lines(unit: str, limit: int = 120) -> list[str]:
     return lines[-safe_limit:]
 
 
+SERVICE_STARTUP_GRACE_SECONDS = 180.0
+
+
+def _boot_epoch() -> float | None:
+    # 读取 /proc/stat 的 btime(系统启动的绝对时间戳，单位秒)，用于换算进程启动时间。
+    try:
+        with open("/proc/stat", "r", encoding="utf-8", errors="ignore") as handle:
+            for line in handle:
+                if line.startswith("btime "):
+                    return float(line.split()[1])
+    except (OSError, ValueError) as exc:
+        logger.debug("读取 /proc/stat btime 失败：error_type=%s, error=%s", type(exc).__name__, exc)
+    return None
+
+
+def _proc_start_epoch(pid: int) -> float | None:
+    # 由 /proc/<pid>/stat 第22字段(starttime, 时钟tick)换算出进程启动的绝对时间戳。
+    try:
+        with open(f"/proc/{pid}/stat", "r", encoding="utf-8", errors="ignore") as handle:
+            stat_line = handle.read()
+    except OSError as exc:
+        logger.debug("读取 /proc/%s/stat 失败：error_type=%s, error=%s", pid, type(exc).__name__, exc)
+        return None
+    # comm 字段可能含空格或括号，从最后一个 ')' 之后切分，索引0对应第3字段(state)，starttime 为第22字段。
+    rparen = stat_line.rfind(")")
+    if rparen == -1:
+        return None
+    fields = stat_line[rparen + 2:].split()
+    if len(fields) <= 19:
+        return None
+    try:
+        starttime_ticks = int(fields[19])
+        clk_tck = os.sysconf("SC_CLK_TCK")
+    except (ValueError, OSError, AttributeError) as exc:
+        logger.debug("解析进程 starttime 失败：pid=%s, error_type=%s, error=%s", pid, type(exc).__name__, exc)
+        return None
+    boot_epoch = _boot_epoch()
+    if boot_epoch is None or clk_tck <= 0:
+        return None
+    return boot_epoch + starttime_ticks / clk_tck
+
+
+def get_main_loop_start_epoch() -> float | None:
+    # 扫描 /proc 找到主循环进程并返回其启动时间戳(秒)，用于判断服务是否处于启动窗口内。
+    proc_root = Path("/proc")
+    try:
+        proc_dirs: Iterable[Path] = proc_root.iterdir()
+    except OSError:
+        return None
+    needles = ("start_nav_bridge_workflow_loop.sh", "start_loop_entry.sh")
+    for proc_dir in proc_dirs:
+        if not proc_dir.name.isdigit():
+            continue
+        try:
+            cmdline = (proc_dir / "cmdline").read_text(encoding="utf-8", errors="ignore").replace("\x00", " ")
+        except OSError:
+            continue
+        if any(needle in cmdline for needle in needles):
+            return _proc_start_epoch(int(proc_dir.name))
+    return None
+
+
 def get_runtime_service_statuses() -> list[ServiceStatus]:
     service_specs = [
         ("neo4j", "Neo4j", 7687, True),
@@ -381,9 +445,21 @@ def get_runtime_service_statuses() -> list[ServiceStatus]:
         ("vlm", "VLM", 8000, True),
         ("embedding", "Embedding", 8005, True),
     ]
+    # 主循环刚启动后的一段时间内，未就绪的服务视为“启动中”而非“离线”，便于前端用黄色提示。
+    loop_start_epoch = get_main_loop_start_epoch()
+    now = time.time()
+    startup_window_active = (
+        loop_start_epoch is not None and 0 <= (now - loop_start_epoch) < SERVICE_STARTUP_GRACE_SECONDS
+    )
     statuses: list[ServiceStatus] = []
     for key, label, port, required in service_specs:
         online = is_port_open("127.0.0.1", port, timeout=0.12)
+        if online:
+            state, state_text = "online", "在线"
+        elif startup_window_active:
+            state, state_text = "starting", "启动中"
+        else:
+            state, state_text = "offline", "离线"
         statuses.append(
             ServiceStatus(
                 key=key,
@@ -392,11 +468,20 @@ def get_runtime_service_statuses() -> list[ServiceStatus]:
                 port=port,
                 online=online,
                 required=required,
-                message=f"{port} {'在线' if online else '离线'}",
+                state=state,
+                message=f"{port} {state_text}",
             )
         )
     online_count = sum(1 for item in statuses if item.online)
-    logger.debug("控制台服务状态探测完成：online=%s, total=%s", online_count, len(statuses))
+    starting_count = sum(1 for item in statuses if item.state == "starting")
+    logger.debug(
+        "控制台服务状态探测完成：online=%s, starting=%s, total=%s, startup_window=%s, loop_start_epoch=%s",
+        online_count,
+        starting_count,
+        len(statuses),
+        startup_window_active,
+        loop_start_epoch,
+    )
     return statuses
 
 
