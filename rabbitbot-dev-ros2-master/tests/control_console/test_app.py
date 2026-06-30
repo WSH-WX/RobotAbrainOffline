@@ -392,7 +392,7 @@ def test_page_shows_console_without_login_form(tmp_path):
     assert '定位状态' in response.text
     assert '当前位姿' in response.text
     assert '开始程序' in response.text
-    assert '一键重启' in response.text
+    assert '一键重启主循环' in response.text
     assert '关闭程序' in response.text
     assert '/api/start' in response.text
     assert 'startProgram' in response.text
@@ -423,3 +423,23 @@ def test_page_shows_console_without_login_form(tmp_path):
     assert 'logsVisible=false' in response.text
     assert '<pre id="logs" class="log" hidden>' in response.text
     assert 'setInterval(refreshLogs,500)' in response.text
+
+def test_restart_preserves_no_robot_mode(tmp_path):
+    # 一键重启主循环：若重启前为无机器人模式，应沿用无机器人模式而非覆盖成真机。
+    config = make_config(tmp_path)
+    client = TestClient(create_app(config))
+    config.map_env_file.parent.mkdir(parents=True, exist_ok=True)
+    config.map_env_file.write_text(
+        'RABBITBOT_NAV_WORKFLOW_NO_ROBOT="1"\nRABBITBOT_WORKFLOW_NON_INTEGRATION="1"\n',
+        encoding="utf-8",
+    )
+
+    response = client.post("/api/restart", json={"map_path": "/home/unitree/test10.pcd"})
+
+    assert response.status_code == 200
+    assert response.json()["service"] == "rabbitbot-loop.service"
+    content = config.map_env_file.read_text(encoding="utf-8")
+    assert 'RABBITBOT_NAV_WORKFLOW_NO_ROBOT="1"' in content
+    assert 'RABBITBOT_WORKFLOW_NON_INTEGRATION="1"' in content
+    record = config.project_root / "systemctl_args.txt"
+    assert record.read_text(encoding="utf-8").splitlines() == ["restart", "rabbitbot-loop.service"]

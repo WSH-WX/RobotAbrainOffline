@@ -77,7 +77,7 @@ def _html() -> str:
             <button class="back" onclick="sendCommand('back')">返航</button>
             <button class="refresh" onclick="refresh()">刷新状态</button>
             <button id="startBtn" class="go" onclick="startProgram(false)">开始程序</button>
-            <button id="restartBtn" class="restart" onclick="restartProgram()">一键重启</button>
+            <button id="restartBtn" class="restart" onclick="restartProgram()">一键重启主循环</button>
             <button id="stopBtn" class="back" onclick="stopProgram()">关闭程序</button>
             <button id="startNoRobotBtn" class="task" onclick="startProgram(true)">开始程序(无机器人模式)</button>
             <button id="arriveBtn" class="task" onclick="sendCommand('arrive')">到达下一个点位(无机器人模式)</button>
@@ -448,13 +448,16 @@ def create_app(config: ConsoleConfig | None = None) -> FastAPI:
     def restart(payload: RestartRequest) -> dict:
         try:
             clear_current_runtime_log(config.current_runtime_log, "restart")
+            # 沿用重启前的运行模式：无机器人模式则仍以无机器人模式重启主循环，避免一键重启把模式覆盖成真机。
+            current_no_robot_mode = read_loop_no_robot_mode(config.map_env_file)
+            logger.info("一键重启主循环：沿用当前运行模式 no_robot_mode=%s", current_no_robot_mode)
             return restart_loop_service(
                 config.loop_service_name,
                 systemctl_path=config.systemctl_path,
                 sudo_path=config.sudo_path,
                 map_path=payload.map_path,
                 map_env_file=config.map_env_file,
-                no_robot_mode=False,
+                no_robot_mode=current_no_robot_mode,
             )
         except CommandError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
