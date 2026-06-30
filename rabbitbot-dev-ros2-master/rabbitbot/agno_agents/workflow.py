@@ -1281,7 +1281,7 @@ def _finish_docx_script_elapsed_timer(ctx, reason="script_finished"):
     )
 
 
-async def guide_opening_speech(ctx: Any):
+async def guide_opening_speech(ctx: Any, answer_interrupt=None):
     """Run the speech-only opening guide flow before the main workflow."""
 
     def set_opening_pending_text(text):
@@ -1355,9 +1355,12 @@ async def guide_opening_speech(ctx: Any):
         pending_user_text = ""
         if not question:
             return
+        if answer_interrupt is None:
+            print(f"开场白被打断但未配置回答回调，跳过回答继续开场白: {question}")
+            return
         print(f"开场白被打断，先回答用户提问后继续开场白: {question}")
         try:
-            await chat_execute(question, ChatSessionInfo.sess_idx)
+            await answer_interrupt(question)
         except Exception as exc:
             print(f"开场打断提问回答失败，继续开场白: error_type={type(exc).__name__}, error={exc}")
 
@@ -1762,7 +1765,7 @@ def create_main_workflow(ctx: Any) -> Workflow:
         opening_enabled = os.getenv("RABBITBOT_ENABLE_GUIDE_OPENING", "1")
         _workflow_log(f"语音口令启动导览: trigger_len={trigger_len}, opening_enabled={opening_enabled}")
         if opening_enabled == "1":
-            await guide_opening_speech(ctx)
+            await guide_opening_speech(ctx, answer_interrupt=lambda q: chat_execute(q, ChatSessionInfo.sess_idx))
         else:
             tts_sound(ctx.tts_agent, f"{before_text}好的，开始导览。", "zh")
             tts_wait(ctx.tts_agent)
