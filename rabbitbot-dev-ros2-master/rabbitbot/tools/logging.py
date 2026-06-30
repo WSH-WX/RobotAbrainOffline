@@ -73,4 +73,4 @@ class FileLogger:
 
 
 # 懒人用法：直接导出单例 logger
-logger = FileLogger(log_dir="logs").get_logger()
+logger = FileLogger(log_dir=os.environ.get("RABBITBOT_PY_LOG_DIR", os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "logs")))).get_logger()

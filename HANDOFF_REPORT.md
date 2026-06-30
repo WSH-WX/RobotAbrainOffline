@@ -302,3 +302,35 @@ Aaron 要求执行修复建议，解决 DJI Mic Mini 有电平但 STT 不触发�
 ### 新增或调整日志点
 
 - 本轮为前端配置解析逻辑调整，无执行流程变化，未新增/调整日志点。
+
+## 本轮修改详情：日志清理与目录迁移到 air 根
+
+### 背景和目标
+
+日志散乱且分散在 `<project>/logs` 下多种命名。Aaron 要求：删除所有旧日志；把日志目录统一放到 air 根 `/mnt/disk1/gt/air_robot_gt_projects/logs`（容器内 `/workspace/projects/logs`，与现有挂载共享同一物理目录）。
+
+### 已完成内容（6 个文件，仅改“日志根”少数定义点，其余路径派生）
+
+- `scripts_1/start_loop_entry.sh`：current_runtime.log 落 air 根。
+- `scripts_1/start_nav_bridge_workflow_loop.sh`：HOST_LOG_DIR→`${PROJECTS_DIR}/logs`(air 根)；容器侧 CONTAINER_LOG_DIR / CONTAINER_WORKFLOW_RUN_DIR→`/workspace/projects/logs/...`（用 `${CONTAINER_RABBITBOT_DIR%/*}` 取上级）。
+- `scripts_1/unified_runtime/start_unified_container.sh`：容器内基础服务 LOG_DIR→`${PROJECT_DIR%/*}/logs/unified_runtime`。
+- `rabbitbot/control_console/config.py`：控制台 nav_log_dir/workflow_log_dir/workflow_control_dir/current_runtime_log 由 `project_root`→`project_root.parent`(air 根)。
+- `docker/portable/docker-compose.decoupled.yaml`：三处 RABBITBOT_LOG_DIR + navbridge 的 nav_workflow_control 挂载都改到 air 根。
+- `rabbitbot/tools/logging.py`：Python 文件日志默认目录从相对 `logs`→air 根 `logs`（`os.path.normpath(__file__/../../../logs)`），可由 `RABBITBOT_PY_LOG_DIR` 覆盖。
+
+### 已验证的事实
+
+- bash/py 语法、compose config 均通过；控制台配置解析与 Python 日志默认目录均落 air 根。
+- 重建解耦容器应用新 RABBITBOT_LOG_DIR；删除旧 `<project>/logs`（含 root 属主的 vlm_qa_workflow 用容器内 root 删除）；把 air 根/logs 属主修为 nvidia(1000:1000)，解决“容器 root 先建目录致 loop(nvidia) 无法写”的属主冲突。
+- 启动 loop(compose+无机器人模式)实测：workflow 到 QA 待命，进程在 rabbitbot-workflow；运行期日志全部落新位置——current_runtime.log、unified_runtime/(基础服务)、nav_workflow_control/rabbitbot_workflow_*.log(工作流)、uvicorn_*.log 等(Python)；旧 `<project>/logs` 已不存在。
+
+### 注意事项 / 未完成
+
+- 属主顺序：正常 loop 启动时 prepare_runtime 先以 nvidia 建好日志目录再起容器，无冲突；若**手动 `docker compose up` 先于 loop**，docker 会以 root 创建 air 根/logs 子目录，需 `docker exec <core容器> chown -R 1000:1000 /workspace/projects/logs` 修正（本轮已处理）。
+- 控制台 config.py 改动需重启 `rabbitbot-control-console.service` 生效（sudo，须 Aaron 手动）。
+- 旧 unified 单容器路径(start_unified_integration_workflow.sh 等)未改（compose 模式不用）；core.Dockerfile 内 mkdir 的旧路径无害，不影响运行期。
+- loop 已停(idle)；6 个解耦容器保持运行。
+
+### 新增或调整日志点
+
+- 未新增业务日志；本轮是日志“落盘位置”的统一迁移，所有既有日志改落 air 根 `/logs`，便于集中查看与清理。

@@ -47,7 +47,7 @@ services:
       RABBITBOT_CONTAINER_ROLE: vlm
       RABBITBOT_DIR: /workspace/projects/rabbitbot-dev-ros2-master
       RABBITBOT_MODELS_DIR: /models
-      RABBITBOT_LOG_DIR: /workspace/projects/rabbitbot-dev-ros2-master/logs/unified_runtime
+      RABBITBOT_LOG_DIR: /workspace/projects/logs/unified_runtime
       RABBITBOT_UNIFIED_START_VLM: "1"
       RABBITBOT_UNIFIED_START_EMBEDDING: "1"
       WAIT_VLM_SECONDS: "600"
@@ -75,7 +75,7 @@ services:
       RABBITBOT_CONTAINER_ROLE: audio
       RABBITBOT_DIR: /workspace/projects/rabbitbot-dev-ros2-master
       RABBITBOT_MODELS_DIR: /models
-      RABBITBOT_LOG_DIR: /workspace/projects/rabbitbot-dev-ros2-master/logs/unified_runtime
+      RABBITBOT_LOG_DIR: /workspace/projects/logs/unified_runtime
       RABBITBOT_UNIFIED_START_STT: "1"
       RABBITBOT_TTS_ALLOW_BUILTIN: "1"
       RABBITBOT_TTS_BACKEND: ${RABBITBOT_TTS_BACKEND:-unitree}
@@ -111,7 +111,7 @@ services:
       RABBITBOT_CONTAINER_ROLE: memory
       RABBITBOT_DIR: /workspace/projects/rabbitbot-dev-ros2-master
       RABBITBOT_MODELS_DIR: /models
-      RABBITBOT_LOG_DIR: /workspace/projects/rabbitbot-dev-ros2-master/logs/unified_runtime
+      RABBITBOT_LOG_DIR: /workspace/projects/logs/unified_runtime
       NEO4J_URI: bolt://127.0.0.1:7687
       NEO4J_USER: neo4j
       NEO4J_PASSWORD: neo4j_pass
@@ -169,7 +169,7 @@ services:
       RABBITBOT_NAV_MAP_PATH: ${RABBITBOT_NAV_MAP_PATH:-/home/unitree/test9.pcd}
       RABBITBOT_PORTABLE_PROJECT_ROOT: /workspace/projects/rabbitbot-dev-ros2-master
     volumes:
-      - /mnt/disk1/gt/air_robot_gt_projects/rabbitbot-dev-ros2-master/logs/nav_workflow_control:/workspace/projects/rabbitbot-dev-ros2-master/logs/nav_workflow_control
+      - /mnt/disk1/gt/air_robot_gt_projects/logs/nav_workflow_control:/workspace/projects/logs/nav_workflow_control
       - /mnt/disk1/gt/air_robot_gt_projects/unitree_slam_example_new/example/run_logs:/workspace/projects/unitree_slam_example_new/example/run_logs
     restart: unless-stopped
 

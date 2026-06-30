@@ -4,7 +4,7 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 PORTABLE_ENV_FILE="${RABBITBOT_PORTABLE_ENV_FILE:-${PROJECT_DIR}/runtime/portable.env}"
-CURRENT_RUNTIME_LOG="${RABBITBOT_CURRENT_RUNTIME_LOG:-${PROJECT_DIR}/logs/current_runtime.log}"
+CURRENT_RUNTIME_LOG="${RABBITBOT_CURRENT_RUNTIME_LOG:-$(cd "${PROJECT_DIR}/.." && pwd)/logs/current_runtime.log}"
 
 mkdir -p "$(dirname "${CURRENT_RUNTIME_LOG}")"
 : > "${CURRENT_RUNTIME_LOG}"
