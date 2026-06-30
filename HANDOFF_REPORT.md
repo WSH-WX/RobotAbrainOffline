@@ -334,3 +334,36 @@ Aaron 要求执行修复建议，解决 DJI Mic Mini 有电平但 STT 不触发�
 ### 新增或调整日志点
 
 - 未新增业务日志；本轮是日志“落盘位置”的统一迁移，所有既有日志改落 air 根 `/logs`，便于集中查看与清理。
+
+## 本轮修改详情：修复“开始程序”按钮触发的 workflow 残留死循环
+
+### 背景和目标
+
+前端点击“开始程序(无机器人模式)”后，current_runtime.log 反复出现“检测到已有 workflow 正在运行，拒绝重复启动”“workflow 预启动命令发送失败，重新进入循环”，loop 卡在恢复死循环。
+
+### 根因
+
+按钮做的是 `systemctl restart rabbitbot-loop.service`。但上一轮 loop 是以 `docker exec -d`(detached/setsid) 在 rabbitbot-workflow 容器内启动 workflow 的，`systemctl stop loop` 杀不掉它，于是容器内残留 workflow 进程。新 loop 实例：
+- `workflow_running()` 用 `pgrep -f` 能检测到该残留 → `launch_workflow_detached()` 拒绝；
+- 但 `stop_current_workflow()` 只按本轮 `current_pid_file` 杀，新实例无此记录 → 不杀；
+- 形成“检测得到却杀不掉、反复拒绝”的死循环。
+
+### 已完成内容（scripts_1/start_nav_bridge_workflow_loop.sh）
+
+- 新增 `kill_stale_workflow()`：按进程特征（`pkill -f` 三个 workflow 入口模式）在 CONTAINER_NAME 容器内清理任何残留 workflow（TERM→2s→KILL），并轮询确认清理完成；不依赖本轮 pid 记录。
+- `launch_workflow_detached()`：检测到已有 workflow 时，不再直接拒绝，而是先 `kill_stale_workflow` 清理残留再启动；清理失败才拒绝。
+
+### 已验证的事实
+
+- `bash -n` 通过。
+- 重启 loop（即“开始程序”按钮动作）实测：日志出现“清理残留 workflow / 已清理”2 次，workflow 约 20s 到 QA 待命；“拒绝重复启动 / 预启动命令发送失败”计数为 0（死循环消失）；容器内 workflow 进程数稳定为 1（不再累积残留）。
+
+### 注意事项 / 未完成
+
+- 这是 loop 行为修复；按钮本身（commands.py 的 systemctl restart）逻辑正确，无需改前端。
+- 当前 loop 处于运行态（QA 待命，等“开始导览”）——因为 Aaron 点的是“开始程序”，保持运行符合意图。
+- 解耦/日志迁移相关改动仍需重启控制台服务（sudo）生效。
+
+### 新增或调整日志点
+
+- `kill_stale_workflow()` 打印“清理残留 workflow 进程”“已清理/清理失败”，便于现场确认残留被清理而非反复拒绝。

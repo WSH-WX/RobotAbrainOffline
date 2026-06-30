@@ -889,10 +889,44 @@ wait_command() {
         sleep "${COMMAND_POLL_SECONDS}"
     done
 }
+kill_stale_workflow() {
+    # 清理容器内任何残留的 workflow 进程（按进程特征 pkill，不依赖本轮 loop 的 pid 记录）。
+    # 用于：上一轮 loop 以 docker exec -d 启动、systemctl stop loop 未能杀掉的 detached workflow。
+    if ! workflow_running; then
+        return 0
+    fi
+    log_warn "清理残留 workflow 进程：container=${CONTAINER_NAME}"
+    docker exec "${CONTAINER_NAME}" bash -lc '
+        for pat in "[e]xamples/run_kuavo_agno.py" "[s]cripts/run_kuavo_agno_workflow.py" "[s]cripts/start_kuavo_agno_workflow.bash"; do
+            pkill -TERM -f "$pat" 2>/dev/null || true
+        done
+        sleep 2
+        for pat in "[e]xamples/run_kuavo_agno.py" "[s]cripts/run_kuavo_agno_workflow.py" "[s]cripts/start_kuavo_agno_workflow.bash"; do
+            pkill -KILL -f "$pat" 2>/dev/null || true
+        done
+    ' >/dev/null 2>&1 || true
+    local waited=0
+    while workflow_running && [ "${waited}" -lt 10 ]; do
+        sleep 1
+        waited=$((waited + 1))
+    done
+    if workflow_running; then
+        log_error "残留 workflow 进程清理失败，仍在运行：container=${CONTAINER_NAME}"
+        return 1
+    fi
+    log_info "残留 workflow 进程已清理：container=${CONTAINER_NAME}"
+    return 0
+}
+
 launch_workflow_detached() {
     if workflow_running; then
-        log_error "检测到已有 workflow 正在运行，拒绝重复启动。"
-        return 1
+        # 可能是上一轮 loop 以 docker exec -d 启动、systemctl stop 杀不掉的残留 workflow；
+        # 先按进程特征清理再启动，避免反复“拒绝重复启动”死循环。
+        log_warn "检测到已有 workflow 进程，先清理残留再预启动。"
+        if ! kill_stale_workflow; then
+            log_error "残留 workflow 进程清理失败，拒绝重复启动。"
+            return 1
+        fi
     fi
 
     current_run_id="$(date +%Y%m%d_%H%M%S)"
