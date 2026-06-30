@@ -40,6 +40,7 @@ RabbitBot 自主运行包，部署在 ShuHao-orin。Git 根 `/mnt/disk1/gt/air_r
 - 控制台“一键重启”按钮改名为“一键重启主循环”；`/api/restart` 不再硬编码真机模式，改为读取并沿用重启前的运行模式（无机器人模式则仍以无机器人模式重启 loop，避免一键重启把模式覆盖成真机），新增 `test_restart_preserves_no_robot_mode`，控制台测试 70 passed。
 - 控制台服务状态面板为每个服务加“重启”按钮：弹“是否确认重启…服务？”确认框，同容器服务(TTS/STT、VLM/Embedding)额外提示一并重启；新增 `POST /api/service/restart`(按服务解析容器并 `docker restart -t 20`，免 sudo)，`ServiceStatus` 增 `container` 字段与 `resolve_service_container` 映射(随 `RABBITBOT_BASE_RUNTIME` 切换)，刚重启的容器在宽限期内其服务显示“启动中”。新增 5 个测试，控制台测试 75 passed。
 - 修复服务重启按钮反馈延迟：端点改为先打“启动中”标记 + 后台异步 `docker restart` 并立即返回（不再被优雅停止 ~20s 阻塞 HTTP）；新增“强制启动中”窗口 `SERVICE_RESTART_FORCE_STARTING_SECONDS=22`（重启发起后即使旧端口仍开也优先显示“启动中”，覆盖 `docker stop` 时长）；前端点击确认后乐观地立即把同容器卡片标“启动中”。新增 force-starting 测试，控制台测试 76 passed。
+- 进一步修复“重启后短暂闪回在线”：实测确认后端 `/api/status` 重启后 0~35s 全程返回“启动中”（后端无问题），根因是前端每 2s 轮询会重建卡片，而“点击前已在途、携带在线数据的轮询响应”在乐观标黄后才返回、重绘时盖回绿色；前端新增 `pendingRestartUntil`，点击后 22s 内该容器强制显示“启动中”、不被任何轮询响应覆盖（与后端 force 窗口对齐）。提醒：浏览器需硬刷新页面才能加载最新前端 JS。
 - 会前已完成：DJI Mic Mini 右声道 STT 输入修复（双声道按 RMS 选道、`STT_INPUT_GAIN=8.0`、新增 `get_last_rms` 诊断接口）。
 
 未完成 / 待办：
@@ -85,7 +86,8 @@ RabbitBot 自主运行包，部署在 ShuHao-orin。Git 根 `/mnt/disk1/gt/air_r
 
 ## 最近历史摘要（提交）
 
-- 修复服务重启按钮反馈延迟：先标记+后台异步重启+立即返回，新增强制启动中窗口与前端乐观更新（本轮提交）
+- 修复“重启后前端短暂闪回在线”：前端加本地强制启动中窗口 `pendingRestartUntil`，不被在途轮询响应覆盖（本轮提交）
+- `02e5dcd` 修复服务重启按钮反馈延迟：先标记+后台异步重启+立即返回，新增强制启动中窗口与前端乐观更新
 - `73982f0` 控制台服务状态面板每服务加“重启”按钮（重启对应容器/服务，TTS/STT 等同容器提示一并重启）
 - `6761317` “一键重启”改名“一键重启主循环”并沿用重启前运行模式（无机器人模式不再被覆盖成真机）
 - `c0bda9e` 控制台服务状态新增“启动中”黄色态、去除“服务仍未全部就绪”提示（含 3 个状态测试）

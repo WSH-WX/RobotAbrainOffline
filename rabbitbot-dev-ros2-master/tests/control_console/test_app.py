@@ -409,6 +409,7 @@ def test_page_shows_console_without_login_form(tmp_path):
     assert 'serviceStatusGrid' in response.text
     assert 'renderServiceStatus' in response.text
     assert 'restartService' in response.text
+    assert 'pendingRestartUntil' in response.text
     assert '/api/service/restart' in response.text
     assert '位于同一容器，将被一并重启' in response.text
     assert '导览讲解词' in response.text

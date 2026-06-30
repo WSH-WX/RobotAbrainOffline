@@ -136,6 +136,7 @@ var logsTimer=null;
 var mapPathTouched=false;
 var dialogueLoaded=false;
 var dialogueCollapsed=false;
+var pendingRestartUntil={};
 function setText(id,text){document.getElementById(id).textContent=text;}
 function requestJson(method,url,payload,callback){
   var xhr=new XMLHttpRequest();
@@ -186,7 +187,10 @@ function renderServiceStatus(services){
     left.appendChild(meta);
     var badge=document.createElement('div');
     var badgeClass,badgeText;
-    if(service.online){badgeClass='badge-ok';badgeText='在线';}
+    var pendingUntil=pendingRestartUntil[service.container]||0;
+    if(pendingUntil&&pendingUntil<=Date.now()){delete pendingRestartUntil[service.container];pendingUntil=0;}
+    if(pendingUntil>Date.now()){badgeClass='badge-starting';badgeText='启动中';}
+    else if(service.online){badgeClass='badge-ok';badgeText='在线';}
     else if(service.state==='starting'){badgeClass='badge-starting';badgeText='启动中';}
     else if(service.required){badgeClass='badge-bad';badgeText='离线';}
     else{badgeClass='badge-optional';badgeText='可选离线';}
@@ -221,6 +225,7 @@ function restartService(key,label,siblings,container){
   var msg='是否确认重启 '+label+' 服务？';
   if(siblings&&siblings.length){msg+=String.fromCharCode(10)+'注意：'+label+' 与 '+siblings.join('、')+' 位于同一容器，将被一并重启。';}
   if(!window.confirm(msg)){return;}
+  if(container){pendingRestartUntil[container]=Date.now()+22000;}
   markServiceCardsStarting(container);
   setText('message','正在重启 '+label+' 服务...');
   requestJson('POST','/api/service/restart',{key:key},function(error,body){
