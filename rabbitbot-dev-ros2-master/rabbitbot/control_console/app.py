@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
@@ -174,6 +174,7 @@ function renderServiceStatus(services){
     if(service.online){online+=1;}
     var item=document.createElement('div');
     item.className='service-card';
+    item.dataset.container=service.container||'';
     var left=document.createElement('div');
     var name=document.createElement('div');
     name.className='service-name';
@@ -199,7 +200,7 @@ function renderServiceStatus(services){
     var label=service.label||service.key||'-';
     var siblings=(siblingsByContainer[service.container]||[]).filter(function(other){return other!==label;});
     if(!service.container){restartBtn.disabled=true;}
-    restartBtn.onclick=(function(key,lbl,sibs){return function(){restartService(key,lbl,sibs);};})(service.key,label,siblings);
+    restartBtn.onclick=(function(key,lbl,sibs,cont){return function(){restartService(key,lbl,sibs,cont);};})(service.key,label,siblings,service.container);
     actions.appendChild(badge);
     actions.appendChild(restartBtn);
     item.appendChild(left);
@@ -208,10 +209,19 @@ function renderServiceStatus(services){
   });
   setText('serviceSummary',services.length?('在线 '+online+' / '+services.length):'暂无服务状态');
 }
-function restartService(key,label,siblings){
+function markServiceCardsStarting(container){
+  if(!container){return;}
+  var cards=document.querySelectorAll('.service-card[data-container="'+container+'"]');
+  for(var i=0;i<cards.length;i++){
+    var b=cards[i].querySelector('.badge');
+    if(b){b.className='badge badge-starting';b.textContent='启动中';}
+  }
+}
+function restartService(key,label,siblings,container){
   var msg='是否确认重启 '+label+' 服务？';
   if(siblings&&siblings.length){msg+=String.fromCharCode(10)+'注意：'+label+' 与 '+siblings.join('、')+' 位于同一容器，将被一并重启。';}
   if(!window.confirm(msg)){return;}
+  markServiceCardsStarting(container);
   setText('message','正在重启 '+label+' 服务...');
   requestJson('POST','/api/service/restart',{key:key},function(error,body){
     setText('message',error?error.message:body.message);
@@ -391,6 +401,14 @@ def clear_current_runtime_log(path: Path, reason: str) -> None:
         logger.warning("清空当前运行日志失败：path=%s, reason=%s, error_type=%s, error=%s", path, reason, type(exc).__name__, exc)
 
 
+def _restart_service_container_bg(container_name: str, service_key: str, docker_path: Path) -> None:
+    # 后台执行容器重启：docker restart 的优雅停止较慢，放后台避免阻塞 HTTP 请求与前端。
+    try:
+        restart_service_container(container_name, docker_path=docker_path)
+    except CommandError as exc:
+        logger.error("后台重启服务容器失败：service=%s, container=%s, error_type=%s, error=%s", service_key, container_name, type(exc).__name__, exc)
+
+
 def create_app(config: ConsoleConfig | None = None) -> FastAPI:
     config = config or ConsoleConfig.from_env()
     app = FastAPI(title="RabbitBot Control Console")
@@ -431,18 +449,17 @@ def create_app(config: ConsoleConfig | None = None) -> FastAPI:
         }
 
     @app.post("/api/service/restart")
-    def service_restart(payload: ServiceRestartRequest) -> dict:
+    def service_restart(payload: ServiceRestartRequest, background_tasks: BackgroundTasks) -> dict:
         key = (payload.key or "").strip().lower()
         container = resolve_service_container(key)
         if container is None:
             raise HTTPException(status_code=400, detail=f"未知服务：{payload.key}")
-        try:
-            output = restart_service_container(container, docker_path=config.docker_path)
-            mark_container_restarted(container)
-            logger.info("已按服务重启容器：service=%s, container=%s", key, container)
-            return {"ok": True, "service": key, "container": container, "message": output or f"已重启容器 {container}"}
-        except CommandError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        # 先打“启动中”标记并立即返回，docker restart 放后台执行：
+        # 避免 docker restart 的优雅停止(最多 ~20s)阻塞 HTTP，使前端点击后能立刻看到该服务转为“启动中”。
+        mark_container_restarted(container)
+        background_tasks.add_task(_restart_service_container_bg, container, key, config.docker_path)
+        logger.info("已触发服务容器重启(后台执行)：service=%s, container=%s", key, container)
+        return {"ok": True, "service": key, "container": container, "message": f"已触发重启容器 {container}（约需十几秒，期间显示启动中）"}
 
 
     @app.post("/api/task")

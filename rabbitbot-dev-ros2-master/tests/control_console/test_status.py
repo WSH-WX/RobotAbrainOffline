@@ -296,3 +296,17 @@ def test_mark_container_restarted_records_timestamp(monkeypatch):
     monkeypatch.setattr(status_mod, "_recent_container_restarts", {})
     status_mod.mark_container_restarted("rabbitbot-audio")
     assert "rabbitbot-audio" in status_mod._recent_container_restarts
+
+
+def test_service_status_force_starting_overrides_online(monkeypatch):
+    # 重启发起后的强制窗口内，即使端口仍开(旧进程未退出)，该容器服务也显示“启动中”，优先于“在线”。
+    from rabbitbot.control_console import status as status_mod
+
+    monkeypatch.setenv("RABBITBOT_BASE_RUNTIME", "compose")
+    monkeypatch.setattr(status_mod, "get_main_loop_start_epoch", lambda: None)
+    monkeypatch.setattr(status_mod, "is_port_open", lambda host, port, timeout=0.12: True)
+    monkeypatch.setattr(status_mod, "_recent_container_restarts", {"rabbitbot-audio": time.time()})
+    by_key = {item.key: item for item in status_mod.get_runtime_service_statuses()}
+    assert by_key["tts"].state == "starting"
+    assert by_key["stt"].state == "starting"
+    assert by_key["vlm"].state == "online"

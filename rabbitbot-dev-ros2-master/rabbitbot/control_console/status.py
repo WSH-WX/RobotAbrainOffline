@@ -377,6 +377,10 @@ def get_systemd_journal_lines(unit: str, limit: int = 120) -> list[str]:
 
 SERVICE_STARTUP_GRACE_SECONDS = 180.0
 
+# 重启发起后的“强制启动中”窗口(秒)：覆盖 docker stop 的优雅停止时长，
+# 这期间即使旧进程端口仍开着，也强制把该容器的服务显示为“启动中”，让前端点击重启后立即得到反馈。
+SERVICE_RESTART_FORCE_STARTING_SECONDS = 22.0
+
 
 # 服务 -> 角色容器组：同组服务共享一个容器，重启该容器会一并重启同组所有服务。
 SERVICE_CONTAINER_GROUP = {
@@ -500,14 +504,20 @@ def get_runtime_service_statuses() -> list[ServiceStatus]:
     for key, label, port, required in service_specs:
         container = resolve_service_container(key)
         online = is_port_open("127.0.0.1", port, timeout=0.12)
-        container_restarting = (
-            container is not None
-            and container in _recent_container_restarts
-            and (now - _recent_container_restarts[container]) < SERVICE_STARTUP_GRACE_SECONDS
+        restarted_ago = (
+            now - _recent_container_restarts[container]
+            if container is not None and container in _recent_container_restarts
+            else None
         )
-        if online:
+        # 强制窗口：重启刚发起、旧进程可能还没退出(端口仍开)，强制显示“启动中”，优先于“在线”，确保点击后立刻反馈。
+        container_force_starting = restarted_ago is not None and restarted_ago < SERVICE_RESTART_FORCE_STARTING_SECONDS
+        # 宽限窗口：重启后较长时间内端口未就绪也按“启动中”，直到真正在线或宽限结束。
+        container_grace_starting = restarted_ago is not None and restarted_ago < SERVICE_STARTUP_GRACE_SECONDS
+        if container_force_starting:
+            state, state_text = "starting", "启动中"
+        elif online:
             state, state_text = "online", "在线"
-        elif startup_window_active or container_restarting:
+        elif startup_window_active or container_grace_starting:
             state, state_text = "starting", "启动中"
         else:
             state, state_text = "offline", "离线"
