@@ -35,6 +35,7 @@ RabbitBot 自主运行包，部署在 ShuHao-orin。Git 根 `/mnt/disk1/gt/air_r
 - 控制台前端：无机器人按钮移到操作区最后；`config.py` 的运行容器名/nav 容器名随 `RABBITBOT_BASE_RUNTIME` 切换（compose→`rabbitbot-workflow`/`rabbitbot-navbridge`），“关闭程序”文案与操作随之正确。
 - `get_inst_chat` 换成精简现场对话提示词；无机器人模式手臂动作在 `provider.py::_post_arm_action` 入口短路跳过（不再等 28180 超时）。
 - 修复：①“开始程序”按钮触发的 workflow 残留死循环（`kill_stale_workflow` 按进程特征清理残留再启动）；②curl 注入文本被“低音量打断”忽略（STT 记录“上次消费是否注入”，注入时 `get_last_rms` 返回高哨兵 1.0）；③TTS(Kokoro) 本地模型路径错误致离线下载崩溃（默认改用 `RABBITBOT_MODELS_DIR`=`/models` 下的 `Kokoro-82M`）。
+- 导览开场白被打断后**继续(resume)剩余开场白**：被打断→回答提问→重播本句→继续后续开场白，不再吞词（开场回答回调由调用点注入，因 guide_opening_speech 为模块级、取不到嵌套的 chat_execute）。
 - 会前已完成：DJI Mic Mini 右声道 STT 输入修复（双声道按 RMS 选道、`STT_INPUT_GAIN=8.0`、新增 `get_last_rms` 诊断接口）。
 
 未完成 / 待办：
@@ -80,6 +81,8 @@ RabbitBot 自主运行包，部署在 ShuHao-orin。Git 根 `/mnt/disk1/gt/air_r
 
 ## 最近历史摘要（提交）
 
+- `3a9e05d` 开场打断回答失败(NameError)修复：回答回调由调用点注入
+- `33c6bb7` 开场白被打断后继续剩余开场白(resume)，不再吞词
 - `e396078` TTS(Kokoro) 本地模型路径修复（离线本地加载）
 - `dbf6f6b` 注入文本被“低音量打断”忽略修复
 - `1f03820` “开始程序”按钮 workflow 残留死循环修复
