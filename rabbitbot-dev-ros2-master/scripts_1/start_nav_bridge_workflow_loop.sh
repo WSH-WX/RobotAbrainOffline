@@ -54,6 +54,15 @@ NAV_MAP_BASE_DIR="${NAV_MAP_BASE_DIR:-/home/unitree}"
 ROS_SETUP="${ROS_SETUP:-/opt/ros/humble/setup.bash}"
 WS_SETUP="${WS_SETUP:-${PROJECTS_DIR}/custom_action_ws/install/setup.bash}"
 CONTAINER_NAME="${CONTAINER_NAME:-rabbitbot-unified-runtime}"
+
+# 基础服务运行方式：unified=单容器(旧，默认)；compose=解耦多容器(docker/portable/docker-compose.decoupled.yaml)。
+RABBITBOT_BASE_RUNTIME="${RABBITBOT_BASE_RUNTIME:-unified}"
+RABBITBOT_DECOUPLED_COMPOSE_FILE="${RABBITBOT_DECOUPLED_COMPOSE_FILE:-${PROJECT_DIR}/docker/portable/docker-compose.decoupled.yaml}"
+RABBITBOT_WORKFLOW_CONTAINER_NAME="${RABBITBOT_WORKFLOW_CONTAINER_NAME:-rabbitbot-workflow}"
+if [ "${RABBITBOT_BASE_RUNTIME}" = "compose" ]; then
+    # 解耦模式：导览 workflow 跑在专用 rabbitbot-workflow 容器内，所有 docker exec 都指向它。
+    CONTAINER_NAME="${RABBITBOT_WORKFLOW_CONTAINER_NAME}"
+fi
 CONTAINER_RABBITBOT_DIR="${CONTAINER_RABBITBOT_DIR:-/workspace/projects/rabbitbot-dev-ros2-master}"
 CONTAINER_LOG_DIR="${CONTAINER_LOG_DIR:-${CONTAINER_RABBITBOT_DIR}/logs/unified_runtime}"
 HOST_LOG_DIR="${HOST_LOG_DIR:-${PROJECT_DIR}/logs}"
@@ -749,6 +758,10 @@ restart_nav_bridge() {
 restart_unified_services() {
     local reason="${1:-健康检查失败}"
     log_warn "准备恢复 unified 基础服务：reason=${reason}"
+    if [ "${RABBITBOT_BASE_RUNTIME}" = "compose" ]; then
+        ensure_decoupled_services
+        return
+    fi
     if container_running; then
         log_warn "基础服务不健康，重启统一容器：${CONTAINER_NAME}"
         docker restart "${CONTAINER_NAME}" >/dev/null
@@ -779,7 +792,27 @@ recover_runtime_services() {
     return 1
 }
 
+ensure_decoupled_services() {
+    # 解耦模式：用 docker-compose 拉起基础服务与 workflow 宿主，替代创建 unified 单容器。
+    require_path "${RABBITBOT_DECOUPLED_COMPOSE_FILE}"
+    log_info "确保解耦基础服务就绪（compose）：file=${RABBITBOT_DECOUPLED_COMPOSE_FILE}, workflow_container=${CONTAINER_NAME}"
+    # 解耦栈与旧 unified 单容器互斥：若旧容器仍在运行，先停止以释放端口。
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "rabbitbot-unified-runtime"; then
+        log_warn "解耦模式：停止仍在运行的旧 unified 容器以释放端口：rabbitbot-unified-runtime"
+        docker stop rabbitbot-unified-runtime >/dev/null 2>&1 || true
+    fi
+    # 仅拉起基础服务与 workflow 宿主；nav 在无机器人模式下被 main 跳过，这里不动 navbridge。
+    local compose_dir
+    compose_dir="$(dirname "${RABBITBOT_DECOUPLED_COMPOSE_FILE}")"
+    ( cd "${compose_dir}" && docker compose -f "${RABBITBOT_DECOUPLED_COMPOSE_FILE}" up -d neo4j rabbitbot-vlm rabbitbot-audio rabbitbot-memory rabbitbot-workflow )
+    log_info "解耦基础服务已就绪：neo4j(7687)/vlm(8000+8005)/audio(28185+28184)/memory(28182)/workflow 宿主(${CONTAINER_NAME})"
+}
+
 ensure_unified_services() {
+    if [ "${RABBITBOT_BASE_RUNTIME}" = "compose" ]; then
+        ensure_decoupled_services
+        return
+    fi
     log_info "确认 unified 基础服务就绪；本步骤不会启动 workflow：vlm=${RABBITBOT_UNIFIED_START_VLM}, embedding=${RABBITBOT_UNIFIED_START_EMBEDDING}, stt=${RABBITBOT_UNIFIED_START_STT}"
     (
         cd "${PROJECT_DIR}"

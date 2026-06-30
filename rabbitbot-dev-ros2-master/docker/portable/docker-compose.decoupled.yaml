@@ -133,6 +133,33 @@ services:
       start_period: 120s
     restart: unless-stopped
 
+  rabbitbot-workflow:
+    # 导览 workflow 的专用运行宿主：复用 core-portable，挂全部 5 个依赖卷与源码，host 网络，
+    # 自身只保活（tail -f），由 loop 通过 docker exec 注入 workflow 进程。
+    image: ${RABBITBOT_PORTABLE_CORE_IMAGE:-ghcr.io/aaronai/rabbitbot-core-portable:20260611}
+    container_name: rabbitbot-workflow
+    network_mode: host
+    ipc: host
+    runtime: nvidia
+    command: ["bash", "-lc", "echo 'rabbitbot-workflow 宿主就绪，等待 loop 注入导览 workflow' && exec tail -f /dev/null"]
+    environment:
+      RABBITBOT_DIR: /workspace/projects/rabbitbot-dev-ros2-master
+      RABBITBOT_MODELS_DIR: /models
+    volumes:
+      - /mnt/disk1/gt/air_robot_gt_projects:/workspace/projects
+      - /mnt/disk1/models:/models
+      - rabbitbot_portable_py310:/workspace/projects/rabbitbot-dev-ros2-master/py310
+      - rabbitbot_portable_py38:/workspace/projects/rabbitbot-dev-ros2-master/py38
+      - rabbitbot_portable_vln:/workspace/projects/vln
+      - rabbitbot_portable_pyorbbecsdk:/workspace/projects/pyorbbecsdk-v2-py310
+      - rabbitbot_portable_unitree_sdk2:/workspace/projects/unitree_sdk2
+    depends_on:
+      rabbitbot-memory:
+        condition: service_healthy
+      rabbitbot-audio:
+        condition: service_healthy
+    restart: unless-stopped
+
   rabbitbot-navbridge:
     image: ${RABBITBOT_PORTABLE_NAV_IMAGE:-ghcr.io/aaronai/rabbitbot-nav-portable:20260611}
     container_name: rabbitbot-navbridge
@@ -155,3 +182,9 @@ volumes:
     name: rabbitbot_portable_py310
   rabbitbot_portable_py38:
     name: rabbitbot_portable_py38
+  rabbitbot_portable_vln:
+    name: rabbitbot_portable_vln
+  rabbitbot_portable_pyorbbecsdk:
+    name: rabbitbot_portable_pyorbbecsdk
+  rabbitbot_portable_unitree_sdk2:
+    name: rabbitbot_portable_unitree_sdk2

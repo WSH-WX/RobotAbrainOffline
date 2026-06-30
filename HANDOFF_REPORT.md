@@ -212,3 +212,36 @@ Aaron 要求执行修复建议，解决 DJI Mic Mini 有电平但 STT 不触发�
 
 - `start_role_container.sh` 启动时打印 role、project、models、log_dir；每个角色打印将启动哪些服务；依赖等待与就绪复用 `wait_until` 的 INFO/SUCCESS 日志，便于排查“某容器卡在等待依赖”。
 - `start_unified_container.sh` 守卫为纯控制流，无新增运行日志。
+
+## 本轮修改详情：loop 基础服务改为依赖解耦 compose，workflow 跑进专用容器
+
+### 背景和目标
+
+上一轮把 unified 单容器解耦为多容器，但 loop 仍创建 unified 容器、并把 workflow exec 进它。本轮目标：让 loop 的“确保基础服务”改为依赖解耦 compose，并让导览 workflow 真正跑在解耦栈上的专用容器内。
+
+### 已完成内容
+
+- `docker/portable/docker-compose.decoupled.yaml`：新增第 6 个服务 `rabbitbot-workflow`（导览 workflow 专用宿主，复用 core-portable，挂全部 5 个依赖卷 py310/py38/vln/pyorbbecsdk/unitree_sdk2 + 源码 + /models，host 网络，自身仅 `tail -f` 保活，待 loop 注入 workflow）；补齐对应 named volume 声明。
+- `scripts_1/start_nav_bridge_workflow_loop.sh`：新增 `RABBITBOT_BASE_RUNTIME` 开关（unified=旧默认 / compose=解耦）。
+  - compose 模式下 `CONTAINER_NAME` 指向 `rabbitbot-workflow`，所有 `docker exec`（启动/检查/终止 workflow、控制文件）自动指向它。
+  - 新增 `ensure_decoupled_services()`：用 `docker compose up -d` 拉起 neo4j/vlm/audio/memory/workflow，替代创建 unified 单容器；并先停止仍在运行的旧 unified 容器避免端口冲突。
+  - `ensure_unified_services()` 与 `restart_unified_services()` 入口加 compose 分支。
+- 关键前提：无机器人模式（`RABBITBOT_NAV_WORKFLOW_NO_ROBOT=1`）下 `main()` 本就跳过 nav 桥接，且手臂动作已被跳过（不需要 28180），故 compose 模式不必改 nav 逻辑。
+- 激活方式：`runtime/portable.env` 增加 `RABBITBOT_BASE_RUNTIME="compose"`（机器本地配置，未入库；代码默认仍为 unified，向后兼容）。
+
+### 已验证的事实
+
+- `bash -n` 与 `docker compose config` 均通过。
+- 修复了首次实测发现的 bug：`ensure_decoupled_services` 误用了本脚本未定义的 `log_success`，导致 `set -e` 下 loop 反复重启；已改为 `log_info`。
+- 实测（compose 模式 + 无机器人模式）：loop 启动后 `ensure_decoupled_services` 拉起解耦栈（全部 healthy），workflow 约 20s 到 QA 待命；`docker exec rabbitbot-workflow pgrep` 确认 workflow 进程跑在 `rabbitbot-workflow` 容器内（PID 94 start_kuavo_agno_workflow.bash），旧 `rabbitbot-unified-runtime` 为 Exited 未参与；日志中 workflow 成功跨容器调用 audio 容器 TTS 播报问候（workflow_tts_request_done），证明跨容器解耦栈协作正常。
+
+### 注意事项 / 未完成
+
+- 本轮仅在无机器人模式下打通；真实机器人模式（需 nav 桥接 + 28180）下 compose 模式与 loop 的 nav 自管如何协同，尚未处理。
+- 导览中导航类提问仍受上轮发现的 `random.sample(空 entity_lst)` 崩溃影响（展点数据为空所致），与本轮解耦无关，需另行修复 + 灌入展点数据。
+- 回退：把 `runtime/portable.env` 的 `RABBITBOT_BASE_RUNTIME` 改回 `unified`（或删除）即恢复旧单容器路径。
+- 当前 loop 已 stop（idle），6 个解耦容器保持运行。
+
+### 新增或调整日志点
+
+- `ensure_decoupled_services()` 打印 compose 文件路径、workflow 宿主容器名、停止旧 unified 的告警、就绪汇总，便于确认基础服务来源已切到解耦栈。
