@@ -306,6 +306,10 @@ recorder.output_text = ""
 recorder.output_utterance_id = 0
 audio_queue = queue.Queue(maxsize=AUDIO_QUEUE_MAX_CHUNKS)
 injected_text_queue = queue.Queue()
+# 标记“最近一次 get_text_async 消费的文本是否来自注入(inject_text_async)”。
+# 注入文本是显式口令、无真实音频，不应被打断音量阈值(忽略低音量打断)过滤；
+# get_last_rms 在此为真时返回高音量哨兵值，使注入文本无条件视为有效打断。
+injection_state = {"last_consumed_injected": False}
 audio_drop_count = 0
 last_audio_status_log_time = 0.0
 last_audio_level_log_time = 0.0
@@ -482,12 +486,17 @@ async def _exec(task, lang, text, timeout):
         out_text = recorder.get_status()
 
     elif task == "get_last_rms":
-        with audio_level_lock:
-            out_text = f"{last_audio_level['rms']:.8f}"
+        if injection_state["last_consumed_injected"]:
+            # 注入文本无真实音频，按高音量哨兵返回，避免被打断音量阈值过滤掉。
+            out_text = f"{float(os.environ.get('STT_INJECTED_RMS', '1.0')):.8f}"
+        else:
+            with audio_level_lock:
+                out_text = f"{last_audio_level['rms']:.8f}"
 
     elif task == "get_text_async":
         try:
             utterance_id, out_text = injected_text_queue.get_nowait()
+            injection_state["last_consumed_injected"] = True
             if lang == "zh" and out_text:
                 out_text = cc.convert(out_text)
             LOGGER.info(
@@ -507,6 +516,7 @@ async def _exec(task, lang, text, timeout):
             else:
                 recorder.output_text = ""
                 recorder.output_utterance_id = 0
+                injection_state["last_consumed_injected"] = False
 
     elif task == "inject_text_async":
         out_text = text or ""

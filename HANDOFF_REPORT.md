@@ -367,3 +367,35 @@ Aaron 要求执行修复建议，解决 DJI Mic Mini 有电平但 STT 不触发�
 ### 新增或调整日志点
 
 - `kill_stale_workflow()` 打印“清理残留 workflow 进程”“已清理/清理失败”，便于现场确认残留被清理而非反复拒绝。
+
+## 本轮修改详情：修复注入文本被“低音量打断”忽略
+
+### 背景和目标
+
+用 curl 向 STT(28184) 注入语句(inject_text_async)后，日志反复出现“忽略低音量打断”，注入的口令被丢弃。
+
+### 根因
+
+打断有效性由 `rabbitbot/tools/sound_agno.py::is_interrupt_loud_enough()` 判断（在 workflow 进程）：当 `RABBITBOT_INTERRUPT_RMS_THRESHOLD>0` 时，调 STT 的 `get_last_rms` 取“最近一次音频 RMS”，低于阈值则“忽略低音量打断”。而注入文本无真实音频，`get_last_rms` 返回的是旧的/极低音频 RMS（实测基线 0.0032），于是被当作低音量忽略。
+
+### 已完成内容（stt_app_funasr.py）
+
+- 新增模块级 `injection_state = {"last_consumed_injected": False}`。
+- `get_text_async`：从 injected_text_queue 取到注入文本时置 True；识别到真实音频文本时置 False。
+- `get_last_rms`：当上次消费为注入文本时，返回高音量哨兵 `STT_INJECTED_RMS`（默认 1.0），否则照常返回真实音频 RMS。
+- 该改法无竞态：打断流程恒为 get_text_async(置标记) → is_interrupt_loud_enough→get_last_rms(读标记)。
+
+### 已验证的事实
+
+- `python3 -m py_compile stt_app_funasr.py` 通过。
+- 重建 rabbitbot-audio 加载新代码后，STT 层实测：注入前 get_last_rms=0.00317（即触发忽略的低值）；注入并 get_text_async 消费后 get_last_rms=1.00000000（高哨兵）。即注入文本现会无条件越过打断音量阈值。
+- sound_agno.py 未改，运行中的 workflow 无需重启即生效（它只是查询 STT 的 get_last_rms）。
+
+### 注意事项 / 未完成
+
+- 真实麦克风打断不受影响：识别到真实音频文本时标记置 False，仍按真实 RMS 与阈值比较。
+- 可用 STT_INJECTED_RMS 调整注入文本的哨兵音量值。
+
+### 新增或调整日志点
+
+- 未新增日志；既有“忽略低音量打断”不再对注入文本触发。
