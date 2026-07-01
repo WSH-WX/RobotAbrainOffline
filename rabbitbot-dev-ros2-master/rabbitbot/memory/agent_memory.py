@@ -9,11 +9,21 @@ from graphiti_core.nodes import EntityNode
 from graphiti_core.edges import EntityEdge
 from graphiti_core.search.search_config_recipes import NODE_HYBRID_SEARCH_RRF
 
+import os
 import uuid
 import asyncio
 import numpy as np
 from datetime import datetime
-from typing import Dict, Any,List
+from pathlib import Path
+from typing import Dict, Any, List, Tuple
+
+from rabbitbot.tools.logging import logger
+from rabbitbot.memory.markdown_memory import MarkdownMemoryStore
+
+# markdown 记忆文档目录默认在项目根目录（air_robot_gt_projects）下的 memory/ 子目录，
+# 与 provider.py::_load_combined_data 对 combined_data.json 的路径约定一致
+# （Path(__file__).resolve() 从 rabbitbot/memory/agent_memory.py 向上数 3 层即项目根目录）。
+_DEFAULT_MARKDOWN_DOCS_DIR = Path(__file__).resolve().parents[3] / "memory"
 
 
 class AgentMemory:
@@ -38,6 +48,7 @@ class AgentMemory:
         embd_model_url: str,
         rerank_model: str,
         rerank_model_url: str,
+        markdown_docs_dir: str = None,
     ):
         # if hasattr(self, 'graphiti'):
         #     return
@@ -76,6 +87,14 @@ class AgentMemory:
             )
         )
         self.initialized = False
+
+        docs_dir = markdown_docs_dir or os.getenv('RABBITBOT_MEMORY_DOCS_DIR') or _DEFAULT_MARKDOWN_DOCS_DIR
+        self.markdown_store = MarkdownMemoryStore(
+            docs_dir=docs_dir,
+            embed_fn=self.create_embedding,
+            cosine_fn=self.cosine_similarity,
+        )
+        logger.info(f"AgentMemory 初始化完成: neo4j_url={self.neo4j_url}, markdown_docs_dir={docs_dir}")
 
     async def create_embedding(self, text: str) -> List[float]:
         if not self.initialized:
@@ -250,6 +269,52 @@ class AgentMemory:
             )
         print(f"node_search_results: {node_search_results}")
         return node_search_results.nodes
+
+    def _chunk_to_entity_node(self, chunk) -> EntityNode:
+        """把 markdown 分片包装成与 Neo4j 检索结果同构的 EntityNode，供下游统一消费。"""
+        return EntityNode(
+            uuid=chunk.chunk_id,
+            name=chunk.title,
+            group_id="markdown",
+            summary=chunk.text[:200],
+            attributes={
+                'location': None,
+                'image_path': None,
+                'description': chunk.text,
+                'source': 'markdown',
+                'doc_path': chunk.doc_path,
+            },
+        )
+
+    async def query_combined(
+        self, query: str, group_name: str, limit: int = 5
+    ) -> Tuple[List[EntityNode], List[Tuple[float, EntityNode]]]:
+        """合并 Neo4j 知识图谱与 markdown 文档两个记忆来源的检索结果。
+
+        Neo4j 检索异常（连接失败、约束报错等）或返回为空时，忽略该来源、仅记录日志，
+        不影响 markdown 检索结果的返回；两个来源均可能为空，由调用方按相似度阈值判定是否命中。
+        返回 (graph_nodes, markdown_scored_nodes)：graph_nodes 未预先打分（沿用既有调用方的打分方式），
+        markdown_scored_nodes 为 (相似度, EntityNode) 列表（相似度已基于分片全文计算，无需再对 name 重新计算）。
+        """
+        graph_nodes: List[EntityNode] = []
+        try:
+            graph_nodes = await self.query(query, group_name=group_name, limit=limit)
+        except Exception as exc:
+            logger.warning(
+                f"Neo4j 记忆检索异常，本次查询忽略该来源: group_name={group_name}, "
+                f"query_len={len(query)}, error={exc}"
+            )
+        if not graph_nodes:
+            logger.debug(f"Neo4j 记忆检索为空，本次查询仅使用 markdown 来源: group_name={group_name}")
+
+        markdown_scored: List[Tuple[float, EntityNode]] = []
+        try:
+            markdown_hits = await self.markdown_store.search(query, limit=limit)
+            markdown_scored = [(score, self._chunk_to_entity_node(chunk)) for score, chunk in markdown_hits]
+        except Exception as exc:
+            logger.error(f"markdown 记忆检索异常，本次查询忽略该来源: query_len={len(query)}, error={exc}")
+
+        return graph_nodes, markdown_scored
 
     async def close(self):
         await self.graphiti.close()

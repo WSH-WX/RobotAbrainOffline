@@ -1,10 +1,12 @@
 
 import os
+import time
 from typing import Dict, Any
 from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.responses import JSONResponse
 from rabbitbot.memory.agent_memory import AgentMemory
 from rabbitbot.provider import get_llm
+from rabbitbot.tools.logging import logger
 import ast
 import tempfile
 from typing import List
@@ -169,48 +171,96 @@ async def get_group_nodes_name(task: str = Form(...)):
 
 @app.post("/query")
 async def query_api(task: str = Form(...)):
+    """记忆语义检索：合并 Neo4j 知识图谱与项目根目录 memory/ 下的 markdown 文档两个来源，
+    按余弦相似度取全局最佳匹配返回；Neo4j 检索异常或为空时自动忽略该来源，仅用 markdown 结果。
+    """
     try:
         await agent.init_graphiti_if_not()
-        print(f"Get data")
-        print(task)
         task_data = ast.literal_eval(task)
         if not isinstance(task_data, dict):
             return JSONResponse(content={"error": "task must be a dict"}, status_code=400)
         query, group_name = task_data['query'], task_data['group_name']
+        logger.info(f"/query 请求: query_len={len(query)}, group_name={group_name}")
         if query == "异常结点":
-            return create_empty_node_response(
-                    query
-                )
+            return create_empty_node_response(query)
+
+        start = time.monotonic()
         task_embedding = await agent.create_embedding(query)
-        print(f"Query nodes")
-        nodes = await agent.query(query,group_name=group_name)
-        print(nodes)
-        location = None
-        description =None
-        similarity_threshold=0.35
-        best_similarity=0
+        graph_nodes, markdown_scored_nodes = await agent.query_combined(query, group_name=group_name, limit=5)
+
+        similarity_threshold = 0.35
+        best_similarity = 0
         best_match = None
-        if len(nodes) > 0:
-            for node in nodes:
-                # 为节点名称生成 embedding
-                node_embedding = await agent.create_embedding(node.name)
-                # 计算相似度
-                similarity = agent.cosine_similarity(task_embedding, node_embedding)
+        best_source = None
 
-                print(f"节点: {node.name}, 相似度: {similarity:.4f}")
+        for node in graph_nodes:
+            # 为节点名称生成 embedding，计算相似度（沿用既有 Neo4j 打分方式）
+            node_embedding = await agent.create_embedding(node.name)
+            similarity = agent.cosine_similarity(task_embedding, node_embedding)
+            logger.debug(f"neo4j 候选: name={node.name}, 相似度={similarity:.4f}")
+            if similarity > best_similarity:
+                best_similarity = similarity
+                best_match = node
+                best_source = "neo4j"
 
-                if similarity > best_similarity:
-                    best_similarity = similarity
-                    best_match = node
-            if best_similarity < similarity_threshold or best_match is None:
-                return create_empty_node_response(
-                    query
-                )
-            else:
-                return node_to_response_dict(best_match)
-        return create_empty_node_response(query)
+        for similarity, node in markdown_scored_nodes:
+            # markdown 分片相似度已基于全文 embedding 计算，直接复用，无需再对 name 重新计算
+            logger.debug(
+                f"markdown 候选: name={node.name}, doc={node.attributes.get('doc_path')}, 相似度={similarity:.4f}"
+            )
+            if similarity > best_similarity:
+                best_similarity = similarity
+                best_match = node
+                best_source = "markdown"
 
-        #return JSONResponse(content={"name":str(name), "location": str(location),"summary":str(summary),"description":str(description)})
+        elapsed = time.monotonic() - start
+        if best_similarity < similarity_threshold or best_match is None:
+            logger.info(
+                f"/query 未命中(低于阈值 {similarity_threshold}): group_name={group_name}, "
+                f"最高相似度={best_similarity:.4f}, neo4j候选={len(graph_nodes)}, "
+                f"markdown候选={len(markdown_scored_nodes)}, 耗时={elapsed:.3f}s"
+            )
+            return create_empty_node_response(query)
+
+        logger.info(
+            f"/query 命中: source={best_source}, name={best_match.name}, 相似度={best_similarity:.4f}, "
+            f"neo4j候选={len(graph_nodes)}, markdown候选={len(markdown_scored_nodes)}, 耗时={elapsed:.3f}s"
+        )
+        return node_to_response_dict(best_match)
 
     except Exception as e:
+        logger.error(f"/query 请求处理失败: error={e}", exc_info=True)
         return JSONResponse(content={"error": str(e)}, status_code=500)
+
+
+@app.get("/memory_status")
+async def memory_status():
+    """诊断端点：查看 markdown 记忆源当前扫描到的文档/分片数量，以及 Neo4j 连通性。"""
+    try:
+        await agent.markdown_store.refresh()
+        markdown_doc_count = len({chunk.doc_path for chunk in agent.markdown_store._chunks})
+        markdown_chunk_count = len(agent.markdown_store._chunks)
+    except Exception as exc:
+        logger.error(f"/memory_status 读取 markdown 记忆状态失败: error={exc}", exc_info=True)
+        markdown_doc_count = 0
+        markdown_chunk_count = 0
+
+    neo4j_reachable = True
+    neo4j_error = None
+    try:
+        driver = GraphDatabase.driver(neo4j_url, auth=(neo4j_user, neo4j_password))
+        with driver.session() as session:
+            session.run("RETURN 1")
+        driver.close()
+    except Exception as exc:
+        neo4j_reachable = False
+        neo4j_error = str(exc)
+        logger.warning(f"/memory_status 检测到 Neo4j 不可达: error={exc}")
+
+    return {
+        "markdown_docs_dir": str(agent.markdown_store.docs_dir),
+        "markdown_doc_count": markdown_doc_count,
+        "markdown_chunk_count": markdown_chunk_count,
+        "neo4j_reachable": neo4j_reachable,
+        "neo4j_error": neo4j_error,
+    }

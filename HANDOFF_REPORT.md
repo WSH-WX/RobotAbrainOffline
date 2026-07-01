@@ -4,7 +4,9 @@
 
 ## 背景和目标
 
-RabbitBot 自主运行包，部署在 ShuHao-orin。Git 根 `/mnt/disk1/gt/air_robot_gt_projects`，主代码 `rabbitbot-dev-ros2-master`，分支 `feature/qa-vlm-workflow`，Python 包 `rabbitbot`（>=3.10）。系统由 `rabbitbot-control-console.service`（控制台，nvidia 用户，8080）+ `rabbitbot-loop.service`（导览主循环）+ 一组容器化基础服务组成，支持 QA/导览 workflow、语音口令、返航、无机器人模式。
+RabbitBot 自主运行包，部署在 ShuHao-orin。Git 根 `/mnt/disk1/gt/air_robot_gt_projects`，主代码 `rabbitbot-dev-ros2-master`，Python 包 `rabbitbot`（>=3.10）。系统由 `rabbitbot-control-console.service`（控制台，nvidia 用户，8080）+ `rabbitbot-loop.service`（导览主循环）+ 一组容器化基础服务组成，支持 QA/导览 workflow、语音口令、返航、无机器人模式。
+
+当前分支 `feature/memory-markdown-neo4j`（从 `feature/qa-vlm-workflow` 分出），本轮目标：把 Memory Agent（`rabbitbot-memory` 容器，28182）的记忆来源从"仅 Neo4j 知识图谱"扩展为"markdown 文档 + Neo4j 知识图谱"双来源，供 VLM/LLM 生成回答前检索相关记忆；Neo4j 检索异常或为空时自动忽略该来源，不影响 markdown 结果、不中断请求。
 
 近期主线：把原来挤在单个 `rabbitbot-unified-runtime` 容器内的服务**解耦为多容器（docker-compose）**，并让导览 workflow 跑在专用容器上；配套修复前端、日志、TTS、STT、启动等问题。
 
@@ -29,7 +31,16 @@ RabbitBot 自主运行包，部署在 ShuHao-orin。Git 根 `/mnt/disk1/gt/air_r
 
 实测（截至生成时间）：6 容器全部运行（neo4j/vlm/audio/memory healthy，navbridge/workflow 无 healthcheck 但 Up），7 端口（7687/8000/8005/28182/28184/28185/28180）全 up，`rabbitbot-loop.service` 按需启停（当前 inactive，compose 基础服务持续在线），`RABBITBOT_BASE_RUNTIME=compose`、`RABBITBOT_NAV_WORKFLOW_NO_ROBOT=1`。
 
-已完成（本会话）：
+已完成（本会话，`feature/memory-markdown-neo4j` 分支）：
+- **记忆双来源合并**：新增 `rabbitbot/memory/markdown_memory.py::MarkdownMemoryStore`，扫描项目根目录 `memory/`（容器内 `/workspace/projects/memory`，与 `combined_data.json` 同级）下的 `.md` 文件，按标题（`#`~`######`）切分为片段，标题下正文超长再按空行分段；复用现有 `GRAPHITI_EMBD_MODEL`/`GRAPHITI_EMBD_MODEL_URL` embedding 服务计算片段向量，按文件 mtime 增量刷新（无需重启即可感知新增/修改/删除）。
+- `AgentMemory`（`agent_memory.py`）新增 `query_combined(query, group_name, limit)`：并行整合 Neo4j 图检索与 markdown 检索；**Neo4j 查询抛异常或返回空列表时仅记 warning/debug 日志并忽略该来源**，不影响 markdown 结果、不向上抛异常。
+- `memory_app.py` 的 `POST /query` 改为调用 `query_combined`，对 Neo4j 候选（沿用原按 `node.name` 重新计算相似度的方式）与 markdown 候选（复用检索时已基于分片全文计算的相似度，不再重复计算）合并取全局最高分，沿用原有响应 schema（`uuid/name/group_id/summary/attributes{location,image_path,description}`），**客户端 `provider.py::MemoryAgent` 无需改动**。markdown 命中时 `group_id="markdown"`、`location=None`，与 Neo4j 展点节点（有物理坐标）区分。
+- 新增 `GET /memory_status` 诊断端点：返回 markdown 文档数/分片数与 Neo4j 连通性，便于排查"为什么没检索到"。
+- 新建 `memory/README.md` 说明文档格式与生效方式；新增单元测试 `tests/memory/test_markdown_memory.py`（8 个用例：标题切分、长段落再切分、目录缺失降级、相似度排序、增量刷新增删改、单分片 embedding 失败不影响其它分片、无标题回退文件名）。
+- **验证**：目标机 py310 环境无 `pytest` 且离线环境无法安装，已改为手动逐个调用 test_* 函数验证，8/8 通过；另在真实运行中的 `rabbitbot-memory` 容器内临时放入测试文档，`curl /query` 验证 markdown 来源命中（`group_id: markdown`）、`curl /memory_status` 验证文档计数正确，验证后已清理临时文档。uvicorn `--reload` 期间多次热重载均 `Application startup complete`，无导入/启动错误。
+- **未变更范围**：`ctx.entity_lst`（`context.py` 启动时用 `get_group_names("展点")` 拉取的导航候选列表，供 `navi_check_execute` 的 `random.sample` 使用）仍只读 Neo4j，本轮未接入 markdown；Neo4j 展点为空时该处 `random.sample(ctx.entity_lst, num_entity)` 崩溃的已知 bug**依旧存在**（与本轮改的 `/query` 语义检索是不同代码路径），详见下方"已知未修 bug"。
+
+已完成（此前会话）：
 - 解耦多容器 + loop 对接解耦栈 + 真机模式 nav 协同（见上）。
 - 日志统一搬到 air 根 `/mnt/disk1/gt/air_robot_gt_projects/logs`（容器内 `/workspace/projects/logs`），旧 `<project>/logs` 已删除；6 处“日志根”定义点统一改造（loop 入口/主循环/容器入口/控制台 config/compose/`rabbitbot/tools/logging.py`）。
 - 控制台前端：无机器人按钮移到操作区最后；`config.py` 的运行容器名/nav 容器名随 `RABBITBOT_BASE_RUNTIME` 切换（compose→`rabbitbot-workflow`/`rabbitbot-navbridge`），“关闭程序”文案与操作随之正确。
@@ -47,8 +58,8 @@ RabbitBot 自主运行包，部署在 ShuHao-orin。Git 根 `/mnt/disk1/gt/air_r
 未完成 / 待办：
 - **控制台改动（`config.py` 容器名/日志路径、`status.py`/`app.py` 服务状态“启动中”态与去除聚合提示）需重启 `rabbitbot-control-console.service`（sudo）才生效，尚未重启。**
 - 机器人离线：真机导航/返航、nav 核心 Pose/Ready 未端到端验证。
-- 导览数据为空：`combined_data.json` 缺失 + Neo4j 展点 0 节点 → 导览中导航/检测类提问会命中“异常结点”。
-- 已知未修 bug：`workflow.py::navi_execute` 的 `random.sample(ctx.entity_lst, 1)` 在展点为空时崩溃（“Sample larger than population”），挡住导览导航/检测路径；与解耦无关，需修 + 灌入展点数据。
+- 导览数据为空：`combined_data.json` 缺失 + Neo4j 展点 0 节点 → `navi_execute` 里 `ctx.memory.query()` 语义检索本轮已可回退到 markdown（`memory/` 目录下需要有对应展点文档才能命中，目前该目录只有 `README.md`，**尚未补充真实展点/业务 markdown 内容**），否则仍命中“异常结点”。
+- 已知未修 bug（本轮未动，仍是不同代码路径）：`workflow.py::navi_check_execute` 的 `random.sample(ctx.entity_lst, num_entity)` 在 `ctx.entity_lst`（`context.py` 启动时 `get_group_names("展点")` 的结果，只读 Neo4j）为空时崩溃（“Sample larger than population”），挡住导览导航候选提示路径；`get_group_names`/`get_group_summary` 本轮未接入 markdown，需要的话应在这两个接口上做类似 `query_combined` 的合并。
 
 ## 已验证的事实
 
@@ -56,17 +67,20 @@ RabbitBot 自主运行包，部署在 ShuHao-orin。Git 根 `/mnt/disk1/gt/air_r
 - Neo4j 凭据 `neo4j/neo4j_pass`；模型挂载 `/mnt/disk1/models` → 容器 `/models`；TTS 模型 = 本地 Kokoro-82M（中文音色 zm_yunxi，`/models/Kokoro-82M`）。
 - 解耦栈实测通过：跨容器记忆写入/查询召回正确；loop(compose+无机器人)→workflow 在 `rabbitbot-workflow` 容器到 QA 待命、跨容器调 audio 容器 TTS 成功；TTS 本地模型加载无下载错误、`text_to_speech` 合成成功；STT 注入后 `get_last_rms` 由 0.0032 变 1.0；控制台测试 `66 passed`。
 - STT 端口 28184，注入口令用 `/exec` 的 `inject_text_async`（与“对麦克风说话”同路径，被 `get_text_async` 消费）。
+- 目标机 `rabbitbot-memory` 容器实际运行 Python 解释器是相对路径 `py310/bin/python`（cwd=`/workspace/projects/rabbitbot-dev-ros2-master`），内含 `graphiti-core 0.11.6`/`neo4j 6.0.2`，但**无 pytest 且 pip index（`pypi.jetson-ai-lab.dev`/`pypi.tuna.tsinghua.edu.cn`）在此机器上不可达，无法临时安装**；控制台测试此前能跑 76 passed 应是在另一个具备 pytest 的环境（如开发机或 `control_console_venv`，但该 venv 目前也未装 pytest），非本机 py310。后续如需在本机跑 pytest 套件，需先确认可用的 pytest 环境或离线 wheel 来源。
+- markdown 记忆目录（`/mnt/disk1/gt/air_robot_gt_projects/memory`）已挂载进 `rabbitbot-vlm/audio/memory/workflow` 四个容器（原有 bind mount `/mnt/disk1/gt/air_robot_gt_projects:/workspace/projects`，无需新增挂载）；`/query` 端到端验证：临时写入 `memory/_verify_tmp.md`（含"斑马展台"内容，Neo4j 中不存在该节点），`curl /query` 正确返回 `group_id: markdown` 的匹配结果，验证后已删除该临时文件。
 
 ## 阻塞问题
 
 - 机器人离线：实机链路（eno1、Unitree DDS、导航核心、28180）无法端到端验证。
-- 导览点位数据缺失（`combined_data.json` + Neo4j 展点），叠加 `random.sample` 空列表崩溃，导致导览导航/检测路径走不通。
+- 导览点位数据缺失（`combined_data.json` + Neo4j 展点为空 + `memory/` 目录尚无真实展点 markdown），叠加 `navi_check_execute` 的 `random.sample` 空列表崩溃，导致导览导航候选提示路径走不通（`navi_execute` 本身的语义检索已可回退 markdown，但巧妇难为无米之炊——没有内容可检索）。
 
 ## 建议的下一步
 
 1. 重启控制台服务使 `config.py` 改动（容器名/日志路径）生效：`sudo systemctl restart rabbitbot-control-console.service`。
-2. 修 `navi_execute` 的 `random.sample` 空列表崩溃；准备 `combined_data.json` 或用 importer 把展点导入 Neo4j，再验证导览“带我去找 X”端到端（记忆+导航）。
-3. 机器人上线后：验证 `rabbitbot-navbridge` 输出 Pose/Ready、loop 进入真机导览与返航。
+2. 在 `memory/` 目录下补充真实展点/业务 markdown 文档（参考 `memory/README.md` 的格式约定），让本轮新增的 markdown 检索真正发挥作用；或用 importer 把展点导入 Neo4j。
+3. 修 `navi_check_execute` 的 `random.sample` 空列表崩溃（`ctx.entity_lst` 为空时的兜底分支），可考虑让 `get_group_names`/`get_group_summary` 也合并 markdown 来源（对齐本轮 `query_combined` 的思路）。
+4. 机器人上线后：验证 `rabbitbot-navbridge` 输出 Pose/Ready、loop 进入真机导览与返航。
 
 ## 注意事项
 
@@ -83,7 +97,8 @@ RabbitBot 自主运行包，部署在 ShuHao-orin。Git 根 `/mnt/disk1/gt/air_r
 - 编排：`scripts_1/start_loop_entry.sh`、`scripts_1/start_nav_bridge_workflow_loop.sh`。
 - 控制台：`rabbitbot/control_console/{app,commands,config,status,dialogue}.py`。
 - 业务：`rabbitbot/agno_agents/{workflow,prompts}.py`、`rabbitbot/provider.py`、`stt_app_funasr.py`、`tts_app.py`、`rabbitbot/audio/run_tts_espnet.py`、`rabbitbot/tools/{sound_agno,logging}.py`。
-- 端口：Neo4j 7687 / VLM 8000 / Embedding 8005 / Memory 28182 / STT 28184 / TTS 28185 / Robot Agent·nav 28180 / 控制台 8080。
+- 记忆（本轮新增/改动）：`memory/`（项目根目录，markdown 文档存放处，含 `README.md`）、`rabbitbot/memory/markdown_memory.py`（新增）、`rabbitbot/memory/agent_memory.py::query_combined`、`memory_app.py`（`/query`、新增 `/memory_status`）、`tests/memory/test_markdown_memory.py`（新增）。
+- 端口：Neo4j 7687 / VLM 8000 / Embedding 8005 / Memory 28182(`/memory_status` 可查记忆状态) / STT 28184 / TTS 28185 / Robot Agent·nav 28180 / 控制台 8080。
 
 ## 最近历史摘要（提交）
 
@@ -105,4 +120,4 @@ RabbitBot 自主运行包，部署在 ShuHao-orin。Git 根 `/mnt/disk1/gt/air_r
 - `64c4cdd` 解耦统一容器为五个独立容器(docker-compose)
 - 更早：`6cd1543` get_inst_chat 精简提示词；`74ed6bf` 无机器人跳过手臂动作；`080a224` 控制台按钮顺序；`e67ee72` DJI 右声道 STT 修复；以及 TTS 声卡回退、Embedding/VLM 默认启用、当前运行日志面板、返航、portable core/nav 镜像、systemd/sudoers 治理（均已压缩，详见 git log）。
 
-生成时间：2026-06-30
+生成时间：2026-07-01（`feature/memory-markdown-neo4j` 分支，记忆双来源改造轮）
