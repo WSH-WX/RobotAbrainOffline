@@ -30,6 +30,7 @@ fi
 IMAGE_DIR="${IMAGE_DIR:-${AIR_ROOT}/outputs/portable-images}"
 CORE_IMAGE="${RABBITBOT_PORTABLE_CORE_IMAGE:-ghcr.io/aaronai/rabbitbot-core-portable:20260611}"
 NAV_IMAGE="${RABBITBOT_PORTABLE_NAV_IMAGE:-ghcr.io/aaronai/rabbitbot-nav-portable:20260611}"
+NEO4J_IMAGE="${RABBITBOT_NEO4J_IMAGE:-neo4j:5.26-community}"
 
 log_info() { echo "[INFO] $1"; }
 log_ok() { echo "[OK] $1"; }
@@ -84,5 +85,6 @@ load_one() {
 
 load_one "rabbitbot-core-portable.tar" "${CORE_IMAGE}" "portable_core"
 load_one "rabbitbot-nav-portable.tar" "${NAV_IMAGE}" "portable_nav"
+load_one "neo4j-community.tar" "${NEO4J_IMAGE}" "neo4j"
 
-log_ok "portable 镜像离线导入完成：core=${CORE_IMAGE}, nav=${NAV_IMAGE}"
+log_ok "portable 镜像离线导入完成：core=${CORE_IMAGE}, nav=${NAV_IMAGE}, neo4j=${NEO4J_IMAGE}"
