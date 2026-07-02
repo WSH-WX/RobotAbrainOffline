@@ -84,6 +84,7 @@ fi
 PROJECT_ROOT="${PROJECT_ROOT:-${DEFAULT_PROJECT_ROOT}}"
 CONTAINER_PROJECT_ROOT="${CONTAINER_PROJECT_ROOT:-/workspace/projects}"
 MODELS_DIR="${MODELS_DIR:-${RABBITBOT_MODELS_CACHE_DIR:-${PROJECT_ROOT}/models}}"
+MODEL_ENSURE_SCRIPT="${MODEL_ENSURE_SCRIPT:-${PROJECT_ROOT}/deploy/ensure_models.sh}"
 CONTAINER_RABBITBOT_DIR="${CONTAINER_RABBITBOT_DIR:-${CONTAINER_PROJECT_ROOT}/rabbitbot-dev-ros2-master}"
 CONTAINER_LOG_DIR="${CONTAINER_LOG_DIR:-${CONTAINER_RABBITBOT_DIR}/logs/unified_runtime}"
 RECREATE_CONTAINER="${RECREATE_CONTAINER:-0}"
@@ -157,6 +158,40 @@ model_services_enabled() {
     [ "${RABBITBOT_UNIFIED_START_VLM}" = "1" ] \
         || [ "${RABBITBOT_UNIFIED_START_EMBEDDING}" = "1" ] \
         || [ "${RABBITBOT_UNIFIED_START_STT}" = "1" ]
+}
+
+ensure_enabled_models() {
+    if ! model_services_enabled; then
+        log_info "模型能力均未启用，跳过按需模型下载检查"
+        return 0
+    fi
+    if [ "${RABBITBOT_AUTO_DOWNLOAD_MODELS:-1}" != "1" ]; then
+        log_warn "已禁用按需模型自动下载：RABBITBOT_AUTO_DOWNLOAD_MODELS=${RABBITBOT_AUTO_DOWNLOAD_MODELS:-0}"
+        return 0
+    fi
+    if [ ! -x "${MODEL_ENSURE_SCRIPT}" ]; then
+        log_error "模型下载脚本不存在或不可执行：${MODEL_ENSURE_SCRIPT}"
+        exit 1
+    fi
+
+    local targets=()
+    if [ "${RABBITBOT_UNIFIED_START_VLM}" = "1" ]; then
+        targets+=(qwen_vlm)
+    fi
+    if [ "${RABBITBOT_UNIFIED_START_EMBEDDING}" = "1" ]; then
+        targets+=(qwen_embedding)
+    fi
+    if [ "${RABBITBOT_UNIFIED_START_STT}" = "1" ]; then
+        targets+=(sensevoice)
+    fi
+
+    mkdir -p "${MODELS_DIR}"
+    local start_ts elapsed
+    start_ts="$(date +%s)"
+    log_info "开始按需模型检查/下载：targets=${targets[*]}, models_dir=${MODELS_DIR}, script=${MODEL_ENSURE_SCRIPT}"
+    RABBITBOT_MODELS_CACHE_DIR="${MODELS_DIR}" bash "${MODEL_ENSURE_SCRIPT}" "${targets[@]}"
+    elapsed=$(( $(date +%s) - start_ts ))
+    log_success "按需模型检查/下载完成：targets=${#targets[@]}, models_dir=${MODELS_DIR}, elapsed=${elapsed}s"
 }
 
 prepare_models_dir() {
@@ -586,6 +621,7 @@ if ! docker image inspect "${IMAGE_NAME}" >/dev/null 2>&1; then
 fi
 
 require_dir "${PROJECT_ROOT}"
+ensure_enabled_models
 prepare_models_dir
 
 ensure_compatible_container

@@ -53,7 +53,7 @@ services:
       WAIT_VLM_SECONDS: "600"
     volumes:
       - /mnt/disk1/gt/air_robot_gt_projects:/workspace/projects
-      - /mnt/disk1/models:/models
+      - ${RABBITBOT_MODELS_CACHE_DIR:-/mnt/disk1/gt/air_robot_gt_projects/models}:/models
       - rabbitbot_portable_py310:/workspace/projects/rabbitbot-dev-ros2-master/py310
       - rabbitbot_portable_py38:/workspace/projects/rabbitbot-dev-ros2-master/py38
     healthcheck:
@@ -86,7 +86,7 @@ services:
       RABBITBOT_UNITREE_TTS_VOLUME: "100"
     volumes:
       - /mnt/disk1/gt/air_robot_gt_projects:/workspace/projects
-      - /mnt/disk1/models:/models
+      - ${RABBITBOT_MODELS_CACHE_DIR:-/mnt/disk1/gt/air_robot_gt_projects/models}:/models
       - /dev/snd:/dev/snd
       - rabbitbot_portable_py310:/workspace/projects/rabbitbot-dev-ros2-master/py310
       - rabbitbot_portable_py38:/workspace/projects/rabbitbot-dev-ros2-master/py38
@@ -117,7 +117,7 @@ services:
       NEO4J_PASSWORD: neo4j_pass
     volumes:
       - /mnt/disk1/gt/air_robot_gt_projects:/workspace/projects
-      - /mnt/disk1/models:/models
+      - ${RABBITBOT_MODELS_CACHE_DIR:-/mnt/disk1/gt/air_robot_gt_projects/models}:/models
       - rabbitbot_portable_py310:/workspace/projects/rabbitbot-dev-ros2-master/py310
       - rabbitbot_portable_py38:/workspace/projects/rabbitbot-dev-ros2-master/py38
     depends_on:
@@ -147,7 +147,7 @@ services:
       RABBITBOT_MODELS_DIR: /models
     volumes:
       - /mnt/disk1/gt/air_robot_gt_projects:/workspace/projects
-      - /mnt/disk1/models:/models
+      - ${RABBITBOT_MODELS_CACHE_DIR:-/mnt/disk1/gt/air_robot_gt_projects/models}:/models
       - rabbitbot_portable_py310:/workspace/projects/rabbitbot-dev-ros2-master/py310
       - rabbitbot_portable_py38:/workspace/projects/rabbitbot-dev-ros2-master/py38
       - rabbitbot_portable_vln:/workspace/projects/vln

@@ -35,6 +35,8 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 PROJECTS_DIR="${RABBITBOT_PROJECTS_DIR:-$(cd "${PROJECT_DIR}/.." && pwd)}"
+MODELS_DIR="${MODELS_DIR:-${RABBITBOT_MODELS_CACHE_DIR:-${PROJECTS_DIR}/models}}"
+MODEL_ENSURE_SCRIPT="${MODEL_ENSURE_SCRIPT:-${PROJECTS_DIR}/deploy/ensure_models.sh}"
 NAV_EXAMPLE_DIR="${NAV_EXAMPLE_DIR:-${PROJECTS_DIR}/unitree_slam_example_new/example}"
 NAV_BRIDGE_RUNTIME="${RABBITBOT_NAV_RUNTIME:-host}"
 NAV_BRIDGE_SCRIPT_DEFAULT="${NAV_EXAMPLE_DIR}/start_nav_arm_bridge.sh"
@@ -804,6 +806,7 @@ recover_runtime_services() {
 ensure_decoupled_services() {
     # 解耦模式：用 docker-compose 拉起基础服务与 workflow 宿主，替代创建 unified 单容器。
     require_path "${RABBITBOT_DECOUPLED_COMPOSE_FILE}"
+    ensure_enabled_models
     log_info "确保解耦基础服务就绪（compose）：file=${RABBITBOT_DECOUPLED_COMPOSE_FILE}, workflow_container=${CONTAINER_NAME}"
     # 解耦栈与旧 unified 单容器互斥：若旧容器仍在运行，先停止以释放端口。
     if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "rabbitbot-unified-runtime"; then
@@ -815,6 +818,40 @@ ensure_decoupled_services() {
     compose_dir="$(dirname "${RABBITBOT_DECOUPLED_COMPOSE_FILE}")"
     ( cd "${compose_dir}" && docker compose -f "${RABBITBOT_DECOUPLED_COMPOSE_FILE}" up -d neo4j rabbitbot-vlm rabbitbot-audio rabbitbot-memory rabbitbot-workflow )
     log_info "解耦基础服务已就绪：neo4j(7687)/vlm(8000+8005)/audio(28185+28184)/memory(28182)/workflow 宿主(${CONTAINER_NAME})"
+}
+
+ensure_enabled_models() {
+    if [ "${RABBITBOT_AUTO_DOWNLOAD_MODELS:-1}" != "1" ]; then
+        log_warn "已禁用按需模型自动下载：RABBITBOT_AUTO_DOWNLOAD_MODELS=${RABBITBOT_AUTO_DOWNLOAD_MODELS:-0}"
+        return 0
+    fi
+    if [ ! -x "${MODEL_ENSURE_SCRIPT}" ]; then
+        log_error "模型下载脚本不存在或不可执行：${MODEL_ENSURE_SCRIPT}"
+        return 1
+    fi
+
+    local targets=()
+    if [ "${RABBITBOT_UNIFIED_START_VLM}" = "1" ]; then
+        targets+=(qwen_vlm)
+    fi
+    if [ "${RABBITBOT_UNIFIED_START_EMBEDDING}" = "1" ]; then
+        targets+=(qwen_embedding)
+    fi
+    if [ "${RABBITBOT_UNIFIED_START_STT}" = "1" ]; then
+        targets+=(sensevoice)
+    fi
+    if [ "${#targets[@]}" -eq 0 ]; then
+        log_info "模型能力均未启用，跳过按需模型下载检查"
+        return 0
+    fi
+
+    mkdir -p "${MODELS_DIR}"
+    local start_ts elapsed
+    start_ts="$(date +%s)"
+    log_info "开始按需模型检查/下载：targets=${targets[*]}, models_dir=${MODELS_DIR}, script=${MODEL_ENSURE_SCRIPT}"
+    RABBITBOT_MODELS_CACHE_DIR="${MODELS_DIR}" bash "${MODEL_ENSURE_SCRIPT}" "${targets[@]}"
+    elapsed=$(( $(date +%s) - start_ts ))
+    log_info "按需模型检查/下载完成：targets=${#targets[@]}, models_dir=${MODELS_DIR}, elapsed=${elapsed}s"
 }
 
 ensure_unified_services() {

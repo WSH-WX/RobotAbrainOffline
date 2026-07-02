@@ -19,6 +19,24 @@ fi
 
 log_info() { echo "[INFO] $1"; }
 log_ok() { echo "[OK] $1"; }
+log_warn() { echo "[WARN] $1"; }
+log_error() { echo "[ERROR] $1" >&2; }
+
+ensure_models() {
+    local targets=("$@")
+    if [ "${#targets[@]}" -eq 0 ]; then
+        log_warn "未传入模型键，跳过模型检查"
+        return 0
+    fi
+    local models_dir="${RABBITBOT_MODELS_CACHE_DIR:-${AIR_ROOT}/models}"
+    local start_ts elapsed
+    mkdir -p "${models_dir}"
+    start_ts="$(date +%s)"
+    log_info "开始检查/下载 portable 基础服务模型：targets=${targets[*]}, models_dir=${models_dir}"
+    RABBITBOT_MODELS_CACHE_DIR="${models_dir}" "${AIR_ROOT}/deploy/ensure_models.sh" "${targets[@]}"
+    elapsed=$(( $(date +%s) - start_ts ))
+    log_ok "portable 基础服务模型检查完成：targets=${#targets[@]}, elapsed=${elapsed}s"
+}
 
 # 镜像来源：默认 local，表示镜像来自本机构建或离线导入；此时只校验本地镜像存在，不访问远端仓库。
 # 构建机若要现场构建可显式传入 MODE=build；全新 Orin 默认走 check。
@@ -33,6 +51,7 @@ if [ "${RABBITBOT_BASE_RUNTIME:-unified}" = "compose" ]; then
         echo "[ERROR] 缺少解耦 compose 文件：${COMPOSE_FILE}" >&2
         exit 1
     fi
+    ensure_models qwen_vlm qwen_embedding sensevoice
     log_info "解耦栈启动基础服务（compose）：file=${COMPOSE_FILE}"
     ( cd "$(dirname "${COMPOSE_FILE}")" && docker compose -f "${COMPOSE_FILE}" up -d neo4j rabbitbot-vlm rabbitbot-audio rabbitbot-memory rabbitbot-workflow )
     log_ok "解耦栈基础服务已拉起（neo4j/vlm/audio/memory/workflow，不含 28180 nav bridge）；如需待命循环与 nav bridge，请启动 rabbitbot-loop.service 或执行 scripts_1/start_loop_entry.sh"
@@ -46,8 +65,9 @@ else
         RUN_WORKFLOW_AFTER_START=0 \
         RABBITBOT_WORKFLOW_NON_INTEGRATION=0 \
         RABBITBOT_WORKFLOW_VERBOSE=0 \
-        RABBITBOT_UNIFIED_START_VLM="${RABBITBOT_ENABLE_VLM:-0}" \
-        RABBITBOT_UNIFIED_START_STT="${RABBITBOT_ENABLE_STT:-0}" \
+        RABBITBOT_UNIFIED_START_VLM="${RABBITBOT_ENABLE_VLM:-1}" \
+        RABBITBOT_UNIFIED_START_EMBEDDING="${RABBITBOT_ENABLE_EMBEDDING:-1}" \
+        RABBITBOT_UNIFIED_START_STT="${RABBITBOT_ENABLE_STT:-1}" \
         RABBITBOT_UNIFIED_START_ROBOT_AGENT="${RABBITBOT_UNIFIED_START_ROBOT_AGENT:-0}" \
         bash scripts_1/start_unified_integration_workflow.sh
     )

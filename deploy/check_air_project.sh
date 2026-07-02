@@ -114,7 +114,9 @@ check_portable_env_keys() {
         RABBITBOT_DDS_HOST_CIDR
         RABBITBOT_NAV_MAP_PATH
         RABBITBOT_ENABLE_VLM
+        RABBITBOT_ENABLE_EMBEDDING
         RABBITBOT_ENABLE_STT
+        RABBITBOT_AUTO_DOWNLOAD_MODELS
         RABBITBOT_UNIFIED_START_ROBOT_AGENT
     )
     for key in "${required_keys[@]}"; do
@@ -168,21 +170,36 @@ check_portable_unitree_tts_policy() {
 }
 
 check_portable_models_policy() {
-    # portable 冷启动默认关闭 VLM/Embedding/STT，不能因为宿主没有 models/ 目录而阻断 core 基础服务。
+    # portable 冷启动默认启用 VLM/Embedding/STT；启动对应服务前必须自动检查/下载模型。
     local integration_script="${REPO_DIR}/scripts_1/start_unified_integration_workflow.sh"
+    local loop_script="${REPO_DIR}/scripts_1/start_nav_bridge_workflow_loop.sh"
+    local ensure_script="${PROJECTS_DIR}/deploy/ensure_models.sh"
+    local decoupled_compose="${REPO_DIR}/docker/portable/docker-compose.decoupled.yaml"
     if ! grep -q 'prepare_models_dir' "${integration_script}"; then
         log_error "core 启动脚本缺少按需模型目录策略：${integration_script}"
         exit 1
     fi
-    if grep -q 'require_dir "${MODELS_DIR}"' "${integration_script}"; then
-        log_error "core 启动脚本仍强制要求宿主 models 目录，破坏 clean_orin 冷启动：${integration_script}"
+    if ! grep -q 'ensure_enabled_models' "${integration_script}"; then
+        log_error "core 启动脚本缺少启用服务前模型自动检查/下载：${integration_script}"
         exit 1
     fi
-    if ! grep -q 'RABBITBOT_EMPTY_MODELS_DIR' "${integration_script}"; then
-        log_error "core 启动脚本缺少 portable 空模型挂载点兜底：${integration_script}"
+    if ! grep -q 'ensure_enabled_models' "${loop_script}"; then
+        log_error "loop 解耦启动链路缺少模型自动检查/下载：${loop_script}"
         exit 1
     fi
-    log_ok "portable core 模型目录策略正确：模型能力关闭时不要求宿主 models/"
+    if ! grep -q 'model_ready' "${ensure_script}"; then
+        log_error "模型下载脚本缺少关键文件完整性检查：${ensure_script}"
+        exit 1
+    fi
+    if ! grep -q 'RABBITBOT_ENABLE_EMBEDDING' "${ensure_script}"; then
+        log_error "模型下载脚本缺少 Embedding 显式开关支持：${ensure_script}"
+        exit 1
+    fi
+    if ! grep -q 'RABBITBOT_MODELS_CACHE_DIR' "${decoupled_compose}"; then
+        log_error "解耦 compose 未使用 RABBITBOT_MODELS_CACHE_DIR 挂载模型目录：${decoupled_compose}"
+        exit 1
+    fi
+    log_ok "portable 模型策略正确：启用服务前会自动检查/下载 VLM/Embedding/STT 模型"
 }
 
 check_python_venv_capability() {
@@ -406,7 +423,11 @@ log_ok "未发现核心源码旧项目根硬编码"
 # ---------------------------------------------------------------------------
 run_builder_checks() {
     log_info "构建机模式：检查外部构建源是否存在"
-    require_path "${PROJECTS_DIR}/models"
+    if [ -d "${PROJECTS_DIR}/models" ]; then
+        log_ok "模型目录已存在：${PROJECTS_DIR}/models"
+    else
+        log_info "模型目录尚不存在，将由 deploy/ensure_models.sh 在启用模型服务前自动创建并下载：${PROJECTS_DIR}/models"
+    fi
     require_path "${PROJECTS_DIR}/custom_action_ws/install/setup.bash"
     require_path "${PROJECTS_DIR}/unitree_slam_example_new/example/build/goGoalNavigation66"
     require_path "${PROJECTS_DIR}/unitree_slam_example_new/example/build/g1ArmOfficialActionServer"

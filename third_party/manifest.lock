@@ -4,14 +4,15 @@
   "summary": {
     "goal": "让全新 Orin 通过 GitHub 源码、最小宿主初始化和本地导入/构建的自包含镜像完成 RabbitBot 冷启动",
     "default_runtime_mode": "portable",
-    "default_vlm_enabled": false,
+    "default_vlm_enabled": true,
     "image_source": "local",
     "image_delivery": "offline_docker_save_load",
     "notes": [
       "本清单记录所有 Git 之外的运行依赖、镜像来源和模型下载策略。",
       "凡是被 .gitignore 排除但主流程必需的内容，都必须在本清单中有来源。",
       "当前阶段镜像暂不发布远端仓库，通过本机构建 + docker save/load 交付；core/nav 均为自包含镜像。",
-      "全新 Orin 运行期不再要求宿主存在 py38/py310/vln/pyorbbecsdk/unitree_sdk2 等目录：core 镜像烤入 py38/py310/vln/pyorbbecsdk，nav 镜像烤入 unitree_sdk2 与导航构建产物。"
+      "全新 Orin 运行期不再要求宿主存在 py38/py310/vln/pyorbbecsdk/unitree_sdk2 等目录：core 镜像烤入 py38/py310/vln/pyorbbecsdk，nav 镜像烤入 unitree_sdk2 与导航构建产物。",
+      "VLM、Embedding、STT 现在按默认启用处理；启动对应服务前会通过 deploy/ensure_models.sh 自动检查/下载模型到项目根 models 目录。"
     ]
   },
   "dependencies": {
@@ -128,19 +129,19 @@
   },
   "models": {
     "qwen_vlm": {
-      "enabled_by_default": false,
+      "enabled_by_default": true,
       "download_mode": "on_demand",
       "hf_repo": "Qwen/Qwen2.5-VL-7B-Instruct-GPTQ-Int4",
       "target_dir": "models/Qwen2.5-VL-7B-Instruct-GPTQ-Int4"
     },
     "qwen_embedding": {
-      "enabled_by_default": false,
+      "enabled_by_default": true,
       "download_mode": "on_demand",
       "hf_repo": "Qwen/Qwen3-Embedding-0.6B",
       "target_dir": "models/Qwen3-Embedding-0.6B"
     },
     "sensevoice": {
-      "enabled_by_default": false,
+      "enabled_by_default": true,
       "download_mode": "on_demand",
       "hf_repo": "iic/SenseVoiceSmall",
       "target_dir": "models/SenseVoiceSmall"

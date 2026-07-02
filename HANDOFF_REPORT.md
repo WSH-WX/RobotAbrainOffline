@@ -29,6 +29,18 @@ RabbitBot 自主运行包，部署在 ShuHao-orin。Git 根 `/mnt/disk1/gt/air_r
 
 ## 当前状态
 
+本轮更新（2026-07-02，模型按需自动下载）：
+- 背景和目标：此前 `rabbitbot-control-console.service` 启动后，前端点“开始程序(无机器人模式)”会默认拉起 VLM/Embedding/STT，但 `deploy/ensure_models.sh` 又因 `RABBITBOT_ENABLE_VLM=0`、`RABBITBOT_ENABLE_STT=0` 在无参数时跳过下载，导致“运行时需要模型、下载脚本认为不需要模型”的配置错位。本轮目标是让 VLM/Embedding/STT 服务启动前自动检查并下载自身所需模型到项目根 `models/`。
+- 已完成：`deploy/ensure_models.sh` 增加 `RABBITBOT_ENABLE_EMBEDDING` 支持、目标去重、关键文件完整性检查、半下载目录补齐下载、下载锁等待与耗时/阶段日志；VLM/Embedding 检查 `config.json`，SenseVoice 检查 `config.yaml`/`model.pt`/`am.mvn`，不再只凭目录非空判断模型存在。
+- 已完成：`scripts_1/start_unified_integration_workflow.sh` 在单容器路径创建/启动基础服务前，按 `RABBITBOT_UNIFIED_START_VLM`、`RABBITBOT_UNIFIED_START_EMBEDDING`、`RABBITBOT_UNIFIED_START_STT` 自动调用 `deploy/ensure_models.sh` 下载 `qwen_vlm`、`qwen_embedding`、`sensevoice`；可通过 `RABBITBOT_AUTO_DOWNLOAD_MODELS=0` 显式禁用。
+- 已完成：`scripts_1/start_nav_bridge_workflow_loop.sh` 的解耦 compose 路径在 `docker compose up` 前执行同样的模型检查/下载；`deploy/start_portable_stack.sh` 在启动 portable 基础服务前也会检查/下载模型。
+- 已完成：解耦 compose 的 `/models` 挂载从旧 `/mnt/disk1/models` 改为 `${RABBITBOT_MODELS_CACHE_DIR:-/mnt/disk1/gt/air_robot_gt_projects/models}`，与下载位置统一到项目根 `models/`。
+- 已完成：`runtime/portable.env.example`、`deploy/bootstrap_host.sh`、`third_party/manifest.lock` 将 VLM/Embedding/STT 默认改为启用，并加入 `RABBITBOT_AUTO_DOWNLOAD_MODELS=1`；当前目标机运行态 `runtime/portable.env` 也已同步为 `RABBITBOT_ENABLE_VLM=1`、`RABBITBOT_ENABLE_EMBEDDING=1`、`RABBITBOT_ENABLE_STT=1`、`RABBITBOT_AUTO_DOWNLOAD_MODELS=1`、`RABBITBOT_MODELS_CACHE_DIR=/mnt/disk1/gt/air_robot_gt_projects/models`。
+- 已完成：`deploy/check_air_project.sh` 的 portable 模型策略检查改为验证自动下载链路和 `RABBITBOT_MODELS_CACHE_DIR` 挂载，不再要求构建机预先存在 `models/`。
+- 已验证：远端 `bash -n` 覆盖 `deploy/ensure_models.sh`、`deploy/bootstrap_host.sh`、`deploy/start_portable_stack.sh`、`deploy/check_air_project.sh`、`scripts_1/start_unified_integration_workflow.sh`、`scripts_1/start_nav_bridge_workflow_loop.sh`；`python3 -m json.tool third_party/manifest.lock` 通过；`PORTABLE_CHECK_MODE=clean_orin bash deploy/check_air_project.sh` 通过；`docker compose -f docker-compose.decoupled.yaml config` 展开确认四个 core 容器的 `/models` 均挂载到 `/mnt/disk1/gt/air_robot_gt_projects/models`。
+- 未完成/阻塞：未实际触发 Hugging Face 大模型下载，避免在本轮验证中长时间占用网络和磁盘；builder 模式自检仍因本机缺少 `/mnt/disk1/gt/air_robot_gt_projects/custom_action_ws/install/setup.bash` 失败，这是既有构建机外部产物缺失，和本轮模型下载链路无关。
+- 建议下一步：如需立即启动导览，可直接点控制台“开始程序(无机器人模式)”或启动 `rabbitbot-loop.service`，首次启动会进入模型下载；下载过程会写入当前运行日志和 systemd 日志，下载完成后再拉起对应服务。若现场网络不可用，需先准备好 Hugging Face 模型缓存或手动拷贝完整模型目录。
+
 实测（截至生成时间）：6 容器全部运行（neo4j/vlm/audio/memory healthy，navbridge/workflow 无 healthcheck 但 Up），7 端口（7687/8000/8005/28182/28184/28185/28180）全 up，`rabbitbot-loop.service` 按需启停（当前 inactive，compose 基础服务持续在线），`RABBITBOT_BASE_RUNTIME=compose`、`RABBITBOT_NAV_WORKFLOW_NO_ROBOT=1`。
 
 已完成（本会话，`feature/memory-markdown-neo4j` 分支）：
@@ -120,4 +132,4 @@ RabbitBot 自主运行包，部署在 ShuHao-orin。Git 根 `/mnt/disk1/gt/air_r
 - `64c4cdd` 解耦统一容器为五个独立容器(docker-compose)
 - 更早：`6cd1543` get_inst_chat 精简提示词；`74ed6bf` 无机器人跳过手臂动作；`080a224` 控制台按钮顺序；`e67ee72` DJI 右声道 STT 修复；以及 TTS 声卡回退、Embedding/VLM 默认启用、当前运行日志面板、返航、portable core/nav 镜像、systemd/sudoers 治理（均已压缩，详见 git log）。
 
-生成时间：2026-07-01（`feature/memory-markdown-neo4j` 分支，记忆双来源改造轮）
+生成时间：2026-07-02（本轮更新：模型按需自动下载与 portable 默认模型能力启用）
