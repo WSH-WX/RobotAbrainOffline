@@ -1,0 +1,18 @@
+# 可选 PulseAudio/蓝牙音频实验覆盖文件。
+# 默认主 compose 不挂载 Pulse socket，避免无桌面会话或 socket 缺失时影响 TTS/STT 启动。
+# 使用方式：RABBITBOT_ENABLE_PULSE_AUDIO=1 docker compose -f docker-compose.decoupled.yaml -f docker-compose.audio-pulse.yaml up -d rabbitbot-tts rabbitbot-stt
+
+services:
+  rabbitbot-tts:
+    environment:
+      RABBITBOT_ENABLE_PULSE_AUDIO: "1"
+      PULSE_SERVER: ${PULSE_SERVER:-unix:/run/user/1000/pulse/native}
+    volumes:
+      - ${RABBITBOT_PULSE_DIR:-/run/user/1000/pulse}:/run/user/1000/pulse:ro
+
+  rabbitbot-stt:
+    environment:
+      RABBITBOT_ENABLE_PULSE_AUDIO: "1"
+      PULSE_SERVER: ${PULSE_SERVER:-unix:/run/user/1000/pulse/native}
+    volumes:
+      - ${RABBITBOT_PULSE_DIR:-/run/user/1000/pulse}:/run/user/1000/pulse:ro

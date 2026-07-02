@@ -382,11 +382,11 @@ SERVICE_STARTUP_GRACE_SECONDS = 180.0
 SERVICE_RESTART_FORCE_STARTING_SECONDS = 22.0
 
 
-# 服务 -> 角色容器组：同组服务共享一个容器，重启该容器会一并重启同组所有服务。
+# 服务 -> 角色容器组：compose 新栈下 TTS/STT 已拆成独立容器，VLM/Embedding 仍共享容器。
 SERVICE_CONTAINER_GROUP = {
     "neo4j": "neo4j",
-    "tts": "audio",
-    "stt": "audio",
+    "tts": "tts",
+    "stt": "stt",
     "memory": "memory",
     "vlm": "vlm",
     "embedding": "vlm",
@@ -419,10 +419,14 @@ def resolve_service_container(key: str) -> str | None:
     base_runtime = os.environ.get("RABBITBOT_BASE_RUNTIME", "compose").strip().lower()
     if base_runtime == "compose":
         compose_container = {
-            "audio": os.environ.get("RABBITBOT_AUDIO_CONTAINER_NAME", "rabbitbot-audio"),
+            "tts": os.environ.get("RABBITBOT_TTS_CONTAINER_NAME", "rabbitbot-tts"),
+            "stt": os.environ.get("RABBITBOT_STT_CONTAINER_NAME", "rabbitbot-stt"),
             "memory": os.environ.get("RABBITBOT_MEMORY_CONTAINER_NAME", "rabbitbot-memory"),
             "vlm": os.environ.get("RABBITBOT_VLM_CONTAINER_NAME", "rabbitbot-vlm"),
         }
+        if group == "audio":
+            # 兼容旧分组名；新栈中 TTS/STT 已拆分，默认不再由此路径命中。
+            return os.environ.get("RABBITBOT_AUDIO_CONTAINER_NAME", "rabbitbot-audio")
         return compose_container.get(group)
     # unified(旧)：所有 rabbitbot 服务都在统一容器内，重启任一即重启全部。
     return os.environ.get("RABBITBOT_UNIFIED_CONTAINER_NAME", os.environ.get("CONTAINER_NAME", "rabbitbot-unified-runtime"))

@@ -7,7 +7,9 @@
 #   单个 rabbitbot-unified-runtime 容器内的服务拆到多个解耦容器里运行。
 #
 #   - vlm   ：启动 VLM(8000) + Embedding(8005)
-#   - audio ：启动 TTS(28185) + STT(28184)
+#   - tts   ：启动 TTS(28185)
+#   - stt   ：启动 STT(28184)
+#   - audio ：兼容旧入口，同时启动 TTS(28185) + STT(28184)
 #   - memory：等待外部 Neo4j(7687) 与 Embedding(8005) 就绪后，启动 Memory Agent(28182)
 #
 #   Neo4j 单独使用官方 neo4j 镜像容器，不在本脚本范围内；nav bridge 使用其专用镜像容器。
@@ -39,8 +41,21 @@ case "${ROLE}" in
         log_info "角色 vlm：启动 VLM(8000) 与 Embedding(8005)"
         start_vlm_and_embedding
         ;;
+    tts)
+        # 本容器只负责 TTS，便于独立重启和独立健康检查。
+        log_info "角色 tts：启动 TTS(28185)"
+        start_tts
+        ;;
+    stt)
+        # 本容器只负责 STT，便于独立重启和独立健康检查。
+        log_info "角色 stt：启动 STT(28184)"
+        export RABBITBOT_UNIFIED_START_STT=1
+        RABBITBOT_UNIFIED_START_STT=1
+        start_stt
+        ;;
     audio)
-        # 本容器负责 TTS 与 STT。
+        # 兼容旧入口：保留一段时间，避免旧 compose 或旧脚本直接设置 role=audio 时失效。
+        log_warn "角色 audio 为兼容入口：建议改用独立 tts/stt 角色。"
         log_info "角色 audio：启动 TTS(28185) 与 STT(28184)"
         start_tts
         export RABBITBOT_UNIFIED_START_STT=1
@@ -56,7 +71,7 @@ case "${ROLE}" in
         start_memory_agent
         ;;
     *)
-        log_error "未知角色 RABBITBOT_CONTAINER_ROLE='${ROLE}'。可选值：vlm | audio | memory"
+        log_error "未知角色 RABBITBOT_CONTAINER_ROLE='${ROLE}'。可选值：vlm | tts | stt | audio | memory"
         exit 1
         ;;
 esac

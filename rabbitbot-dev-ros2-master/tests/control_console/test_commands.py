@@ -160,11 +160,11 @@ def test_stop_loop_service_restarts_project_containers_by_default(tmp_path):
     docker.write_text(
         "#!/usr/bin/env bash\n"
         "if [ \"$1\" = ps ]; then\n"
-        "  printf '%s\\n' neo4j rabbitbot-vlm rabbitbot-audio rabbitbot-memory rabbitbot-workflow rabbitbot-navbridge\n"
+        "  printf '%s\\n' neo4j rabbitbot-vlm rabbitbot-tts rabbitbot-stt rabbitbot-memory rabbitbot-workflow rabbitbot-navbridge\n"
         "  exit 0\n"
         "fi\n"
         f"printf '%s\n' \"$@\" > {docker_record}\n"
-        "printf '%s\\n' rabbitbot-vlm rabbitbot-audio rabbitbot-memory rabbitbot-workflow rabbitbot-navbridge neo4j\n",
+        "printf '%s\\n' rabbitbot-vlm rabbitbot-tts rabbitbot-stt rabbitbot-memory rabbitbot-workflow rabbitbot-navbridge neo4j\n",
         encoding="utf-8",
     )
     docker.chmod(0o755)
@@ -173,12 +173,12 @@ def test_stop_loop_service_restarts_project_containers_by_default(tmp_path):
 
     assert result["ok"] is True
     assert result["service"] == "rabbitbot-loop.service"
-    assert result["containers"] == ["neo4j", "rabbitbot-vlm", "rabbitbot-audio", "rabbitbot-memory", "rabbitbot-workflow", "rabbitbot-navbridge"]
+    assert result["containers"] == ["neo4j", "rabbitbot-vlm", "rabbitbot-tts", "rabbitbot-stt", "rabbitbot-memory", "rabbitbot-workflow", "rabbitbot-navbridge"]
     assert result["container_restarted"] is True
     assert "已关闭导航主程序" in result["message"]
     assert "已重启项目服务相关容器" in result["message"]
     assert systemctl_record.read_text(encoding="utf-8").splitlines() == ["stop", "rabbitbot-loop.service"]
-    assert docker_record.read_text(encoding="utf-8").splitlines() == ["restart", "-t", "20", "neo4j", "rabbitbot-vlm", "rabbitbot-audio", "rabbitbot-memory", "rabbitbot-workflow", "rabbitbot-navbridge"]
+    assert docker_record.read_text(encoding="utf-8").splitlines() == ["restart", "-t", "20", "neo4j", "rabbitbot-vlm", "rabbitbot-tts", "rabbitbot-stt", "rabbitbot-memory", "rabbitbot-workflow", "rabbitbot-navbridge"]
 
 
 def test_stop_loop_service_can_use_explicit_unified_runtime(tmp_path, monkeypatch):

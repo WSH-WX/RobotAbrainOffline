@@ -6,7 +6,8 @@
 # 五个容器：
 #   neo4j               官方 neo4j 镜像，提供图数据库 7687/7474
 #   rabbitbot-vlm       复用 core-portable，仅跑 VLM(8000)+Embedding(8005)
-#   rabbitbot-audio     复用 core-portable，仅跑 TTS(28185)+STT(28184)
+#   rabbitbot-tts       复用 core-portable，仅跑 TTS(28185)
+#   rabbitbot-stt       复用 core-portable，仅跑 STT(28184)
 #   rabbitbot-memory    复用 core-portable，仅跑 Memory Agent(28182)，依赖 neo4j+embedding
 #   rabbitbot-navbridge 复用 nav 镜像，提供导航桥接/Robot Agent 28180
 #
@@ -64,28 +65,66 @@ services:
       start_period: 600s
     restart: unless-stopped
 
-  rabbitbot-audio:
+  rabbitbot-tts:
     image: ${RABBITBOT_PORTABLE_CORE_IMAGE:-ghcr.io/aaronai/rabbitbot-core-portable:20260611}
-    container_name: rabbitbot-audio
+    container_name: ${RABBITBOT_TTS_CONTAINER_NAME:-rabbitbot-tts}
     network_mode: host
     ipc: host
     runtime: nvidia
     command: ["bash", "/workspace/projects/rabbitbot-dev-ros2-master/scripts_1/unified_runtime/start_role_container.sh"]
     environment:
-      RABBITBOT_CONTAINER_ROLE: audio
+      RABBITBOT_CONTAINER_ROLE: tts
       RABBITBOT_DIR: /workspace/projects/rabbitbot-dev-ros2-master
       RABBITBOT_MODELS_DIR: /models
       RABBITBOT_LOG_DIR: /workspace/projects/logs/unified_runtime
-      RABBITBOT_UNIFIED_START_STT: "1"
       RABBITBOT_TTS_ALLOW_BUILTIN: "1"
-      # 默认 auto：由 start_tts_app.bash 探测 Unitree 网卡/本体音频服务，通过则用 unitree，
-      # 失败（如机器人不在线、eno1 无载波）则自动回退本地声卡；不再写死 unitree 绕过健康检查。
-      RABBITBOT_TTS_BACKEND: ${RABBITBOT_TTS_BACKEND:-auto}
+      RABBITBOT_TTS_AUDIO_BACKEND: ${RABBITBOT_TTS_AUDIO_BACKEND:-alsa}
+      RABBITBOT_ENABLE_PULSE_AUDIO: ${RABBITBOT_ENABLE_PULSE_AUDIO:-0}
+      PULSE_SERVER: ${PULSE_SERVER:-unix:/run/user/1000/pulse/native}
+      # 便携拆分栈默认无机器人模式，固定使用本地 ALSA 输出；真机联调可显式设置 unitree 或 auto。
+      RABBITBOT_TTS_BACKEND: ${RABBITBOT_TTS_BACKEND:-local}
       RABBITBOT_UNIFIED_TTS_DEVICE: cuda
       RABBITBOT_UNIFIED_TTS_FAST_SOUND_PRELOAD: "0"
       RABBITBOT_UNIFIED_TTS_STARTUP_SPEECH: "0"
       RABBITBOT_UNITREE_TTS_INTERFACE: ${RABBITBOT_UNITREE_TTS_INTERFACE:-eno1}
       RABBITBOT_UNITREE_TTS_VOLUME: "100"
+    volumes:
+      - /mnt/disk1/gt/air_robot_gt_projects:/workspace/projects
+      - ${RABBITBOT_MODELS_CACHE_DIR:-/mnt/disk1/gt/air_robot_gt_projects/models}:/models
+      - /dev/snd:/dev/snd
+      - rabbitbot_portable_py310:/workspace/projects/rabbitbot-dev-ros2-master/py310
+      - rabbitbot_portable_py38:/workspace/projects/rabbitbot-dev-ros2-master/py38
+    device_cgroup_rules:
+      - 'c 116:* rwm'
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          curl -sf --max-time 5 -X POST http://127.0.0.1:28185/exec
+          --form-string 'task={"task":"wait_speech","lang":"","text":"","timeout":1}'
+          >/dev/null 2>&1 || exit 1
+      interval: 20s
+      timeout: 10s
+      retries: 30
+      start_period: 300s
+    restart: unless-stopped
+
+  rabbitbot-stt:
+    image: ${RABBITBOT_PORTABLE_CORE_IMAGE:-ghcr.io/aaronai/rabbitbot-core-portable:20260611}
+    container_name: ${RABBITBOT_STT_CONTAINER_NAME:-rabbitbot-stt}
+    network_mode: host
+    ipc: host
+    runtime: nvidia
+    command: ["bash", "/workspace/projects/rabbitbot-dev-ros2-master/scripts_1/unified_runtime/start_role_container.sh"]
+    environment:
+      RABBITBOT_CONTAINER_ROLE: stt
+      RABBITBOT_DIR: /workspace/projects/rabbitbot-dev-ros2-master
+      RABBITBOT_MODELS_DIR: /models
+      RABBITBOT_LOG_DIR: /workspace/projects/logs/unified_runtime
+      RABBITBOT_UNIFIED_START_STT: "1"
+      RABBITBOT_STT_AUDIO_BACKEND: ${RABBITBOT_STT_AUDIO_BACKEND:-alsa}
+      RABBITBOT_ENABLE_PULSE_AUDIO: ${RABBITBOT_ENABLE_PULSE_AUDIO:-0}
+      PULSE_SERVER: ${PULSE_SERVER:-unix:/run/user/1000/pulse/native}
     volumes:
       - /mnt/disk1/gt/air_robot_gt_projects:/workspace/projects
       - ${RABBITBOT_MODELS_CACHE_DIR:-/mnt/disk1/gt/air_robot_gt_projects/models}:/models
@@ -158,7 +197,9 @@ services:
     depends_on:
       rabbitbot-memory:
         condition: service_healthy
-      rabbitbot-audio:
+      rabbitbot-tts:
+        condition: service_healthy
+      rabbitbot-stt:
         condition: service_healthy
     restart: unless-stopped
 

@@ -34,11 +34,11 @@ def make_config(tmp_path):
     docker_path.write_text(
         "#!/usr/bin/env bash\n"
         "if [ \"$1\" = ps ]; then\n"
-        "  printf '%s\\n' neo4j rabbitbot-vlm rabbitbot-audio rabbitbot-memory rabbitbot-workflow rabbitbot-navbridge\n"
+        "  printf '%s\\n' neo4j rabbitbot-vlm rabbitbot-tts rabbitbot-stt rabbitbot-memory rabbitbot-workflow rabbitbot-navbridge\n"
         "  exit 0\n"
         "fi\n"
         f"printf '%s\n' \"$@\" > {docker_record}\n"
-        "printf '%s\\n' rabbitbot-vlm rabbitbot-audio rabbitbot-memory rabbitbot-workflow rabbitbot-navbridge neo4j\n",
+        "printf '%s\\n' rabbitbot-vlm rabbitbot-tts rabbitbot-stt rabbitbot-memory rabbitbot-workflow rabbitbot-navbridge neo4j\n",
         encoding="utf-8",
     )
     docker_path.chmod(0o755)
@@ -221,14 +221,14 @@ def test_stop_stops_loop_service_without_login(tmp_path):
 
     assert response.status_code == 200
     assert response.json()["service"] == "rabbitbot-loop.service"
-    assert response.json()["containers"] == ["neo4j", "rabbitbot-vlm", "rabbitbot-audio", "rabbitbot-memory", "rabbitbot-workflow", "rabbitbot-navbridge"]
+    assert response.json()["containers"] == ["neo4j", "rabbitbot-vlm", "rabbitbot-tts", "rabbitbot-stt", "rabbitbot-memory", "rabbitbot-workflow", "rabbitbot-navbridge"]
     assert response.json()["container_restarted"] is True
     assert "已关闭导航主程序" in response.json()["message"]
     assert "已重启项目服务相关容器" in response.json()["message"]
     record = config.project_root / "systemctl_args.txt"
     assert record.read_text(encoding="utf-8").splitlines() == ["stop", "rabbitbot-loop.service"]
     docker_record = config.project_root / "docker_args.txt"
-    assert docker_record.read_text(encoding="utf-8").splitlines() == ["restart", "-t", "20", "neo4j", "rabbitbot-vlm", "rabbitbot-audio", "rabbitbot-memory", "rabbitbot-workflow", "rabbitbot-navbridge"]
+    assert docker_record.read_text(encoding="utf-8").splitlines() == ["restart", "-t", "20", "neo4j", "rabbitbot-vlm", "rabbitbot-tts", "rabbitbot-stt", "rabbitbot-memory", "rabbitbot-workflow", "rabbitbot-navbridge"]
 
 
 def test_dialogue_loads_current_config(tmp_path):
@@ -458,8 +458,8 @@ def test_restart_preserves_no_robot_mode(tmp_path):
     assert record.read_text(encoding="utf-8").splitlines() == ["restart", "rabbitbot-loop.service"]
 
 
-def test_service_restart_restarts_audio_container_for_tts(tmp_path, monkeypatch):
-    # 重启 TTS：compose 栈下应重启 rabbitbot-audio 容器(TTS/STT 同容器)。
+def test_service_restart_restarts_tts_container_for_tts(tmp_path, monkeypatch):
+    # 重启 TTS：compose 栈下应只重启 rabbitbot-tts 容器。
     from rabbitbot.control_console import status as status_mod
 
     monkeypatch.setenv("RABBITBOT_BASE_RUNTIME", "compose")
@@ -470,9 +470,9 @@ def test_service_restart_restarts_audio_container_for_tts(tmp_path, monkeypatch)
     response = client.post("/api/service/restart", json={"key": "tts"})
 
     assert response.status_code == 200
-    assert response.json()["container"] == "rabbitbot-audio"
+    assert response.json()["container"] == "rabbitbot-tts"
     record = config.project_root / "docker_args.txt"
-    assert record.read_text(encoding="utf-8").splitlines() == ["restart", "-t", "20", "rabbitbot-audio"]
+    assert record.read_text(encoding="utf-8").splitlines() == ["restart", "-t", "20", "rabbitbot-tts"]
 
 
 def test_service_restart_rejects_unknown_service(tmp_path):

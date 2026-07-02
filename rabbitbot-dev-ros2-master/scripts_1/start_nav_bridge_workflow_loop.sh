@@ -816,8 +816,8 @@ ensure_decoupled_services() {
     # 仅拉起基础服务与 workflow 宿主；nav 在无机器人模式下被 main 跳过，这里不动 navbridge。
     local compose_dir
     compose_dir="$(dirname "${RABBITBOT_DECOUPLED_COMPOSE_FILE}")"
-    ( cd "${compose_dir}" && docker compose -f "${RABBITBOT_DECOUPLED_COMPOSE_FILE}" up -d neo4j rabbitbot-vlm rabbitbot-audio rabbitbot-memory rabbitbot-workflow )
-    log_info "解耦基础服务已就绪：neo4j(7687)/vlm(8000+8005)/audio(28185+28184)/memory(28182)/workflow 宿主(${CONTAINER_NAME})"
+    ( cd "${compose_dir}" && docker compose -f "${RABBITBOT_DECOUPLED_COMPOSE_FILE}" up -d neo4j rabbitbot-vlm rabbitbot-tts rabbitbot-stt rabbitbot-memory rabbitbot-workflow )
+    log_info "解耦基础服务已就绪：neo4j(7687)/vlm(8000+8005)/tts(28185)/stt(28184)/memory(28182)/workflow 宿主(${CONTAINER_NAME})"
 }
 
 ensure_enabled_models() {

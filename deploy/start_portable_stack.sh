@@ -53,7 +53,7 @@ if [ "${RABBITBOT_BASE_RUNTIME:-unified}" = "compose" ]; then
     fi
     ensure_models qwen_vlm qwen_embedding sensevoice
     log_info "解耦栈启动基础服务（compose）：file=${COMPOSE_FILE}"
-    ( cd "$(dirname "${COMPOSE_FILE}")" && docker compose -f "${COMPOSE_FILE}" up -d neo4j rabbitbot-vlm rabbitbot-audio rabbitbot-memory rabbitbot-workflow )
+    ( cd "$(dirname "${COMPOSE_FILE}")" && docker compose -f "${COMPOSE_FILE}" up -d neo4j rabbitbot-vlm rabbitbot-tts rabbitbot-stt rabbitbot-memory rabbitbot-workflow )
     log_ok "解耦栈基础服务已拉起（neo4j/vlm/audio/memory/workflow，不含 28180 nav bridge）；如需待命循环与 nav bridge，请启动 rabbitbot-loop.service 或执行 scripts_1/start_loop_entry.sh"
 else
     (
