@@ -4,17 +4,25 @@
 # 主终端运行本脚本后，会先拉起导航桥接，持续显示导航输出；其它终端通过：
 #   bash scripts_1/send_nav_workflow_command.sh go
 #   bash scripts_1/send_nav_workflow_command.sh back
-# 控制 workflow 开始和剧本结束后的返航。
+#   bash scripts_1/send_nav_workflow_command.sh arrive
+# 控制 workflow 开始、无机器人模式点位到达确认和剧本结束后的返航。
 #
 # 为降低 go 后开场延迟，本脚本会在等待 go 前预启动 workflow，让 Python 和 AppContext
-# 初始化完成后停在启动闸门；收到 go 时只释放闸门。相关可调变量：
-#   RABBITBOT_NAV_WORKFLOW_GATE_READY_TIMEOUT_SECONDS：等待 workflow 预启动就绪的超时秒数。
+# 初始化完成后默认进入 QA 状态，听到“开始导览”后再释放剧本导览；如需恢复旧外部 go 闸门，
+# 设置 RABBITBOT_NAV_WORKFLOW_VOICE_START=0。相关可调变量：
+#   RABBITBOT_NAV_WORKFLOW_VOICE_START：默认 1，启动后先进入 QA 并等待“开始导览”语音口令。
+#   RABBITBOT_NAV_WORKFLOW_START_VLM：默认 1，loop QA 状态需要 VLM 模型服务；显式设 0 才跳过。
+#   RABBITBOT_NAV_WORKFLOW_START_EMBEDDING：默认 1，QA 记忆/语义检索链路需要 Embedding 服务；显式设 0 才跳过。
+#   RABBITBOT_NAV_WORKFLOW_NO_ROBOT：默认 0；设为 1 时进入无机器人模式，跳过真实导航桥接，点位到达由 arrive 命令确认。
+#   RABBITBOT_NAV_WORKFLOW_GATE_READY_TIMEOUT_SECONDS：旧外部 go 模式下等待 workflow 预启动就绪的超时秒数。
 #   RABBITBOT_WORKFLOW_START_GATE_POLL_SECONDS：workflow 内部等待 go 闸门文件的轮询间隔。
 #   RABBITBOT_NAV_WORKFLOW_STATUS_POLL_SECONDS：workflow 运行期间检查状态和预接收 back 的轮询间隔。
 #   RABBITBOT_TTS_STRICT_FAILURE：TTS 失败是否终止 workflow，默认 0，即记录错误并继续。
 #   RABBITBOT_NAV_WORKFLOW_HEALTH_CHECK_INTERVAL_SECONDS：等待命令和运行期间的健康检查间隔秒数。
 #   RABBITBOT_NAV_WORKFLOW_LOST_PROCESS_GRACE_SECONDS：workflow 进程丢失后等待状态文件落盘的宽限秒数。
 #   RABBITBOT_NAV_WORKFLOW_BACK_RETRY_LIMIT：返航失败后自动恢复导航桥接并重试的次数，默认 1。
+#   RABBITBOT_NAV_CORE_READY_TIMEOUT_SECONDS：启动导航桥接后等待导航核心输出 Pose/Ready 的秒数，默认 90。
+#   RABBITBOT_NAV_CORE_READY_POLL_SECONDS：等待导航核心就绪时的轮询间隔秒数，默认 2。
 #   RABBITBOT_DIALOGUE_INDEX：选择 conf/dialogue_<序号>.json，未设置时默认 0。
 #   RABBITBOT_DOCX_GUIDE_DIALOGUE_INDEX：旧版台词序号变量，仅在 RABBITBOT_DIALOGUE_INDEX 未设置时兜底。
 #   RABBITBOT_DOCX_GUIDE_DIALOGUE_FILE：直接指定台词 JSON 文件完整路径，优先级高于序号。
@@ -28,22 +36,41 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 PROJECTS_DIR="${RABBITBOT_PROJECTS_DIR:-$(cd "${PROJECT_DIR}/.." && pwd)}"
 NAV_EXAMPLE_DIR="${NAV_EXAMPLE_DIR:-${PROJECTS_DIR}/unitree_slam_example_new/example}"
-NAV_BRIDGE_SCRIPT="${NAV_BRIDGE_SCRIPT:-${NAV_EXAMPLE_DIR}/start_nav_arm_bridge.sh}"
-NAV_INTERFACE="${NAV_INTERFACE:-eno1}"
+NAV_BRIDGE_RUNTIME="${RABBITBOT_NAV_RUNTIME:-host}"
+NAV_BRIDGE_SCRIPT_DEFAULT="${NAV_EXAMPLE_DIR}/start_nav_arm_bridge.sh"
+if [ "${NAV_BRIDGE_RUNTIME}" = "compose" ]; then
+    NAV_BRIDGE_SCRIPT_DEFAULT="${PROJECT_DIR}/scripts_1/start_nav_bridge_portable.sh"
+fi
+NAV_BRIDGE_SCRIPT="${NAV_BRIDGE_SCRIPT:-${NAV_BRIDGE_SCRIPT_DEFAULT}}"
+NAV_INTERFACE="${NAV_INTERFACE:-${RABBITBOT_DDS_INTERFACE:-eno1}}"
 NAV_PCD_PATH_WAS_EXPLICIT=0
 if [ -n "${NAV_PCD_PATH+x}" ] && [ -n "${NAV_PCD_PATH}" ]; then
     NAV_PCD_PATH_WAS_EXPLICIT=1
 else
     NAV_PCD_PATH=""
 fi
-DEFAULT_NAV_PCD_PATH="${DEFAULT_NAV_PCD_PATH:-/home/unitree/test1.pcd}"
+DEFAULT_NAV_PCD_PATH="${DEFAULT_NAV_PCD_PATH:-${RABBITBOT_NAV_MAP_PATH:-/home/unitree/test1.pcd}}"
 NAV_MAP_BASE_DIR="${NAV_MAP_BASE_DIR:-/home/unitree}"
 ROS_SETUP="${ROS_SETUP:-/opt/ros/humble/setup.bash}"
 WS_SETUP="${WS_SETUP:-${PROJECTS_DIR}/custom_action_ws/install/setup.bash}"
 CONTAINER_NAME="${CONTAINER_NAME:-rabbitbot-unified-runtime}"
+
+# 基础服务运行方式：unified=单容器(旧，默认)；compose=解耦多容器(docker/portable/docker-compose.decoupled.yaml)。
+RABBITBOT_BASE_RUNTIME="${RABBITBOT_BASE_RUNTIME:-unified}"
+RABBITBOT_DECOUPLED_COMPOSE_FILE="${RABBITBOT_DECOUPLED_COMPOSE_FILE:-${PROJECT_DIR}/docker/portable/docker-compose.decoupled.yaml}"
+RABBITBOT_WORKFLOW_CONTAINER_NAME="${RABBITBOT_WORKFLOW_CONTAINER_NAME:-rabbitbot-workflow}"
+if [ "${RABBITBOT_BASE_RUNTIME}" = "compose" ]; then
+    # 解耦模式：导览 workflow 跑在专用 rabbitbot-workflow 容器内，所有 docker exec 都指向它。
+    CONTAINER_NAME="${RABBITBOT_WORKFLOW_CONTAINER_NAME}"
+    # nav 也归解耦 compose 管理：运行方式视为 compose，容器名/服务名对齐 rabbitbot-navbridge，
+    # 真实机器人模式下由解耦栈唯一提供 28180，避免与旧 host/portable nav 冲突。
+    NAV_BRIDGE_RUNTIME="compose"
+    RABBITBOT_NAV_BRIDGE_CONTAINER_NAME="${RABBITBOT_NAV_BRIDGE_CONTAINER_NAME:-rabbitbot-navbridge}"
+    RABBITBOT_NAVBRIDGE_SERVICE="${RABBITBOT_NAVBRIDGE_SERVICE:-rabbitbot-navbridge}"
+fi
 CONTAINER_RABBITBOT_DIR="${CONTAINER_RABBITBOT_DIR:-/workspace/projects/rabbitbot-dev-ros2-master}"
-CONTAINER_LOG_DIR="${CONTAINER_LOG_DIR:-${CONTAINER_RABBITBOT_DIR}/logs/unified_runtime}"
-HOST_LOG_DIR="${HOST_LOG_DIR:-${PROJECT_DIR}/logs}"
+CONTAINER_LOG_DIR="${CONTAINER_LOG_DIR:-${CONTAINER_RABBITBOT_DIR%/*}/logs/unified_runtime}"
+HOST_LOG_DIR="${HOST_LOG_DIR:-${PROJECTS_DIR}/logs}"
 CONTROL_DIR="${RABBITBOT_NAV_WORKFLOW_CONTROL_DIR:-/tmp/rabbitbot_nav_workflow_control}"
 COMMAND_FILE="${RABBITBOT_NAV_WORKFLOW_COMMAND_FILE:-${CONTROL_DIR}/command}"
 RUN_DIR="${HOST_LOG_DIR}/nav_workflow_control"
@@ -61,16 +88,34 @@ COMMAND_POLL_SECONDS="${RABBITBOT_NAV_WORKFLOW_COMMAND_POLL_SECONDS:-0.2}"
 WORKFLOW_STATUS_POLL_SECONDS="${RABBITBOT_NAV_WORKFLOW_STATUS_POLL_SECONDS:-0.2}"
 WAIT_DEFAULT_SECONDS="${WAIT_DEFAULT_SECONDS:-420}"
 WAIT_VLM_SECONDS="${WAIT_VLM_SECONDS:-600}"
+RABBITBOT_NAV_WORKFLOW_NO_ROBOT="${RABBITBOT_NAV_WORKFLOW_NO_ROBOT:-0}"
 RABBITBOT_WORKFLOW_NON_INTEGRATION="${RABBITBOT_WORKFLOW_NON_INTEGRATION:-0}"
+if [ "${RABBITBOT_NAV_WORKFLOW_NO_ROBOT}" = "1" ]; then
+    RABBITBOT_WORKFLOW_NON_INTEGRATION="1"
+    RABBITBOT_UNIFIED_START_ROBOT_AGENT="0"
+fi
 RABBITBOT_WORKFLOW_VERBOSE="${RABBITBOT_WORKFLOW_VERBOSE:-0}"
 RABBITBOT_UNIFIED_ATTACH_STDIN="${RABBITBOT_UNIFIED_ATTACH_STDIN:-0}"
+RABBITBOT_NAV_WORKFLOW_START_VLM="${RABBITBOT_NAV_WORKFLOW_START_VLM:-1}"
+RABBITBOT_NAV_WORKFLOW_START_EMBEDDING="${RABBITBOT_NAV_WORKFLOW_START_EMBEDDING:-1}"
+RABBITBOT_UNIFIED_START_VLM="${RABBITBOT_UNIFIED_START_VLM:-${RABBITBOT_NAV_WORKFLOW_START_VLM}}"
+RABBITBOT_UNIFIED_START_EMBEDDING="${RABBITBOT_UNIFIED_START_EMBEDDING:-${RABBITBOT_NAV_WORKFLOW_START_EMBEDDING}}"
 RABBITBOT_TTS_STRICT_FAILURE="${RABBITBOT_TTS_STRICT_FAILURE:-0}"
-RABBITBOT_UNIFIED_START_STT="${RABBITBOT_UNIFIED_START_STT:-0}"
+RABBITBOT_NAV_WORKFLOW_VOICE_START="${RABBITBOT_NAV_WORKFLOW_VOICE_START:-1}"
+RABBITBOT_NAV_WORKFLOW_GO_TEXT="${RABBITBOT_NAV_WORKFLOW_GO_TEXT:-开始导览}"
+RABBITBOT_NAV_WORKFLOW_BACK_TEXT="${RABBITBOT_NAV_WORKFLOW_BACK_TEXT:-返回起点}"
+RABBITBOT_STT_EXEC_URL="${RABBITBOT_STT_EXEC_URL:-http://127.0.0.1:28184/exec}"
+if [ "${RABBITBOT_NAV_WORKFLOW_VOICE_START}" = "1" ]; then
+    # 语音启动导览必须依赖 STT 常驻；即使 portable.env 默认关闭 STT，这里也要为 loop 场景打开。
+    RABBITBOT_UNIFIED_START_STT="1"
+else
+    RABBITBOT_UNIFIED_START_STT="${RABBITBOT_UNIFIED_START_STT:-0}"
+fi
 RABBITBOT_DIALOGUE_INDEX="${RABBITBOT_DIALOGUE_INDEX:-}"
 RABBITBOT_DOCX_GUIDE_DIALOGUE_INDEX="${RABBITBOT_DOCX_GUIDE_DIALOGUE_INDEX:-}"
 RABBITBOT_DOCX_GUIDE_DIALOGUE_FILE="${RABBITBOT_DOCX_GUIDE_DIALOGUE_FILE:-}"
 HOST_WORKFLOW_RUN_DIR="${RABBITBOT_NAV_WORKFLOW_HOST_RUN_DIR:-${RUN_DIR}}"
-CONTAINER_WORKFLOW_RUN_DIR="${RABBITBOT_NAV_WORKFLOW_CONTAINER_RUN_DIR:-${CONTAINER_RABBITBOT_DIR}/logs/nav_workflow_control}"
+CONTAINER_WORKFLOW_RUN_DIR="${RABBITBOT_NAV_WORKFLOW_CONTAINER_RUN_DIR:-${CONTAINER_RABBITBOT_DIR%/*}/logs/nav_workflow_control}"
 HOST_WORKFLOW_CONTROL_DIR="${RABBITBOT_NAV_WORKFLOW_HOST_CONTROL_DIR:-${HOST_WORKFLOW_RUN_DIR}/workflow_control}"
 CONTAINER_WORKFLOW_CONTROL_DIR="${RABBITBOT_NAV_WORKFLOW_CONTAINER_CONTROL_DIR:-${CONTAINER_WORKFLOW_RUN_DIR}/workflow_control}"
 WORKFLOW_GATE_READY_TIMEOUT_SECONDS="${RABBITBOT_NAV_WORKFLOW_GATE_READY_TIMEOUT_SECONDS:-30}"
@@ -80,6 +125,9 @@ WORKFLOW_LOST_PROCESS_GRACE_SECONDS="${RABBITBOT_NAV_WORKFLOW_LOST_PROCESS_GRACE
 NAV_BRIDGE_RESTART_WAIT_SECONDS="${RABBITBOT_NAV_WORKFLOW_NAV_RESTART_WAIT_SECONDS:-3}"
 BACK_RETRY_LIMIT="${RABBITBOT_NAV_WORKFLOW_BACK_RETRY_LIMIT:-1}"
 RETURN_FAILURE_WAIT_SECONDS="${RABBITBOT_NAV_WORKFLOW_RETURN_FAILURE_WAIT_SECONDS:-2}"
+NAV_CORE_READY_TIMEOUT_SECONDS="${RABBITBOT_NAV_CORE_READY_TIMEOUT_SECONDS:-90}"
+NAV_CORE_READY_POLL_SECONDS="${RABBITBOT_NAV_CORE_READY_POLL_SECONDS:-2}"
+NAV_BRIDGE_CONTAINER_NAME="${RABBITBOT_NAV_BRIDGE_CONTAINER_NAME:-${RABBITBOT_PORTABLE_COMPOSE_PROJECT:-rabbitbot-portable}-rabbitbot-nav-1}"
 
 nav_group_pid=""
 workflow_tail_pid=""
@@ -97,7 +145,16 @@ current_gate_file=""
 current_gate_ready_file=""
 current_host_gate_file=""
 current_host_gate_ready_file=""
+current_return_request_file=""
+current_host_return_request_file=""
+current_manual_arrival_file=""
+current_host_manual_arrival_file=""
+current_nav_log=""
+current_nav_start_epoch="0"
 last_runtime_health_check_ms=0
+nav_core_last_health_reason="not_checked"
+nav_core_last_health_source="无"
+nav_core_recent_log=""
 
 log_info() {
     echo -e "\033[32m[INFO]\033[0m $1"
@@ -301,6 +358,100 @@ nav_bridge_group_alive() {
     [ -n "${nav_group_pid}" ] && kill -0 -- "-${nav_group_pid}" 2>/dev/null
 }
 
+collect_nav_core_recent_log() {
+    local host_log=""
+    local container_log=""
+    local sources=()
+
+    if [ -n "${current_nav_log}" ] && [ -f "${current_nav_log}" ]; then
+        host_log="$(tail -n 200 "${current_nav_log}" 2>/dev/null || true)"
+        if [ -n "${host_log}" ]; then
+            sources+=("宿主日志:${current_nav_log}")
+        fi
+    fi
+
+    if [ "${NAV_BRIDGE_RUNTIME}" = "compose" ] && docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "${NAV_BRIDGE_CONTAINER_NAME}"; then
+        container_log="$(docker logs --since "${current_nav_start_epoch:-0}" --tail 240 "${NAV_BRIDGE_CONTAINER_NAME}" 2>&1 || true)"
+        if [ -n "${container_log}" ]; then
+            sources+=("容器日志:${NAV_BRIDGE_CONTAINER_NAME}")
+        fi
+    fi
+
+    if [ "${#sources[@]}" -eq 0 ]; then
+        nav_core_last_health_source="无"
+    else
+        local IFS=','
+        nav_core_last_health_source="${sources[*]}"
+    fi
+    nav_core_recent_log="$(printf '%s\n%s\n' "${host_log}" "${container_log}")"
+}
+
+nav_core_log_healthy() {
+    local recent_log
+    nav_core_last_health_reason="not_ready"
+    collect_nav_core_recent_log
+    recent_log="${nav_core_recent_log}"
+
+    if [ -z "$(printf '%s' "${recent_log}" | tr -d '[:space:]')" ]; then
+        log_warn "导航核心日志尚不可读：host_log=${current_nav_log:-未设置}, container=${NAV_BRIDGE_CONTAINER_NAME}, source=${nav_core_last_health_source}"
+        return 1
+    fi
+
+    if printf '%s' "${recent_log}" | grep -Eq '\[Ready\] Navigation system ready for commands!|\[Pose\]'; then
+        nav_core_last_health_reason="ready"
+        return 0
+    fi
+
+    if printf '%s' "${recent_log}" | grep -Eq 'does not match an available interface|DdsException|Failed to create domain|Aborted'; then
+        nav_core_last_health_reason="fatal"
+        log_warn "导航核心健康检查失败：检测到 DDS/网卡/进程异常，source=${nav_core_last_health_source}"
+        return 1
+    fi
+
+    log_warn "导航核心尚未完成定位或未输出位姿：source=${nav_core_last_health_source}"
+    return 1
+}
+
+wait_nav_core_ready() {
+    local start_ms
+    local elapsed_ms
+    start_ms="$(now_ms)"
+    log_info "等待导航核心输出 Pose/Ready：timeout=${NAV_CORE_READY_TIMEOUT_SECONDS}s, poll=${NAV_CORE_READY_POLL_SECONDS}s, host_log=${current_nav_log}, container=${NAV_BRIDGE_CONTAINER_NAME}, since=${current_nav_start_epoch}"
+    while true; do
+        if ! nav_bridge_group_alive; then
+            elapsed_ms="$(elapsed_ms_since "${start_ms}")"
+            log_error "导航桥接进程组已退出，无法继续等待核心就绪：elapsed_ms=${elapsed_ms}, pgid=${nav_group_pid:-未设置}"
+            return 1
+        fi
+        if ! port_open 28180; then
+            elapsed_ms="$(elapsed_ms_since "${start_ms}")"
+            if [ "${elapsed_ms}" -ge $((NAV_CORE_READY_TIMEOUT_SECONDS * 1000)) ]; then
+                log_warn "等待 28180 端口重新就绪超时：elapsed_ms=${elapsed_ms}, timeout=${NAV_CORE_READY_TIMEOUT_SECONDS}s"
+                return 1
+            fi
+            log_warn "28180 端口暂未就绪，继续等待导航容器重建：elapsed_ms=${elapsed_ms}"
+            sleep "${NAV_CORE_READY_POLL_SECONDS}"
+            continue
+        fi
+        if nav_core_log_healthy; then
+            elapsed_ms="$(elapsed_ms_since "${start_ms}")"
+            log_info "导航核心已就绪：elapsed_ms=${elapsed_ms}, source=${nav_core_last_health_source}"
+            return 0
+        fi
+        if [ "${nav_core_last_health_reason}" = "fatal" ]; then
+            elapsed_ms="$(elapsed_ms_since "${start_ms}")"
+            log_error "导航核心出现不可恢复异常：elapsed_ms=${elapsed_ms}, source=${nav_core_last_health_source}"
+            return 1
+        fi
+        elapsed_ms="$(elapsed_ms_since "${start_ms}")"
+        if [ "${elapsed_ms}" -ge $((NAV_CORE_READY_TIMEOUT_SECONDS * 1000)) ]; then
+            log_warn "等待导航核心就绪超时：elapsed_ms=${elapsed_ms}, timeout=${NAV_CORE_READY_TIMEOUT_SECONDS}s, source=${nav_core_last_health_source}"
+            return 1
+        fi
+        sleep "${NAV_CORE_READY_POLL_SECONDS}"
+    done
+}
+
 nav_bridge_health_ok() {
     local problems=()
     if ! nav_bridge_group_alive; then
@@ -314,6 +465,9 @@ nav_bridge_health_ok() {
         if [ -z "${status_response}" ]; then
             problems+=("28180状态接口无响应")
         fi
+    fi
+    if ! nav_core_log_healthy; then
+        problems+=("导航核心未就绪")
     fi
     if [ "${#problems[@]}" -gt 0 ]; then
         log_warn "导航桥接健康检查失败：$(IFS='；'; echo "${problems[*]}")"
@@ -352,7 +506,7 @@ runtime_health_ok() {
     if ! base_services_health_ok; then
         failed=1
     fi
-    if ! nav_bridge_health_ok; then
+    if [ "${RABBITBOT_NAV_WORKFLOW_NO_ROBOT}" != "1" ] && ! nav_bridge_health_ok; then
         failed=1
     fi
     if [ "${failed}" = "1" ]; then
@@ -488,15 +642,46 @@ trap 'cleanup EXIT' EXIT
 
 prepare_runtime() {
     mkdir -p "${CONTROL_DIR}" "${RUN_DIR}" "${HOST_LOG_DIR}" "${HOST_WORKFLOW_RUN_DIR}" "${HOST_WORKFLOW_CONTROL_DIR}"
-    resolve_nav_pcd_path
-    require_path "${NAV_BRIDGE_SCRIPT}"
-    require_path "${ROS_SETUP}"
-    require_path "${WS_SETUP}"
+    if [ "${RABBITBOT_NAV_WORKFLOW_NO_ROBOT}" = "1" ]; then
+        log_info "无机器人模式已启用：跳过导航桥接启动和地图可见性检查，workflow 导航点由 arrive 命令确认。"
+    else
+        resolve_nav_pcd_path
+        if [ -e "${NAV_PCD_PATH}" ]; then
+            log_info "导航地图文件存在：NAV_PCD_PATH=${NAV_PCD_PATH}"
+        else
+            log_warn "导航地图在 Orin 本地不可见：NAV_PCD_PATH=${NAV_PCD_PATH}；若地图由机器人/Unitree 导航服务侧读取且定位成功，这是可接受状态。迁移到新 Orin 时仍需确认该路径在机器人侧存在，或更新 runtime/portable.env 的 RABBITBOT_NAV_MAP_PATH。"
+        fi
+        require_path "${NAV_BRIDGE_SCRIPT}"
+        if [ "${NAV_BRIDGE_RUNTIME}" != "compose" ]; then
+            require_path "${ROS_SETUP}"
+            require_path "${WS_SETUP}"
+        fi
+    fi
     require_path "${PROJECT_DIR}/scripts_1/start_unified_integration_workflow.sh"
     rm -f "${COMMAND_FILE}"
+    cleanup_stale_workflow_control_files
     log_info "控制命令文件：${COMMAND_FILE}"
     log_info "其它终端发送 go：bash ${PROJECT_DIR}/scripts_1/send_nav_workflow_command.sh go"
     log_info "其它终端发送 back：bash ${PROJECT_DIR}/scripts_1/send_nav_workflow_command.sh back"
+    log_info "无机器人模式确认到达：bash ${PROJECT_DIR}/scripts_1/send_nav_workflow_command.sh arrive"
+}
+
+cleanup_stale_workflow_control_files() {
+    local deleted_output find_status deleted_count
+    set +e
+    deleted_output="$(find "${HOST_WORKFLOW_CONTROL_DIR}" -maxdepth 1 -type f \( \
+        -name "*.status" -o -name "*.pid" -o -name "*.ready" -o -name "*.exit_code" -o \
+        -name "*.finished_at" -o -name "*.go" -o -name "*.arrive" -o -name "workflow_runner_*.sh" \) -print -delete 2>&1)"
+    find_status=$?
+    set -e
+
+    if [ "${find_status}" -ne 0 ]; then
+        log_warn "清理历史 workflow 控制文件失败：dir=${HOST_WORKFLOW_CONTROL_DIR}, error=${deleted_output}"
+        return 0
+    fi
+
+    deleted_count="$(printf '%s\n' "${deleted_output}" | sed '/^$/d' | wc -l | tr -d ' ')"
+    log_info "已清理历史 workflow 控制文件：dir=${HOST_WORKFLOW_CONTROL_DIR}, count=${deleted_count}"
 }
 
 stop_nav_bridge() {
@@ -510,20 +695,65 @@ stop_nav_bridge() {
     nav_group_pid=""
 }
 
+identify_port_28180_holder() {
+    # 识别 28180 占用者：core_robot_app（统一容器内 robot_app.py）、
+    # nav_bridge_container（已有 portable nav 容器，compose 可直接重建接管）、unknown。
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "${CONTAINER_NAME}" \
+        && docker exec "${CONTAINER_NAME}" bash -lc 'pgrep -f "[u]vicorn robot_app:app" >/dev/null' >/dev/null 2>&1; then
+        echo "core_robot_app"
+        return 0
+    fi
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -Eq 'rabbitbot-nav'; then
+        echo "nav_bridge_container"
+        return 0
+    fi
+    echo "unknown"
+}
+
 start_nav_bridge() {
     if port_open 28180; then
-        log_error "28180 端口已被占用，无法由本脚本统一拉起导航桥接。请先停止旧导航桥接或占用进程。"
-        return 1
+        # 只拒绝“非本次 nav bridge 管理的占用”：已有 portable nav 容器可被 compose 重建接管。
+        local port_holder
+        port_holder="$(identify_port_28180_holder)"
+        case "${port_holder}" in
+            core_robot_app)
+                log_error "28180 已被统一容器内 robot_app.py 占用：portable 模式下 core 不应启动 Robot Agent，28180 应由 nav bridge 的 humble_robot_agent_bridge 提供。"
+                log_error "处理方法：确认 runtime/portable.env 中 RABBITBOT_UNIFIED_START_ROBOT_AGENT=0，然后重建统一容器（RECREATE_CONTAINER=1 或 docker rm -f ${CONTAINER_NAME} 后重启主循环）。"
+                return 1
+                ;;
+            nav_bridge_container)
+                if [ "${NAV_BRIDGE_RUNTIME}" = "compose" ]; then
+                    log_warn "28180 当前由已有 portable nav 容器占用；compose 启动会重建该容器并接管端口，继续。"
+                else
+                    log_error "28180 被 portable nav 容器占用，但当前导航运行方式为 host。请先停止 portable nav 容器（docker compose down）或切换 RABBITBOT_NAV_RUNTIME=compose。"
+                    return 1
+                fi
+                ;;
+            *)
+                log_error "28180 端口已被未知进程占用，无法由本脚本统一拉起导航桥接。请先排查并停止占用进程：ss -ltnp | grep 28180 或 lsof -i :28180。"
+                return 1
+                ;;
+        esac
     fi
 
     local nav_log="${RUN_DIR}/nav_bridge_$(date +%Y%m%d_%H%M%S).log"
-    log_info "启动导航桥接：${NAV_BRIDGE_SCRIPT} ${NAV_INTERFACE} ${NAV_PCD_PATH}"
+    current_nav_log="${nav_log}"
+    current_nav_start_epoch="$(date +%s)"
+    log_info "启动导航桥接：runtime=${NAV_BRIDGE_RUNTIME}, script=${NAV_BRIDGE_SCRIPT}, interface=${NAV_INTERFACE}, map=${NAV_PCD_PATH}"
     log_info "导航桥接日志：${nav_log}"
-    setsid bash -lc 'source "$1" && source "$2" && "$3" "$4" "$5" 2>&1 | tee -a "$6"' bash "${ROS_SETUP}" "${WS_SETUP}" "${NAV_BRIDGE_SCRIPT}" "${NAV_INTERFACE}" "${NAV_PCD_PATH}" "${nav_log}" &
+    if [ "${RABBITBOT_BASE_RUNTIME}" = "compose" ]; then
+        # 解耦栈：nav 由 docker-compose.decoupled.yaml 的 rabbitbot-navbridge 提供；前台 compose up 作为进程组，
+        # 复用既有 nav 生命周期（停止进程组=停止该容器），就绪由 wait_nav_core_ready 读取该容器日志判断。
+        setsid bash -lc 'RABBITBOT_DDS_INTERFACE="$1" RABBITBOT_NAV_MAP_PATH="$2" docker compose -f "$5" up --force-recreate "$3" 2>&1 | tee -a "$4"' bash "${NAV_INTERFACE}" "${NAV_PCD_PATH}" "${RABBITBOT_NAVBRIDGE_SERVICE:-rabbitbot-navbridge}" "${nav_log}" "${RABBITBOT_DECOUPLED_COMPOSE_FILE}" &
+    elif [ "${NAV_BRIDGE_RUNTIME}" = "compose" ]; then
+        setsid bash -lc '"$1" "$2" "$3" 2>&1 | tee -a "$4"' bash "${NAV_BRIDGE_SCRIPT}" "${NAV_INTERFACE}" "${NAV_PCD_PATH}" "${nav_log}" &
+    else
+        setsid bash -lc 'source "$1" && source "$2" && "$3" "$4" "$5" 2>&1 | tee -a "$6"' bash "${ROS_SETUP}" "${WS_SETUP}" "${NAV_BRIDGE_SCRIPT}" "${NAV_INTERFACE}" "${NAV_PCD_PATH}" "${nav_log}" &
+    fi
     nav_group_pid=$!
     log_info "导航桥接进程组已启动：pgid=${nav_group_pid}"
     wait_port 28180 60
-    nav_bridge_health_ok
+    wait_nav_core_ready
 }
 
 restart_nav_bridge() {
@@ -537,6 +767,10 @@ restart_nav_bridge() {
 restart_unified_services() {
     local reason="${1:-健康检查失败}"
     log_warn "准备恢复 unified 基础服务：reason=${reason}"
+    if [ "${RABBITBOT_BASE_RUNTIME}" = "compose" ]; then
+        ensure_decoupled_services
+        return
+    fi
     if container_running; then
         log_warn "基础服务不健康，重启统一容器：${CONTAINER_NAME}"
         docker restart "${CONTAINER_NAME}" >/dev/null
@@ -552,7 +786,9 @@ recover_runtime_services() {
         restart_unified_services "${reason}"
         recovered=1
     fi
-    if ! nav_bridge_health_ok; then
+    if [ "${RABBITBOT_NAV_WORKFLOW_NO_ROBOT}" = "1" ]; then
+        log_info "无机器人模式跳过导航桥接恢复：reason=${reason}"
+    elif ! nav_bridge_health_ok; then
         restart_nav_bridge "${reason}"
         recovered=1
     fi
@@ -565,15 +801,38 @@ recover_runtime_services() {
     return 1
 }
 
+ensure_decoupled_services() {
+    # 解耦模式：用 docker-compose 拉起基础服务与 workflow 宿主，替代创建 unified 单容器。
+    require_path "${RABBITBOT_DECOUPLED_COMPOSE_FILE}"
+    log_info "确保解耦基础服务就绪（compose）：file=${RABBITBOT_DECOUPLED_COMPOSE_FILE}, workflow_container=${CONTAINER_NAME}"
+    # 解耦栈与旧 unified 单容器互斥：若旧容器仍在运行，先停止以释放端口。
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "rabbitbot-unified-runtime"; then
+        log_warn "解耦模式：停止仍在运行的旧 unified 容器以释放端口：rabbitbot-unified-runtime"
+        docker stop rabbitbot-unified-runtime >/dev/null 2>&1 || true
+    fi
+    # 仅拉起基础服务与 workflow 宿主；nav 在无机器人模式下被 main 跳过，这里不动 navbridge。
+    local compose_dir
+    compose_dir="$(dirname "${RABBITBOT_DECOUPLED_COMPOSE_FILE}")"
+    ( cd "${compose_dir}" && docker compose -f "${RABBITBOT_DECOUPLED_COMPOSE_FILE}" up -d neo4j rabbitbot-vlm rabbitbot-audio rabbitbot-memory rabbitbot-workflow )
+    log_info "解耦基础服务已就绪：neo4j(7687)/vlm(8000+8005)/audio(28185+28184)/memory(28182)/workflow 宿主(${CONTAINER_NAME})"
+}
+
 ensure_unified_services() {
-    log_info "确认 unified 基础服务就绪；本步骤不会启动 workflow"
+    if [ "${RABBITBOT_BASE_RUNTIME}" = "compose" ]; then
+        ensure_decoupled_services
+        return
+    fi
+    log_info "确认 unified 基础服务就绪；本步骤不会启动 workflow：vlm=${RABBITBOT_UNIFIED_START_VLM}, embedding=${RABBITBOT_UNIFIED_START_EMBEDDING}, stt=${RABBITBOT_UNIFIED_START_STT}"
     (
         cd "${PROJECT_DIR}"
         RUN_WORKFLOW_AFTER_START=0 \
         RABBITBOT_WORKFLOW_NON_INTEGRATION="${RABBITBOT_WORKFLOW_NON_INTEGRATION}" \
         RABBITBOT_WORKFLOW_VERBOSE="${RABBITBOT_WORKFLOW_VERBOSE}" \
         RABBITBOT_UNIFIED_ATTACH_STDIN="${RABBITBOT_UNIFIED_ATTACH_STDIN}" \
+        RABBITBOT_UNIFIED_START_VLM="${RABBITBOT_UNIFIED_START_VLM}" \
+        RABBITBOT_UNIFIED_START_EMBEDDING="${RABBITBOT_UNIFIED_START_EMBEDDING}" \
         RABBITBOT_UNIFIED_START_STT="${RABBITBOT_UNIFIED_START_STT}" \
+        RABBITBOT_UNIFIED_START_ROBOT_AGENT="${RABBITBOT_UNIFIED_START_ROBOT_AGENT:-}" \
         WAIT_DEFAULT_SECONDS="${WAIT_DEFAULT_SECONDS}" \
         WAIT_VLM_SECONDS="${WAIT_VLM_SECONDS}" \
         bash scripts_1/start_unified_integration_workflow.sh
@@ -630,10 +889,44 @@ wait_command() {
         sleep "${COMMAND_POLL_SECONDS}"
     done
 }
+kill_stale_workflow() {
+    # 清理容器内任何残留的 workflow 进程（按进程特征 pkill，不依赖本轮 loop 的 pid 记录）。
+    # 用于：上一轮 loop 以 docker exec -d 启动、systemctl stop loop 未能杀掉的 detached workflow。
+    if ! workflow_running; then
+        return 0
+    fi
+    log_warn "清理残留 workflow 进程：container=${CONTAINER_NAME}"
+    docker exec "${CONTAINER_NAME}" bash -lc '
+        for pat in "[e]xamples/run_kuavo_agno.py" "[s]cripts/run_kuavo_agno_workflow.py" "[s]cripts/start_kuavo_agno_workflow.bash"; do
+            pkill -TERM -f "$pat" 2>/dev/null || true
+        done
+        sleep 2
+        for pat in "[e]xamples/run_kuavo_agno.py" "[s]cripts/run_kuavo_agno_workflow.py" "[s]cripts/start_kuavo_agno_workflow.bash"; do
+            pkill -KILL -f "$pat" 2>/dev/null || true
+        done
+    ' >/dev/null 2>&1 || true
+    local waited=0
+    while workflow_running && [ "${waited}" -lt 10 ]; do
+        sleep 1
+        waited=$((waited + 1))
+    done
+    if workflow_running; then
+        log_error "残留 workflow 进程清理失败，仍在运行：container=${CONTAINER_NAME}"
+        return 1
+    fi
+    log_info "残留 workflow 进程已清理：container=${CONTAINER_NAME}"
+    return 0
+}
+
 launch_workflow_detached() {
     if workflow_running; then
-        log_error "检测到已有 workflow 正在运行，拒绝重复启动。"
-        return 1
+        # 可能是上一轮 loop 以 docker exec -d 启动、systemctl stop 杀不掉的残留 workflow；
+        # 先按进程特征清理再启动，避免反复“拒绝重复启动”死循环。
+        log_warn "检测到已有 workflow 进程，先清理残留再预启动。"
+        if ! kill_stale_workflow; then
+            log_error "残留 workflow 进程清理失败，拒绝重复启动。"
+            return 1
+        fi
     fi
 
     current_run_id="$(date +%Y%m%d_%H%M%S)"
@@ -649,14 +942,18 @@ launch_workflow_detached() {
     current_gate_ready_file="${current_control_dir}/${current_run_id}.ready"
     current_host_gate_file="${current_host_control_dir}/${current_run_id}.go"
     current_host_gate_ready_file="${current_host_control_dir}/${current_run_id}.ready"
+    current_return_request_file="${current_control_dir}/${current_run_id}.return_to_start"
+    current_host_return_request_file="${current_host_control_dir}/${current_run_id}.return_to_start"
+    current_manual_arrival_file="${current_control_dir}/${current_run_id}.arrive"
+    current_host_manual_arrival_file="${current_host_control_dir}/${current_run_id}.arrive"
 
     mkdir -p "${current_host_control_dir}" "$(dirname "${current_host_workflow_log}")"
-    rm -f "${current_status_file}" "${current_exit_code_file}" "${current_pid_file}" "${current_finished_at_file}" "${current_host_gate_file}" "${current_host_gate_ready_file}"
+    rm -f "${current_status_file}" "${current_exit_code_file}" "${current_pid_file}" "${current_finished_at_file}" "${current_host_gate_file}" "${current_host_gate_ready_file}" "${current_host_return_request_file}" "${current_host_manual_arrival_file}"
     if ! : >"${current_host_workflow_log}"; then
         log_error "无法创建 workflow 宿主日志：${current_host_workflow_log}，请检查目录权限"
         return 1
     fi
-    docker exec "${CONTAINER_NAME}" bash -lc "mkdir -p '${current_control_dir}' '$(dirname "${current_workflow_log}")' && rm -f '${current_control_dir}/${current_run_id}.status' '${current_control_dir}/${current_run_id}.exit_code' '${current_control_dir}/${current_run_id}.pid' '${current_control_dir}/${current_run_id}.finished_at' '${current_gate_file}' '${current_gate_ready_file}'" >/dev/null
+    docker exec "${CONTAINER_NAME}" bash -lc "mkdir -p '${current_control_dir}' '$(dirname "${current_workflow_log}")' && rm -f '${current_control_dir}/${current_run_id}.status' '${current_control_dir}/${current_run_id}.exit_code' '${current_control_dir}/${current_run_id}.pid' '${current_control_dir}/${current_run_id}.finished_at' '${current_gate_file}' '${current_gate_ready_file}' '${current_return_request_file}' '${current_manual_arrival_file}'" >/dev/null
 
     local start_ms
     local dialogue_config
@@ -670,12 +967,17 @@ launch_workflow_detached() {
     else
         dialogue_config="序号=0（默认）"
     fi
-    log_info "预启动 workflow 并等待 go 闸门：run_id=${current_run_id}"
+    if [ "${RABBITBOT_NAV_WORKFLOW_VOICE_START}" = "1" ]; then
+        log_info "启动 workflow 默认 QA 状态，等待语音口令开始导览：run_id=${current_run_id}"
+    else
+        log_info "预启动 workflow 并等待 go 闸门：run_id=${current_run_id}"
+    fi
     log_info "workflow 台词配置：${dialogue_config}"
     docker exec -d \
         -e RABBITBOT_WORKFLOW_NON_INTEGRATION="${RABBITBOT_WORKFLOW_NON_INTEGRATION}" \
         -e RABBITBOT_WORKFLOW_VERBOSE="${RABBITBOT_WORKFLOW_VERBOSE}" \
         -e RABBITBOT_TTS_STRICT_FAILURE="${RABBITBOT_TTS_STRICT_FAILURE}" \
+        -e RABBITBOT_GUIDE_START_BY_VOICE="${RABBITBOT_NAV_WORKFLOW_VOICE_START}" \
         -e RABBITBOT_DIALOGUE_INDEX="${RABBITBOT_DIALOGUE_INDEX}" \
         -e RABBITBOT_DOCX_GUIDE_DIALOGUE_INDEX="${RABBITBOT_DOCX_GUIDE_DIALOGUE_INDEX}" \
         -e RABBITBOT_DOCX_GUIDE_DIALOGUE_FILE="${RABBITBOT_DOCX_GUIDE_DIALOGUE_FILE}" \
@@ -684,6 +986,8 @@ launch_workflow_detached() {
         -e RABBITBOT_WORKFLOW_RUN_ID="${current_run_id}" \
         -e RABBITBOT_WORKFLOW_START_GATE_FILE="${current_gate_file}" \
         -e RABBITBOT_WORKFLOW_START_GATE_READY_FILE="${current_gate_ready_file}" \
+        -e RABBITBOT_WORKFLOW_RETURN_REQUEST_FILE="${current_return_request_file}" \
+        -e RABBITBOT_WORKFLOW_MANUAL_ARRIVAL_FILE="${current_manual_arrival_file}" \
         -e RABBITBOT_WORKFLOW_START_GATE_POLL_SECONDS="${WORKFLOW_GATE_POLL_SECONDS}" \
         -e PYTHONUNBUFFERED=1 \
         "${CONTAINER_NAME}" bash -lc '
@@ -750,6 +1054,45 @@ wait_workflow_gate_ready() {
     return 1
 }
 
+inject_stt_text_command() {
+    local command_name="$1"
+    local command_text="$2"
+    local payload
+    local response
+    payload="$(python3 -c 'import json,sys; print(json.dumps({"task":"inject_text_async","lang":"zh","text":sys.argv[1],"timeout":30}, ensure_ascii=False))' "${command_text}")"
+    log_info "将 ${command_name} 命令转换为 STT 注入口令：text_len=${#command_text}, stt_url=${RABBITBOT_STT_EXEC_URL}"
+    response="$(curl --max-time 5 -sS -X POST "${RABBITBOT_STT_EXEC_URL}" --form-string "task=${payload}" 2>&1 || true)"
+    local response_len=${#response}
+    if printf '%s' "${response}" | grep -q '"out_text"'; then
+        log_info "${command_name} 口令已注入 STT：response_len=${response_len}"
+        return 0
+    fi
+    log_warn "${command_name} 口令注入 STT 可能失败：response_len=${response_len}"
+    return 1
+}
+
+inject_guide_start_command() {
+    inject_stt_text_command "开始导览" "${1:-${RABBITBOT_NAV_WORKFLOW_GO_TEXT}}"
+}
+
+inject_return_to_start_command() {
+    inject_stt_text_command "返回起点" "${1:-${RABBITBOT_NAV_WORKFLOW_BACK_TEXT}}"
+}
+
+
+signal_manual_arrival_command() {
+    if [ "${RABBITBOT_NAV_WORKFLOW_NO_ROBOT}" != "1" ]; then
+        log_warn "收到 arrive 命令但当前不是无机器人模式，已忽略"
+        return 1
+    fi
+    if [ -z "${current_host_manual_arrival_file}" ]; then
+        log_warn "收到 arrive 命令但当前 workflow 到达确认文件未初始化，已忽略"
+        return 1
+    fi
+    date "+%Y-%m-%d %H:%M:%S" >"${current_host_manual_arrival_file}"
+    log_info "无机器人模式已发送点位到达确认：run_id=${current_run_id}, file=${current_host_manual_arrival_file}"
+}
+
 wait_go_or_back() {
     WAITED_COMMAND=""
     log_info "等待命令：go 启动 workflow；此阶段收到 back 将直接返航"
@@ -794,16 +1137,27 @@ monitor_workflow_until_finished() {
         command="$(read_pending_command || true)"
         case "${command}" in
             back)
-                queued_back_after_workflow=1
-                log_info "已预接收 back 命令，workflow 结束后自动返航"
+                if [ "${RABBITBOT_NAV_WORKFLOW_VOICE_START}" = "1" ]; then
+                    inject_return_to_start_command "${RABBITBOT_NAV_WORKFLOW_BACK_TEXT}" || true
+                else
+                    queued_back_after_workflow=1
+                    log_info "已预接收 back 命令，workflow 结束后自动返航"
+                fi
                 ;;
             go)
-                log_warn "workflow 正在运行，忽略重复 go 命令"
+                if [ "${RABBITBOT_NAV_WORKFLOW_VOICE_START}" = "1" ]; then
+                    inject_guide_start_command "${RABBITBOT_NAV_WORKFLOW_GO_TEXT}" || true
+                else
+                    log_warn "workflow 正在运行，忽略重复 go 命令"
+                fi
+                ;;
+            arrive)
+                signal_manual_arrival_command || true
                 ;;
             "")
                 ;;
             *)
-                handle_unexpected_command "${command}" "back"
+                handle_unexpected_command "${command}" "back 或 arrive"
                 ;;
         esac
 
@@ -838,6 +1192,10 @@ monitor_workflow_until_finished() {
     exit_code="$(cat "${current_exit_code_file}" 2>/dev/null || true)"
     if [ -z "${exit_code}" ]; then
         exit_code="unknown"
+    fi
+    if [ -s "${current_host_return_request_file}" ]; then
+        queued_back_after_workflow=1
+        log_info "检测到 workflow 返航请求文件，准备按返航点序列返回起点：file=${current_host_return_request_file}"
     fi
     log_info "workflow 已结束：run_id=${current_run_id}, exit_code=${exit_code}"
 }
@@ -980,6 +1338,10 @@ return_to_start_with_recovery() {
 
 complete_return_to_start_or_wait_retry() {
     local reason="${1:-back返航}"
+    if [ "${RABBITBOT_NAV_WORKFLOW_NO_ROBOT}" = "1" ]; then
+        log_info "无机器人模式跳过真实返航导航：reason=${reason}"
+        return 0
+    fi
     while true; do
         if return_to_start_with_recovery "${reason}"; then
             return 0
@@ -992,7 +1354,11 @@ complete_return_to_start_or_wait_retry() {
 
 main() {
     prepare_runtime
-    start_nav_bridge
+    if [ "${RABBITBOT_NAV_WORKFLOW_NO_ROBOT}" = "1" ]; then
+        log_info "无机器人模式启动：不拉起导航桥接。"
+    else
+        start_nav_bridge
+    fi
     ensure_unified_services
     runtime_health_ok "启动完成复查"
 
@@ -1011,29 +1377,33 @@ main() {
             log_warn "workflow 预启动命令发送失败，重新进入循环"
             continue
         fi
-        if ! wait_workflow_gate_ready; then
-            stop_workflow_tail
-            stop_current_workflow
-            recover_runtime_services "workflow预启动不可用" || sleep "${RETURN_FAILURE_WAIT_SECONDS}"
-            log_warn "本轮 workflow 预启动不可用，重新预启动"
-            continue
+        if [ "${RABBITBOT_NAV_WORKFLOW_VOICE_START}" = "1" ]; then
+            log_info "语音启动导览模式：workflow 已进入 QA 状态，不等待外部 go 命令。"
+        else
+            if ! wait_workflow_gate_ready; then
+                stop_workflow_tail
+                stop_current_workflow
+                recover_runtime_services "workflow预启动不可用" || sleep "${RETURN_FAILURE_WAIT_SECONDS}"
+                log_warn "本轮 workflow 预启动不可用，重新预启动"
+                continue
+            fi
+            if ! wait_go_or_back; then
+                stop_workflow_tail
+                stop_current_workflow
+                recover_runtime_services "等待go/back阶段异常" || sleep "${RETURN_FAILURE_WAIT_SECONDS}"
+                log_warn "等待 go/back 阶段检测到预启动 workflow 异常，重新预启动"
+                continue
+            fi
+            if [ "${WAITED_COMMAND}" = "back" ]; then
+                log_info "等待 go 阶段收到 back，停止预启动 workflow 后直接返航"
+                stop_workflow_tail
+                stop_current_workflow
+                complete_return_to_start_or_wait_retry "等待go阶段收到back"
+                log_info "返航流程结束，继续预启动下一次 workflow。"
+                continue
+            fi
+            release_workflow_gate
         fi
-        if ! wait_go_or_back; then
-            stop_workflow_tail
-            stop_current_workflow
-            recover_runtime_services "等待go/back阶段异常" || sleep "${RETURN_FAILURE_WAIT_SECONDS}"
-            log_warn "等待 go/back 阶段检测到预启动 workflow 异常，重新预启动"
-            continue
-        fi
-        if [ "${WAITED_COMMAND}" = "back" ]; then
-            log_info "等待 go 阶段收到 back，停止预启动 workflow 后直接返航"
-            stop_workflow_tail
-            stop_current_workflow
-            complete_return_to_start_or_wait_retry "等待go阶段收到back"
-            log_info "返航流程结束，继续预启动下一次 workflow。"
-            continue
-        fi
-        release_workflow_gate
         monitor_workflow_until_finished
         if [ "${queued_back_after_workflow}" = "1" ]; then
             log_info "使用 workflow 运行期间预接收的 back 命令进入返航"

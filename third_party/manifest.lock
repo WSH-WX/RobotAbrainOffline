@@ -1,0 +1,156 @@
+{
+  "schema_version": 1,
+  "generated_for_branch": "feature/portable-deploy",
+  "summary": {
+    "goal": "让全新 Orin 通过 GitHub 源码、最小宿主初始化和本地导入/构建的自包含镜像完成 RabbitBot 冷启动",
+    "default_runtime_mode": "portable",
+    "default_vlm_enabled": false,
+    "image_source": "local",
+    "image_delivery": "offline_docker_save_load",
+    "notes": [
+      "本清单记录所有 Git 之外的运行依赖、镜像来源和模型下载策略。",
+      "凡是被 .gitignore 排除但主流程必需的内容，都必须在本清单中有来源。",
+      "当前阶段镜像暂不发布远端仓库，通过本机构建 + docker save/load 交付；core/nav 均为自包含镜像。",
+      "全新 Orin 运行期不再要求宿主存在 py38/py310/vln/pyorbbecsdk/unitree_sdk2 等目录：core 镜像烤入 py38/py310/vln/pyorbbecsdk，nav 镜像烤入 unitree_sdk2 与导航构建产物。"
+    ]
+  },
+  "dependencies": {
+    "unitree_sdk2": {
+      "required_for": [
+        "portable_nav_build"
+      ],
+      "source_type": "local_directory_or_artifact",
+      "tracked_in_git": false,
+      "default_path": "unitree_sdk2",
+      "acquire_strategy": "构建机需要该目录。portable nav 镜像用它编译并安装导航相关 SDK 到 /opt/unitree_sdk2；portable core 镜像也必须烤入 unitree_sdk2，并通过 named volume 注入 /workspace/projects/unitree_sdk2，供 Unitree G1 本体 TTS 桥接程序在 core 容器内构建。全新 Orin 运行期不需要宿主存在该目录。",
+      "status": "baked_into_image",
+      "baked_image": "portable_nav",
+      "blocker": false
+    },
+    "dfx_inspire_service": {
+      "required_for": [
+        "legacy_one_click_start"
+      ],
+      "source_type": "local_directory_or_artifact",
+      "tracked_in_git": false,
+      "default_path": "dfx_inspire_service",
+      "acquire_strategy": "当前 portable 冷启动主流程不依赖该目录；若启用 legacy 一键启动，需要从离线依赖包恢复。",
+      "status": "legacy_optional",
+      "blocker": false
+    },
+    "pyorbbecsdk-v2-py310": {
+      "required_for": [
+        "workflow",
+        "robot_agent"
+      ],
+      "source_type": "local_directory_or_artifact",
+      "tracked_in_git": false,
+      "default_path": "pyorbbecsdk-v2-py310",
+      "acquire_strategy": "仅构建机需要：core 镜像烤入该目录到 /workspace/projects/pyorbbecsdk-v2-py310，并通过从 core 镜像 seed 的 named volume 在运行期顶替宿主缺失目录。全新 Orin 不需要该目录。",
+      "status": "baked_into_image",
+      "baked_image": "portable_core",
+      "blocker": false
+    },
+    "vln": {
+      "required_for": [
+        "workflow",
+        "robot_agent"
+      ],
+      "source_type": "local_directory_or_artifact",
+      "tracked_in_git": false,
+      "default_path": "vln",
+      "acquire_strategy": "仅构建机需要：core 镜像烤入该目录到 /workspace/projects/vln，并通过从 core 镜像 seed 的 named volume 在运行期顶替宿主缺失目录。全新 Orin 不需要该目录。",
+      "status": "baked_into_image",
+      "baked_image": "portable_core",
+      "blocker": false
+    },
+    "custom_action_ws_install": {
+      "required_for": [
+        "portable_nav_build",
+        "legacy_runtime"
+      ],
+      "source_type": "build_output",
+      "tracked_in_git": false,
+      "default_path": "custom_action_ws/install",
+      "acquire_strategy": "portable nav 镜像在容器内从 custom_action_ws/src 重新 colcon build 并固化进镜像；legacy 路径继续使用宿主 install 目录。",
+      "status": "baked_into_image",
+      "baked_image": "portable_nav",
+      "blocker": false
+    },
+    "legacy_python_envs": {
+      "required_for": [
+        "legacy_runtime"
+      ],
+      "source_type": "local_virtualenv",
+      "tracked_in_git": false,
+      "default_path": "rabbitbot-dev-ros2-master/py38 + rabbitbot-dev-ros2-master/py310",
+      "acquire_strategy": "portable 路径不再要求从 Git 或宿主恢复这两个虚拟环境：core 镜像已烤入二者，运行期由从 core 镜像 seed 的 named volume 提供；宿主仅需轻量控制台 venv。",
+      "status": "not_required_for_portable",
+      "baked_image": "portable_core",
+      "blocker": false
+    }
+  },
+  "images": {
+    "portable_core": {
+      "default_image": "ghcr.io/aaronai/rabbitbot-core-portable:20260611",
+      "build_recipe": "rabbitbot-dev-ros2-master/docker/portable/core.Dockerfile",
+      "pull_or_build": "local_build_or_offline_import",
+      "self_contained": true,
+      "notes": [
+        "现实约束：原四个上游镜像（navid-rabbitbot:stt-tts-audio-ct2cuda-20260511、rabbitbot-vllm:20260511、foxy-ros-cam-orb-ubuntu20:rabbitbot-20260511）在本机已不存在，只剩 neo4j:5.26-community，故无法在本机从零重建 core。",
+        "rabbitbot-unified-runtime:20260518 本身即这四个上游镜像的合并产物，已包含 Neo4j/Java/ROS Foxy/Python3.8/STT/TTS/VLM venv。",
+        "portable core 以 unified-runtime 为基础镜像，额外烤入 py38/py310/vln/pyorbbecsdk 与项目源码，使运行期不再依赖宿主目录。",
+        "构建使用 build_or_pull_images.sh 生成的专用上下文，绕过顶层 .dockerignore 对 py38/py310/vln/pyorbbecsdk 的排除。",
+        "portable core 镜像同时烤入 unitree_sdk2，供 Unitree 本体 TTS 在 core 容器内构建桥接程序；否则全新 Orin 会在 rabbitbot_tts.log 中报缺少 /workspace/projects/unitree_sdk2。"
+      ],
+      "blocker": false
+    },
+    "portable_nav": {
+      "default_image": "ghcr.io/aaronai/rabbitbot-nav-portable:20260611",
+      "build_recipe": "rabbitbot-dev-ros2-master/docker/portable/nav.Dockerfile",
+      "pull_or_build": "local_build_or_offline_import",
+      "self_contained": true,
+      "notes": [
+        "portable nav 镜像在容器内用 unitree_sdk2、custom_action_ws/src 源码和导航示例编译并固化导航二进制、Humble bridge 与 custom_action_interfaces。",
+        "运行期不再依赖宿主 unitree_sdk2 / custom_action_ws/install / 导航构建产物。"
+      ],
+      "blocker": false
+    },
+    "legacy_unified_core_base": {
+      "default_image": "rabbitbot-unified-runtime:20260518",
+      "source_type": "prebuilt_local_image",
+      "notes": [
+        "仅构建机需要：作为 portable core 的基础镜像。",
+        "全新 Orin 只需导入自包含的 portable core 成品镜像，无需该基础镜像。"
+      ],
+      "blocker": false
+    }
+  },
+  "models": {
+    "qwen_vlm": {
+      "enabled_by_default": false,
+      "download_mode": "on_demand",
+      "hf_repo": "Qwen/Qwen2.5-VL-7B-Instruct-GPTQ-Int4",
+      "target_dir": "models/Qwen2.5-VL-7B-Instruct-GPTQ-Int4"
+    },
+    "qwen_embedding": {
+      "enabled_by_default": false,
+      "download_mode": "on_demand",
+      "hf_repo": "Qwen/Qwen3-Embedding-0.6B",
+      "target_dir": "models/Qwen3-Embedding-0.6B"
+    },
+    "sensevoice": {
+      "enabled_by_default": false,
+      "download_mode": "on_demand",
+      "hf_repo": "iic/SenseVoiceSmall",
+      "target_dir": "models/SenseVoiceSmall"
+    }
+  },
+  "blockers": [],
+  "resolved_blockers": [
+    {
+      "id": "portable_core_full_rebuild_not_complete",
+      "resolution": "portable core 改为自包含镜像：以 unified-runtime 为基础并烤入 py38/py310/vln/pyorbbecsdk 与源码，运行期不再依赖宿主目录。受限于本机已无四个上游镜像，本阶段不追求“不 FROM unified-runtime 的从零重建”，该现实已在 images.portable_core.notes 记录。"
+    }
+  ]
+}

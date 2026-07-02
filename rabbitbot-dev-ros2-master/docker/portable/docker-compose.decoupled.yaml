@@ -1,0 +1,190 @@
+# RabbitBot 解耦运行时 compose。
+#
+# 目标：把原本挤在单个 rabbitbot-unified-runtime 容器内的服务，拆成多个相互解耦的容器，
+# 提升故障隔离、独立重启与并行启动能力（详见 HANDOFF_REPORT.md）。
+#
+# 五个容器：
+#   neo4j               官方 neo4j 镜像，提供图数据库 7687/7474
+#   rabbitbot-vlm       复用 core-portable，仅跑 VLM(8000)+Embedding(8005)
+#   rabbitbot-audio     复用 core-portable，仅跑 TTS(28185)+STT(28184)
+#   rabbitbot-memory    复用 core-portable，仅跑 Memory Agent(28182)，依赖 neo4j+embedding
+#   rabbitbot-navbridge 复用 nav 镜像，提供导航桥接/Robot Agent 28180
+#
+# 设计要点：
+#   1. 全部 network_mode: host —— 服务间仍走 127.0.0.1:<port>，无需改任何写死的服务地址，迁移风险最低。
+#   2. 三个 rabbitbot 容器共用 core-portable 镜像（本机已无原始最小镜像），但各只启动自己的服务子集，
+#      容器层面完全解耦；镜像瘦身留作后续。
+#   3. 源码以 bind mount 注入，py38/py310/vln/pyorbbecsdk/unitree_sdk2 以 named volume 从镜像 seed，
+#      与现有 unified 容器一致。
+
+services:
+  neo4j:
+    image: neo4j:5.26-community
+    container_name: neo4j
+    network_mode: host
+    environment:
+      NEO4J_AUTH: neo4j/neo4j_pass
+      NEO4J_PLUGINS: '["apoc"]'
+    volumes:
+      - rabbitbot_neo4j_data:/data
+      - rabbitbot_neo4j_logs:/logs
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p neo4j_pass 'RETURN 1' >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 120s
+    restart: unless-stopped
+
+  rabbitbot-vlm:
+    image: ${RABBITBOT_PORTABLE_CORE_IMAGE:-ghcr.io/aaronai/rabbitbot-core-portable:20260611}
+    container_name: rabbitbot-vlm
+    network_mode: host
+    ipc: host
+    runtime: nvidia
+    command: ["bash", "/workspace/projects/rabbitbot-dev-ros2-master/scripts_1/unified_runtime/start_role_container.sh"]
+    environment:
+      RABBITBOT_CONTAINER_ROLE: vlm
+      RABBITBOT_DIR: /workspace/projects/rabbitbot-dev-ros2-master
+      RABBITBOT_MODELS_DIR: /models
+      RABBITBOT_LOG_DIR: /workspace/projects/logs/unified_runtime
+      RABBITBOT_UNIFIED_START_VLM: "1"
+      RABBITBOT_UNIFIED_START_EMBEDDING: "1"
+      WAIT_VLM_SECONDS: "600"
+    volumes:
+      - /mnt/disk1/gt/air_robot_gt_projects:/workspace/projects
+      - /mnt/disk1/models:/models
+      - rabbitbot_portable_py310:/workspace/projects/rabbitbot-dev-ros2-master/py310
+      - rabbitbot_portable_py38:/workspace/projects/rabbitbot-dev-ros2-master/py38
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:8005/v1/models >/dev/null 2>&1 || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 40
+      start_period: 600s
+    restart: unless-stopped
+
+  rabbitbot-audio:
+    image: ${RABBITBOT_PORTABLE_CORE_IMAGE:-ghcr.io/aaronai/rabbitbot-core-portable:20260611}
+    container_name: rabbitbot-audio
+    network_mode: host
+    ipc: host
+    runtime: nvidia
+    command: ["bash", "/workspace/projects/rabbitbot-dev-ros2-master/scripts_1/unified_runtime/start_role_container.sh"]
+    environment:
+      RABBITBOT_CONTAINER_ROLE: audio
+      RABBITBOT_DIR: /workspace/projects/rabbitbot-dev-ros2-master
+      RABBITBOT_MODELS_DIR: /models
+      RABBITBOT_LOG_DIR: /workspace/projects/logs/unified_runtime
+      RABBITBOT_UNIFIED_START_STT: "1"
+      RABBITBOT_TTS_ALLOW_BUILTIN: "1"
+      RABBITBOT_TTS_BACKEND: ${RABBITBOT_TTS_BACKEND:-unitree}
+      RABBITBOT_UNIFIED_TTS_DEVICE: cuda
+      RABBITBOT_UNIFIED_TTS_FAST_SOUND_PRELOAD: "0"
+      RABBITBOT_UNIFIED_TTS_STARTUP_SPEECH: "0"
+      RABBITBOT_UNITREE_TTS_INTERFACE: ${RABBITBOT_UNITREE_TTS_INTERFACE:-eno1}
+      RABBITBOT_UNITREE_TTS_VOLUME: "100"
+    volumes:
+      - /mnt/disk1/gt/air_robot_gt_projects:/workspace/projects
+      - /mnt/disk1/models:/models
+      - /dev/snd:/dev/snd
+      - rabbitbot_portable_py310:/workspace/projects/rabbitbot-dev-ros2-master/py310
+      - rabbitbot_portable_py38:/workspace/projects/rabbitbot-dev-ros2-master/py38
+    device_cgroup_rules:
+      - 'c 116:* rwm'
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:28184/docs >/dev/null 2>&1 || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 30
+      start_period: 300s
+    restart: unless-stopped
+
+  rabbitbot-memory:
+    image: ${RABBITBOT_PORTABLE_CORE_IMAGE:-ghcr.io/aaronai/rabbitbot-core-portable:20260611}
+    container_name: rabbitbot-memory
+    network_mode: host
+    ipc: host
+    runtime: nvidia
+    command: ["bash", "/workspace/projects/rabbitbot-dev-ros2-master/scripts_1/unified_runtime/start_role_container.sh"]
+    environment:
+      RABBITBOT_CONTAINER_ROLE: memory
+      RABBITBOT_DIR: /workspace/projects/rabbitbot-dev-ros2-master
+      RABBITBOT_MODELS_DIR: /models
+      RABBITBOT_LOG_DIR: /workspace/projects/logs/unified_runtime
+      NEO4J_URI: bolt://127.0.0.1:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: neo4j_pass
+    volumes:
+      - /mnt/disk1/gt/air_robot_gt_projects:/workspace/projects
+      - /mnt/disk1/models:/models
+      - rabbitbot_portable_py310:/workspace/projects/rabbitbot-dev-ros2-master/py310
+      - rabbitbot_portable_py38:/workspace/projects/rabbitbot-dev-ros2-master/py38
+    depends_on:
+      neo4j:
+        condition: service_healthy
+      rabbitbot-vlm:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:28182/docs >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 120s
+    restart: unless-stopped
+
+  rabbitbot-workflow:
+    # 导览 workflow 的专用运行宿主：复用 core-portable，挂全部 5 个依赖卷与源码，host 网络，
+    # 自身只保活（tail -f），由 loop 通过 docker exec 注入 workflow 进程。
+    image: ${RABBITBOT_PORTABLE_CORE_IMAGE:-ghcr.io/aaronai/rabbitbot-core-portable:20260611}
+    container_name: rabbitbot-workflow
+    network_mode: host
+    ipc: host
+    runtime: nvidia
+    command: ["bash", "-lc", "echo 'rabbitbot-workflow 宿主就绪，等待 loop 注入导览 workflow' && exec tail -f /dev/null"]
+    environment:
+      RABBITBOT_DIR: /workspace/projects/rabbitbot-dev-ros2-master
+      RABBITBOT_MODELS_DIR: /models
+    volumes:
+      - /mnt/disk1/gt/air_robot_gt_projects:/workspace/projects
+      - /mnt/disk1/models:/models
+      - rabbitbot_portable_py310:/workspace/projects/rabbitbot-dev-ros2-master/py310
+      - rabbitbot_portable_py38:/workspace/projects/rabbitbot-dev-ros2-master/py38
+      - rabbitbot_portable_vln:/workspace/projects/vln
+      - rabbitbot_portable_pyorbbecsdk:/workspace/projects/pyorbbecsdk-v2-py310
+      - rabbitbot_portable_unitree_sdk2:/workspace/projects/unitree_sdk2
+    depends_on:
+      rabbitbot-memory:
+        condition: service_healthy
+      rabbitbot-audio:
+        condition: service_healthy
+    restart: unless-stopped
+
+  rabbitbot-navbridge:
+    image: ${RABBITBOT_PORTABLE_NAV_IMAGE:-ghcr.io/aaronai/rabbitbot-nav-portable:20260611}
+    container_name: rabbitbot-navbridge
+    network_mode: host
+    environment:
+      RABBITBOT_DDS_INTERFACE: ${RABBITBOT_DDS_INTERFACE:-eno1}
+      RABBITBOT_NAV_MAP_PATH: ${RABBITBOT_NAV_MAP_PATH:-/home/unitree/test9.pcd}
+      RABBITBOT_PORTABLE_PROJECT_ROOT: /workspace/projects/rabbitbot-dev-ros2-master
+    volumes:
+      - /mnt/disk1/gt/air_robot_gt_projects/logs/nav_workflow_control:/workspace/projects/logs/nav_workflow_control
+      - /mnt/disk1/gt/air_robot_gt_projects/unitree_slam_example_new/example/run_logs:/workspace/projects/unitree_slam_example_new/example/run_logs
+    restart: unless-stopped
+
+volumes:
+  rabbitbot_neo4j_data:
+    name: rabbitbot_neo4j_data
+  rabbitbot_neo4j_logs:
+    name: rabbitbot_neo4j_logs
+  rabbitbot_portable_py310:
+    name: rabbitbot_portable_py310
+  rabbitbot_portable_py38:
+    name: rabbitbot_portable_py38
+  rabbitbot_portable_vln:
+    name: rabbitbot_portable_vln
+  rabbitbot_portable_pyorbbecsdk:
+    name: rabbitbot_portable_pyorbbecsdk
+  rabbitbot_portable_unitree_sdk2:
+    name: rabbitbot_portable_unitree_sdk2

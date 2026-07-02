@@ -224,3 +224,89 @@ def test_parse_latest_pose_does_not_keep_old_success_forever(tmp_path):
     assert pose.source == "pose_log"
     assert pose.x == 4.0
     assert pose.ow == 0.7
+
+def test_service_status_marks_starting_within_startup_window(monkeypatch):
+    # 主循环刚启动(处于启动窗口)且端口未就绪 → 状态应为“启动中”。
+    from rabbitbot.control_console import status as status_mod
+
+    monkeypatch.setattr(status_mod, "get_main_loop_start_epoch", lambda: time.time())
+    monkeypatch.setattr(status_mod, "is_port_open", lambda host, port, timeout=0.12: False)
+    statuses = status_mod.get_runtime_service_statuses()
+    assert statuses
+    assert all(item.state == "starting" for item in statuses)
+    assert all("启动中" in (item.message or "") for item in statuses)
+
+
+def test_service_status_marks_offline_outside_startup_window(monkeypatch):
+    # 主循环未运行(取不到启动时间)且端口未就绪 → 状态应为“离线”。
+    from rabbitbot.control_console import status as status_mod
+
+    monkeypatch.setattr(status_mod, "get_main_loop_start_epoch", lambda: None)
+    monkeypatch.setattr(status_mod, "is_port_open", lambda host, port, timeout=0.12: False)
+    statuses = status_mod.get_runtime_service_statuses()
+    assert statuses
+    assert all(item.state == "offline" for item in statuses)
+    assert all("离线" in (item.message or "") for item in statuses)
+
+
+def test_service_status_marks_online_when_port_open(monkeypatch):
+    # 端口已就绪 → 状态应为“在线”，与启动窗口无关。
+    from rabbitbot.control_console import status as status_mod
+
+    monkeypatch.setattr(status_mod, "get_main_loop_start_epoch", lambda: time.time())
+    monkeypatch.setattr(status_mod, "is_port_open", lambda host, port, timeout=0.12: True)
+    statuses = status_mod.get_runtime_service_statuses()
+    assert statuses
+    assert all(item.state == "online" for item in statuses)
+
+
+def test_resolve_service_container_compose_groups(monkeypatch):
+    # compose 栈下服务->容器映射：TTS/STT 同 rabbitbot-audio，VLM/Embedding 同 rabbitbot-vlm。
+    from rabbitbot.control_console import status as status_mod
+
+    monkeypatch.setenv("RABBITBOT_BASE_RUNTIME", "compose")
+    assert status_mod.resolve_service_container("tts") == "rabbitbot-audio"
+    assert status_mod.resolve_service_container("stt") == "rabbitbot-audio"
+    assert status_mod.resolve_service_container("vlm") == "rabbitbot-vlm"
+    assert status_mod.resolve_service_container("embedding") == "rabbitbot-vlm"
+    assert status_mod.resolve_service_container("memory") == "rabbitbot-memory"
+    assert status_mod.resolve_service_container("neo4j") == "neo4j"
+    assert status_mod.resolve_service_container("nope") is None
+
+
+def test_service_status_marks_starting_after_container_restart(monkeypatch):
+    # 刚重启某容器(宽限期内)且端口未就绪 → 该容器服务显示“启动中”，其它容器服务仍“离线”。
+    from rabbitbot.control_console import status as status_mod
+
+    monkeypatch.setenv("RABBITBOT_BASE_RUNTIME", "compose")
+    monkeypatch.setattr(status_mod, "get_main_loop_start_epoch", lambda: None)
+    monkeypatch.setattr(status_mod, "is_port_open", lambda host, port, timeout=0.12: False)
+    monkeypatch.setattr(status_mod, "_recent_container_restarts", {"rabbitbot-audio": time.time()})
+    by_key = {item.key: item for item in status_mod.get_runtime_service_statuses()}
+    assert by_key["tts"].state == "starting"
+    assert by_key["stt"].state == "starting"
+    assert by_key["vlm"].state == "offline"
+    assert by_key["tts"].container == "rabbitbot-audio"
+
+
+def test_mark_container_restarted_records_timestamp(monkeypatch):
+    # mark_container_restarted 应把容器名记入重启时间戳表。
+    from rabbitbot.control_console import status as status_mod
+
+    monkeypatch.setattr(status_mod, "_recent_container_restarts", {})
+    status_mod.mark_container_restarted("rabbitbot-audio")
+    assert "rabbitbot-audio" in status_mod._recent_container_restarts
+
+
+def test_service_status_force_starting_overrides_online(monkeypatch):
+    # 重启发起后的强制窗口内，即使端口仍开(旧进程未退出)，该容器服务也显示“启动中”，优先于“在线”。
+    from rabbitbot.control_console import status as status_mod
+
+    monkeypatch.setenv("RABBITBOT_BASE_RUNTIME", "compose")
+    monkeypatch.setattr(status_mod, "get_main_loop_start_epoch", lambda: None)
+    monkeypatch.setattr(status_mod, "is_port_open", lambda host, port, timeout=0.12: True)
+    monkeypatch.setattr(status_mod, "_recent_container_restarts", {"rabbitbot-audio": time.time()})
+    by_key = {item.key: item for item in status_mod.get_runtime_service_statuses()}
+    assert by_key["tts"].state == "starting"
+    assert by_key["stt"].state == "starting"
+    assert by_key["vlm"].state == "online"

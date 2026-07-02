@@ -1197,3 +1197,843 @@ Aaron 明确授权安装 `/etc/sudoers.d/rabbitbot-control-console`，用于让�
 - 本轮没有新增代码日志点；本轮是系统权限配置安装。上一轮后端日志已能记录 `/api/start` 的 action、service、returncode 和 sudo/systemctl 输出。
 - `conf/dialogue_0.json` 仍存在未提交的点位坐标改动，本轮未处理。
 
+## 本轮补充：VLM 问答 workflow 时延测试
+
+### 背景和目标
+
+本轮目标是按 Aaron 要求，在无人现场对话的情况下测试 `feature/qa-vlm-workflow` 分支新增的 VLM 语音问答 workflow 是否能调用 Qwen2.5-VL 进行思考回答，并统计从 STT 命令发出到 TTS 进入回复播报请求的分阶段平均时延。
+
+### 当前状态
+
+已完成：
+
+- 已启动 `rabbitbot-unified-runtime` 统一容器底座，显式启用 VLM 与 STT，并使用 `/mnt/disk1/models` 作为模型目录。
+- 已确认 vLLM 成功加载 `/models/Qwen2.5-VL-7B-Instruct-GPTQ-Int4`，served model 为 `Qwen2.5-VL-7B-Instruct`，`/v1/models` ready。
+- 已通过临时测试驱动复用 `VLMQAWorkflow` 主逻辑，关闭启动提示语和“让我想一想”提示语，避免干扰首个回复 TTS 统计。
+- 已在 STT agent 层用同样 JSON 命令形式模拟 5 个问题输入；真实 STT 服务没有“文本注入异步识别结果”的 API，因此本轮没有走麦克风录音链路。
+- 已调用真实 Qwen2.5-VL OpenAI 兼容接口并获得 5 次回答。
+- 已在统一容器内临时启动标准 `tts_app.py` 到 `127.0.0.1:28186`，用于生成标准 `Unitree本体TTS` 日志。
+- 测试完成后已停止临时 28186 TTS 进程，并停止本轮启动的 `rabbitbot-unified-runtime` 容器。
+- 清理后已确认 28182、28184、28186、8000、7687 等本轮端口无监听；原有 caddy、redis、nav、air_vln_container、sound_docker 保持运行。
+
+未完成：
+
+- TTS 没有成功播报首字；标准 TTS app 调用 Unitree G1 TTS 时返回 `returncode=1`。
+- 因 TTS 失败，无法得到真实“首个字已经播出”的硬件侧时间，只能统计到 TTS 服务收到回复播报请求的时间点。
+- 本轮未进行摄像头图像输入测试，`RABBITBOT_QA_INCLUDE_IMAGE=0`，属于文本问答调用 Qwen2.5-VL。
+
+### 已验证的事实
+
+- Qwen2.5-VL 可被 workflow 调用，5 个问题均收到模型流式回答。
+- 本轮 5 问平均时延如下：
+  - STT 命令发出到文本可读：0.000062 秒。
+  - 文本可读到 workflow 收到：0.000265 秒。
+  - workflow 收到文本到发起 VLM 请求：0.000049 秒。
+  - VLM 请求到 stream open：0.015098 秒。
+  - VLM 请求到首 token：0.066295 秒。
+  - VLM 首 token 到完整回答结束：0.590316 秒。
+  - VLM 总耗时：0.656610 秒。
+  - VLM 完成到 TTS 请求开始：0.000094 秒。
+  - STT 命令发出到 TTS 回复请求开始：0.657080 秒。
+  - TTS 请求开始到返回失败：0.040188 秒。
+- 分轮结果已保存到 `logs/vlm_qa_workflow/latency_test_20260613_tts28186.json`。
+- TTS 标准日志 `logs/vlm_qa_workflow/tts_test_28186.log` 显示每轮均到达 `Unitree本体TTS: stage=tts_request_start`，随后失败。
+- TTS 失败根因为 Unitree DDS 接口不可用：日志中出现 `eno1: does not match an available interface` 和 `Failed to create domain explicitly`。
+- 当前已有 28185 服务来自 `sound_docker`，只暴露 `POST /v1`，不是 workflow 默认 `TTSAgent` 使用的 `/exec` 接口；因此本轮没有用它作为正式 workflow TTS endpoint。
+
+### 阻塞问题
+
+- 真实 TTS 播报链路当前被 Unitree DDS 网卡问题阻塞。`tts_app.py` 使用 `RABBITBOT_UNITREE_TTS_INTERFACE=eno1` 调用 G1 音频服务时，CycloneDDS 不能在该接口创建 domain。
+- 因上述问题，本轮无法给出真实“首字播报”平均时延；可给出的端到端值是“STT 命令发出到 TTS 回复请求开始”，平均 0.657080 秒。
+
+### 建议的下一步
+
+- 现场接入或恢复 Unitree DDS 网络后，先确认容器内也能看到可用 `eno1`，再单独测试 `build/unitree_g1_tts_bridge --network eno1 --text 测试`。
+- 如果继续使用 portable 容器内标准 `tts_app.py`，需要确认容器网络/权限下的 `eno1` 与宿主配置一致，避免宿主可用但容器内 CycloneDDS 不可用。
+- 若要在无人现场继续做纯链路时延压测，可临时将 TTS 设为 dry-run，但该结果不能代表真实首字播报时延。
+- 如需测试真正视觉问答，应在下一轮设置 `RABBITBOT_QA_INCLUDE_IMAGE=1`，并优先用 `RABBITBOT_QA_IMAGE_SOURCE=mock` 验证图文输入路径，再切到机器人摄像头。
+
+### 注意事项
+
+- 本轮测试没有启动导览导航 workflow，没有发送 `go/back`，没有触发机器人移动。
+- 本轮测试驱动没有提交为项目代码，仅生成运行日志和 JSON 结果。
+- 本轮启动 VLM 时发现 `scripts_1/start_unified_integration_workflow.sh` 直接调用会误用 legacy `IMAGE_NAME=rabbitbot-unified-runtime:20260518`，本轮通过显式设置 `IMAGE_NAME=ghcr.io/aaronai/rabbitbot-core-portable:20260611` 和 `MODELS_DIR=/mnt/disk1/models` 绕过。
+
+### 其它信息
+
+本轮没有修改业务代码日志点；测试依赖已有日志。关键日志覆盖 VLM 启动、VLM 流式回答、workflow TTS 请求链路、Unitree TTS 请求开始/失败、服务清理状态。TTS 失败日志包含接口名、返回码、stdout/stderr 和 DDS 失败原因，足够定位到容器内 Unitree DDS 接口不可用问题。
+
+## 本轮补充：复核 VLM 问答 TTS 重复提交问题
+
+### 背景和目标
+
+Aaron 要求先修复 VLM 问答 workflow 中可能存在的重复 `tts_sound()` 调用问题。本轮目标是确认当前 `feature/qa-vlm-workflow` 分支实际代码状态，并在必要时修复。
+
+### 当前状态
+
+已完成：
+
+- 已检查 `rabbitbot/agno_agents/vlm_qa_workflow.py` 中 `_speak_answer()` 实现。
+- 已用脚本断言 `_speak_answer()` 代码块内 `tts_sound(self.ctx.tts_agent, answer, "zh")` 只出现 1 次。
+- 已执行 `python3 -m py_compile rabbitbot/agno_agents/vlm_qa_workflow.py`，语法检查通过。
+
+未完成：
+
+- 本轮未修改业务代码，因为当前远端文件已不存在重复 `tts_sound()` 调用。
+- 本轮未启动 workflow、容器、VLM、STT 或 TTS 服务。
+
+### 已验证的事实
+
+- 当前 `_speak_answer()` 逻辑为：空回答兜底、超长截断、单次调用 `tts_sound()`、记录 `TTS 播报已提交` 日志、随后 `tts_wait()`。
+- 当前文件不会因为该位置导致同一条完整回答被提交两次给 TTS。
+
+### 阻塞问题
+
+无。
+
+### 建议的下一步
+
+- 后续如仍观察到重复播报，应优先查看 TTS 服务端是否重复接收请求、前端/测试驱动是否重复触发同一轮问题，或是否有多个 workflow 实例并发运行。
+- 若继续优化首字延迟，应另起改动实现按句流式提交 TTS，而不是在当前单次提交逻辑上继续排查重复调用。
+
+### 注意事项
+
+- 本轮只更新交接报告，不改变运行逻辑。
+- 现有日志 `TTS 播报已提交` 与 `TTS请求链路` 足以确认单轮是否只提交一次 TTS 请求。
+
+### 其它信息
+
+本轮没有新增或调整代码日志点；已确认现有日志覆盖 TTS 提交流程。
+
+## 本轮补充：VLM 问答按句流式 TTS 适配
+
+### 背景和目标
+
+Aaron 要求让 VLM 问答 workflow 具备“流式播报”能力：大模型生成的每一句话应尽快交给 TTS 播报，而不是等待完整回答全部生成后才提交 TTS，从而降低长回答时用户感知到的首字延迟。
+
+### 当前状态
+
+已完成：
+
+- 已修改 `rabbitbot/agno_agents/vlm_qa_workflow.py`，新增 VLM 流式分句提交 TTS 的主路径。
+- 已新增 `_pop_stream_tts_segment()`，用于从流式 token 缓冲中按句末标点提取可播报分段。
+- 已新增 `_create_vlm_stream()`，统一纯文本和图文 VLM 的 OpenAI 兼容流式请求创建逻辑。
+- 已新增 `_submit_stream_tts_segment()`，每个句子分段都会单独调用 `tts_sound()`，并记录分段索引、长度、哈希、TTS 返回索引和耗时。
+- 已新增 `_call_vlm_with_stream_tts()`，在 VLM chunk 到达时持续累积文本，遇到 `。！？!?；;` 或换行即提交 TTS；流结束后提交最后残句；最后仅调用一次 `tts_wait()` 等待队列收敛。
+- 已新增环境变量 `RABBITBOT_QA_STREAM_TTS`，默认 `1` 开启按句流式 TTS；设为 `0` 可回退旧的整段回答播报逻辑。
+- 已更新 `scripts/start_vlm_qa_workflow.bash` 和 `scripts_1/start_unified_vlm_qa_workflow.sh` 的注释、环境变量透传和启动日志。
+
+未完成：
+
+- 本轮未启动真实 VLM、STT、TTS 或机器人硬件服务，未进行实机播报验证。
+- 本轮未实现真正音频级流式合成；当前粒度为“按句文本分段提交 TTS”。
+
+### 已验证的事实
+
+- `python3 -m py_compile rabbitbot/agno_agents/vlm_qa_workflow.py` 通过。
+- `bash -n scripts/start_vlm_qa_workflow.bash` 通过。
+- `bash -n scripts_1/start_unified_vlm_qa_workflow.sh` 通过。
+- `git diff --check` 通过。
+- 已用依赖桩模拟 VLM chunk 流验证分句行为：输入 chunk 拼成 `第一句。第二句！最后残句` 时，TTS 提交顺序为 `第一句。`、`第二句！`、`最后残句`，并且只在末尾调用一次 `tts_wait()`。
+- 当前实现保留回答最大长度约束；当分段超过 `RABBITBOT_QA_MAX_ANSWER_CHARS` 剩余长度时，会截断当前分段并记录日志，后续分段会跳过并记录原因。
+
+### 阻塞问题
+
+无代码层面的阻塞。运行层面仍需先解决上一轮记录的 Unitree TTS DDS 接口问题，否则真实播报仍会在 TTS 后端失败。
+
+### 建议的下一步
+
+- 在 Unitree TTS DDS 接口恢复后，启动 VLM 问答 workflow，观察日志中的 `VLM 首 token 到达`、`流式 TTS 分段已提交`、`流式 TTS 等待完成` 和 `VLM 流式问答完成`。
+- 用一个包含多句长回答的问题复测首句提交时间，对比上一轮“完整回答后才 TTS”的 `STT 命令发出到 TTS 回复请求开始` 平均时延。
+- 如需要更进一步降低延迟，可在当前按句方案基础上增加逗号/长度阈值分段，或改造 TTS 服务支持真正的音频流式播放。
+
+### 注意事项
+
+- 当前按句分段只在遇到句末标点后提交 TTS；如果模型长时间不输出句号，首句仍会等待到句末或流结束。
+- `RABBITBOT_QA_STREAM_TTS=0` 可用于现场快速回退旧逻辑。
+- 本轮没有启动导览导航 workflow，没有发送 `go/back`，没有触发机器人移动。
+
+### 其它信息
+
+本轮新增日志点包括：VLM 流式问答开始、VLM 首 token 到达、流式 TTS 分段提交、按最大长度截断/跳过、流式 TTS 等待完成、VLM 流式问答完成。日志中记录 turn、分段序号、文本长度、哈希、TTS 索引、耗时、首 token 耗时和首个 TTS 分段提交耗时，便于后续统计首字延迟和排查重复/漏播。
+
+## 本轮补充：调整 VLM 问答开场语和回答风格提示词
+
+### 背景和目标
+
+Aaron 要求 VLM 问答 workflow 在最开始使用 TTS 问一句“你好，请问需要我做些什么吗”，并给大模型增加更贴近日常对话、避免冗长回答的系统提示词。
+
+### 当前状态
+
+已完成：
+
+- 已将 `RABBITBOT_QA_STARTUP_SPEECH` 的默认值从“问答测试已启动，您可以直接向我提问。”改为“你好，请问需要我做些什么吗？”。
+- 已调整 `_build_prompt()` 中的角色定位，从“现场问答测试助手”改为“现场对话助手，正在和用户面对面自然交流”。
+- 已补充回答要求：中文口语化、适合直接播报、不要写成报告或长段说明、默认 1 到 2 句、简单问题直接短答、不确定时简短说明无法确认。
+- 保留原有 `RABBITBOT_QA_STARTUP_SPEECH` 环境变量覆盖能力，现场仍可通过环境变量临时改开场语或置空。
+
+未完成：
+
+- 本轮未启动真实 workflow、VLM、STT、TTS 或机器人硬件服务。
+- 本轮未做真实模型回答风格回归测试。
+
+### 已验证的事实
+
+- `python3 -m py_compile rabbitbot/agno_agents/vlm_qa_workflow.py` 通过。
+- 依赖桩验证 `QAWorkflowConfig.from_env()` 默认 `startup_speech` 为“你好，请问需要我做些什么吗？”。
+- 依赖桩验证 `_build_prompt()` 生成的提示词包含“日常聊天”和“默认回答 1 到 2 句”。
+- `git diff --check` 通过。
+
+### 阻塞问题
+
+无代码层面的阻塞。运行层面仍需解决 Unitree TTS DDS 接口问题后才能现场验证真实播报。
+
+### 建议的下一步
+
+- TTS 链路恢复后，启动 VLM 问答 workflow，确认开场先播报“你好，请问需要我做些什么吗？”。
+- 用几个开放式问题检查回答是否明显变短、更像日常对话；如仍偏长，可继续降低 `RABBITBOT_QA_MAX_ANSWER_CHARS` 或在提示词中加入更严格的字数限制。
+
+### 注意事项
+
+- 本轮只调整默认文案和 prompt，不改变流式 TTS 分句逻辑。
+- 如果现场设置了 `RABBITBOT_QA_STARTUP_SPEECH`，环境变量会覆盖本次默认开场语。
+
+### 其它信息
+
+本轮没有新增代码日志点；沿用已有启动日志、VLM 流式问答日志和 TTS 提交日志即可验证开场语和回答播报链路。
+
+## 本轮补充：启动 VLM QA workflow 前自动清理旧实例
+
+### 背景和目标
+
+Aaron 要求修改 `scripts_1/start_unified_vlm_qa_workflow.sh`，使脚本每次启动新的 VLM QA workflow 前先停止已有 workflow 进程，但不能停止统一容器或 STT/TTS/VLM 等基础服务。
+
+### 当前状态
+
+已完成：
+
+- 已在 `scripts_1/start_unified_vlm_qa_workflow.sh` 中新增 `stop_existing_vlm_qa_workflow()`。
+- 新函数在确认统一容器运行后、新的 `docker exec` workflow 启动前执行。
+- 清理范围只限容器内已有 VLM QA workflow 链路：`run_vlm_qa_workflow.py`、`scripts/start_vlm_qa_workflow.bash` 和对应 `tee -a .../vlm_qa_workflow_*.log`。
+- 清理流程先发送 `TERM`，等待最多约 2 秒；仍未退出时记录 `WARN` 并发送 `KILL`。
+- 清理日志会输出是否发现旧进程、准备停止的 PID、以及是否需要强制停止。
+- 已用脚本实际启动验证：旧 workflow 链路 `1208/1222/1223` 被停止，新 workflow 拉起为 `1844/1858/1859`，新日志为 `vlm_qa_workflow_20260615_040512.log`。
+
+未完成：
+
+- 本轮没有修改 TTS `/exec` 与当前 `28185 /v1` 服务之间的接口适配问题。
+- 本轮没有修改 STT、VLM、TTS 服务启动逻辑，也没有停止统一容器。
+
+### 已验证的事实
+
+- `bash -n scripts_1/start_unified_vlm_qa_workflow.sh` 通过。
+- 实际运行脚本时，基础服务复用成功，日志显示 `RUN_WORKFLOW_AFTER_START=0，仅保持基础服务运行，不启动 workflow` 后进入新增清理步骤。
+- 新增清理步骤打印：`清理已有 VLM 问答 workflow 进程（不停止容器或基础服务）`，并列出旧 workflow PID。
+- 清理后脚本正常启动新 workflow，当前容器内只剩一组 workflow 进程。
+- 验证时 `28184`、`28185`、`8000` 仍保持监听，说明 STT/TTS/VLM 基础服务未被停止。
+
+### 阻塞问题
+
+- TTS 仍存在历史阻塞：workflow 的 `TTSAgent` 按 `/exec` 调用，但当前 `28185` 服务只提供 `/v1`，因此 TTS 请求仍返回 `{"detail":"Not Found"}`。
+
+### 建议的下一步
+
+- 后续每次测试前可直接运行 `scripts_1/start_unified_vlm_qa_workflow.sh`，脚本会自动清理旧 workflow，避免多个实例抢同一个 STT。
+- 若仍怀疑多实例，运行：
+
+```bash
+docker exec rabbitbot-unified-runtime bash -lc 'ps -eo pid,ppid,stat,etime,cmd | grep -E "run_vlm_qa_workflow|start_vlm_qa_workflow|tee -a" | grep -v grep'
+```
+
+- 下一步优先修复 TTS `/exec` 与 `/v1` 的接口适配，再做真实播报延迟测试。
+
+### 注意事项
+
+- 新增清理逻辑只在容器已运行后执行，不会创建、重建、停止或删除容器。
+- 新增清理逻辑不匹配 STT、TTS、VLM、Memory Agent、导航服务等进程。
+- 本轮实际验证时，为了确认行为，启动脚本已替换掉旧 workflow 实例；当前运行中的 workflow 日志是 `vlm_qa_workflow_20260615_040512.log`。
+
+### 其它信息
+
+本轮新增脚本日志点包括：清理已有 VLM QA workflow 的开始日志、未发现旧进程日志、准备停止旧 PID 日志、旧进程未退出时的强制停止告警。这些日志有助于排查多 workflow 实例抢 STT、curl 注入无响应、日志分散到多个文件等问题。
+
+## 本轮补充：新增 VLM QA 问答日志
+
+### 背景和目标
+
+Aaron 要求为 VLM QA workflow 增添一个独立“问答日志”，只包含用户提问和回答内容，并且每一句都要有时间戳，便于现场回放对话而不混入诊断日志。
+
+### 当前状态
+
+已完成：
+
+- 已修改 `rabbitbot/agno_agents/vlm_qa_workflow.py`，新增独立问答日志初始化和逐句写入能力。
+- 默认问答日志写入 `RABBITBOT_LOG_DIR`，文件名形如 `vlm_qa_dialogue_YYYYmmdd_HHMMSS.log`。
+- 启动时会维护 `vlm_qa_dialogue_latest.log` 软链，便于直接查看最新问答日志。
+- 新增环境变量 `RABBITBOT_QA_DIALOGUE_LOG`，可指定问答日志完整路径；未设置时使用默认路径。
+- 已修改 `scripts/start_vlm_qa_workflow.bash`，补充问答日志环境变量说明，并在启动日志中打印问答日志配置。
+- 已修改 `scripts_1/start_unified_vlm_qa_workflow.sh`，补充环境变量说明，并将 `RABBITBOT_QA_DIALOGUE_LOG` 从宿主透传到容器。
+- 用户问题在收到有效 STT 文本后写入问答日志；回答在流式 TTS 分段提交时逐句写入问答日志。
+- 非流式播报、退出口令和异常兜底回答也会写入问答日志。
+
+未完成：
+
+- 本轮没有修复 TTS `/exec` 与当前 `28185 /v1` 服务之间的接口适配问题。
+- 本轮没有改变 VLM 回答内容生成策略，仅增加对话记录。
+
+### 已验证的事实
+
+- `python3 -m py_compile rabbitbot/agno_agents/vlm_qa_workflow.py` 通过。
+- `bash -n scripts/start_vlm_qa_workflow.bash` 通过。
+- `bash -n scripts_1/start_unified_vlm_qa_workflow.sh` 通过。
+- `git diff --check` 通过。
+- 已重启 VLM QA workflow，日志显示问答日志已启用：`/workspace/projects/rabbitbot-dev-ros2-master/logs/vlm_qa_workflow/vlm_qa_dialogue_20260615_042105.log`。
+- 已注入测试问题：`请直接复述下面三句话，不要增删内容：我是机器人助手。我可以回答问题。测试结束。`
+- 最新问答日志内容只包含带时间戳的用户/回答行，例如：
+
+```text
+2026-06-15 04:21:28.880 用户：请直接复述下面三句话，不要增删内容：我是机器人助手。
+2026-06-15 04:21:28.880 用户：我可以回答问题。
+2026-06-15 04:21:28.880 用户：测试结束。
+2026-06-15 04:21:29.330 回答：好的，我明白了。
+2026-06-15 04:21:29.716 回答：我是机器人助手，可以回答问题。
+2026-06-15 04:21:29.851 回答：测试结束。
+```
+
+### 阻塞问题
+
+- TTS 仍有历史阻塞：workflow 的 `TTSAgent` 仍按 `/exec` 调用，而当前 `28185` 服务只提供 `/v1`，TTS 请求仍返回 `{"detail":"Not Found"}`。问答日志不依赖真实播报成功，因此本轮功能已可验证。
+
+### 建议的下一步
+
+- 后续查看最新问答日志可运行：
+
+```bash
+docker exec rabbitbot-unified-runtime bash -lc 'cat /workspace/projects/rabbitbot-dev-ros2-master/logs/vlm_qa_workflow/vlm_qa_dialogue_latest.log'
+```
+
+- 若需要指定日志位置，可在启动脚本前设置 `RABBITBOT_QA_DIALOGUE_LOG=/workspace/projects/rabbitbot-dev-ros2-master/logs/vlm_qa_workflow/custom.log`。
+- 下一步仍建议优先修复 TTS `/exec` 与 `/v1` 的接口适配，再做真实播报延迟测试。
+
+### 注意事项
+
+- 问答日志故意不写入 turn、hash、耗时、TTS index 或异常堆栈；这些仍保留在普通 workflow 日志中。
+- 开场语和“我听到了，让我想一想。”这类状态提示不写入问答日志，因为它们不是用户问题或模型回答内容。
+- 用户一段话中包含多个句号时，会按句拆成多行，并给每行写入时间戳。
+
+### 其它信息
+
+本轮新增日志点包括普通诊断日志 `问答日志已启用`、`问答日志 latest 软链更新失败`、`问答日志初始化失败`、`问答日志写入失败`。独立问答日志只记录带时间戳的 `用户：...` 和 `回答：...` 内容，用于对话回放；诊断日志用于排查文件路径、权限、软链和写入失败问题。
+
+## 本轮补充：命令注入测试 VLM QA workflow 流式响应和 STT 周期间隙
+
+### 背景和目标
+
+Aaron 要求采用命令行注入 STT 文本的形式测试 VLM QA workflow，重点确认：是否能流式播报、响应速度如何、如果在 STT 30 秒周期的间隙提问是否会被吞。
+
+### 当前状态
+
+已完成：
+
+- 已确认当前 `rabbitbot-unified-runtime` 容器内只有 1 个 VLM QA workflow 实例在运行。
+- 已通过 `inject_text_async` 注入多句长问题 `测试编号STREAM_A`，验证长回答流式分段提交。
+- 已通过高频轮询 `get_status_async` 捕获 `<REC_START>` 结束后的周期切换间隙，并在该间隙注入 `测试编号GAP_B`。
+- 已通过 `inject_text_async` 注入短问题 `测试编号SPEED_C`，补充即时响应速度样本。
+- 已检查普通 workflow 日志和独立问答日志 `vlm_qa_dialogue_latest.log`。
+
+未完成：
+
+- 本轮没有修复 TTS `/exec` 与当前 `28185 /v1` 服务之间的接口适配问题。
+- 本轮不能证明机器人真实发声，只能证明 workflow 已按句向 TTS 提交请求；当前 TTS 请求仍返回 `{"detail":"Not Found"}`。
+
+### 已验证的事实
+
+#### 正常监听期长回答测试 STREAM_A
+
+- 注入命令 HTTP 耗时约 `0.005158s`。
+- 注入时间：`2026-06-15 12:25:53.600 CST`，对应容器日志约 `2026-06-15 04:25:53.600`。
+- 问答日志首次记录用户问题：`2026-06-15 04:25:54.066`，约为注入后 `0.466s`。
+- 问答日志首次记录回答：`2026-06-15 04:25:54.627`，约为注入后 `1.027s`。
+- 问答日志最后一段回答：`2026-06-15 04:25:56.349`，约为注入后 `2.749s`。
+- workflow 日志显示：`VLM 首 token` 为 `0.259s`，`first_tts_elapsed` 为 `0.559s`，整轮 VLM 流式问答耗时 `2.324s`。
+- workflow 日志显示 `segment_count=7`，并连续提交 `segment_index=1..7`，证明按句流式提交 TTS 的代码路径生效。
+
+#### 短问题速度测试 SPEED_C
+
+- 注入命令 HTTP 耗时约 `0.004956s`。
+- 注入时间：`2026-06-15 12:27:13.347 CST`，对应容器日志约 `2026-06-15 04:27:13.347`。
+- 问答日志记录用户问题：`2026-06-15 04:27:13.464`，约为注入后 `0.117s`。
+- 问答日志记录首句回答：`2026-06-15 04:27:13.789`，约为注入后 `0.442s`。
+- workflow 日志显示：`VLM 首 token` 为 `0.199s`，`first_tts_elapsed` 为 `0.321s`，整轮耗时 `0.371s`，`segment_count=1`。
+
+#### STT 30 秒周期间隙测试 GAP_B
+
+- 测试脚本在 `get_status_async` 检测到状态从 `<REC_START>` 变为非 `<REC_START>` 后立即注入 `测试编号GAP_B`。
+- 注入时间：`2026-06-15 12:26:27.549 CST`，HTTP 耗时约 `0.001075s`，STT 服务返回 `utterance_id=17`。
+- 后续 workflow 日志和问答日志中均未出现 `GAP_B`、`d8e89328338b` 或 `间隙注入测试收到`。
+- 日志显示该时间点附近 workflow 从 `turn=11` 超时结束后进入 `turn=12` 并重新 `start_async`，未消费该注入文本。
+- 结论：如果文本恰好注入在旧周期 stop 后、新周期 start/reset 前，当前实现会吞掉该文本。
+
+### 阻塞问题
+
+- 当前流式“播报”仍只验证到 TTS 请求提交层面。由于 `28185` 当前只有 `/v1`，workflow 的 `/exec` TTS 请求仍 404，真实机器人发声链路未验证。
+- STT 注入存在周期切换间隙吞文本风险，这是当前 `start_async` 会 reset STT 输出状态导致的行为。
+
+### 建议的下一步
+
+- 修复周期间隙吞文本：建议在 STT 服务侧为 `inject_text_async` 增加独立注入队列，`start_async/reset` 不清空该队列，`get_text_async` 优先取队列内容。
+- 修复 TTS 路由适配后，再测真实机器人听感首字延迟。
+- 继续测试前确认只有一个 workflow 实例，避免多个实例抢同一个 STT。
+
+### 注意事项
+
+- 本轮测试使用命令注入，不依赖现场麦克风真实语音。
+- 独立问答日志正常记录了用户问题和回答分句，可作为响应速度统计依据。
+- 容器和基础服务未停止，当前 workflow 仍在运行。
+
+### 其它信息
+
+本轮没有新增或修改代码日志点。测试使用了已有日志中的 `segment_index`、`segment_count`、`first_token_elapsed`、`first_tts_elapsed`、独立问答日志毫秒时间戳，以及 STT `/exec` 返回耗时来定位响应速度和周期吞文本问题。
+
+## 本轮补充：修复 STT 周期间隙注入被吞
+
+### 背景和目标
+
+Aaron 要求按前一轮建议修复 STT 30 秒周期切换间隙中 `inject_text_async` 文本可能被 `start_async/reset` 清空的问题，并用同样的命令注入方式复测。
+
+### 当前状态
+
+已完成：
+
+- 已修改 `stt_app_funasr.py`，新增独立 `injected_text_queue`。
+- `inject_text_async` 不再直接写 `recorder.output_text`，改为生成 `utterance_id` 后将文本放入注入队列。
+- `get_text_async` 优先消费 `injected_text_queue`，队列为空时再回退读取真实麦克风识别结果。
+- `start_async` 和 `recorder.reset()` 不清空注入队列，因此周期切换期间注入的文本不会被下一轮 reset 清掉。
+- 已为注入队列新增脱敏诊断日志：入队和消费时记录 `utterance_id`、文本长度、文本 hash、队列大小/剩余数量，不打印完整文本。
+- 为避免 uvicorn 日志配置吞掉新增日志，已给 `rabbitbot.stt_app_funasr` 增加独立 `StreamHandler`，确保日志落到 `logs/unified_runtime/rabbitbot_stt.log`。
+- 已重启容器内 STT 服务和 VLM QA workflow；未停止统一容器、VLM、TTS 或其它基础服务。
+
+未完成：
+
+- 本轮没有修复 TTS `/exec` 与当前 `28185 /v1` 服务之间的接口适配问题。
+- 现有旧代码仍会 `print("out_text:", out_text)`，因此 STT 服务日志中仍可能出现完整注入文本；本轮新增的结构化日志已按脱敏方式记录。
+
+### 已验证的事实
+
+- `python3 -m py_compile stt_app_funasr.py` 通过。
+- STT 重启后 `http://127.0.0.1:28184/docs` 在约 17 秒后恢复可用。
+- VLM QA workflow 已重启，当前日志为 `vlm_qa_workflow_20260615_060630.log`。
+- 普通注入 `LOG_CHECK` 验证通过：STT 日志出现入队和消费日志，问答日志记录用户问题和回答。
+- 最终周期间隙测试 `GAP_FINAL`：测试脚本在状态从 `<REC_START>` 变为 `<REC_STOP>` 的瞬间注入文本，STT 返回 `utterance_id=2`，HTTP 耗时约 `0.001545s`。
+- STT 日志显示：
+  - `STT 注入文本已入队：utterance_id=2, text_len=32, text_hash=6b7fb446b573, queue_size=1`
+  - `STT 注入文本已消费：utterance_id=2, text_len=32, text_hash=6b7fb446b573, queue_remaining=0`
+- workflow 日志显示 `turn=3` 收到 `text_hash=6b7fb446b573`，`elapsed=0.013s`，并完成回答。
+- 问答日志显示：
+
+```text
+2026-06-15 06:10:31.386 用户：测试编号GAP_FINAL。
+2026-06-15 06:10:31.386 用户：请只回答一句：最终间隙注入测试收到。
+2026-06-15 06:10:31.802 回答：最终间隙注入测试收到。
+```
+
+- 结论：STT 周期间隙注入被吞的问题已修复。
+
+### 阻塞问题
+
+- TTS 仍有历史阻塞：workflow 的 `TTSAgent` 仍按 `/exec` 调用，而当前 `28185` 服务只提供 `/v1`，TTS 请求仍返回 `{"detail":"Not Found"}`。
+
+### 建议的下一步
+
+- 后续如需要进一步清理敏感日志，可把 `stt_app_funasr.py` 末尾现有 `print("out_text:", out_text)` 改成脱敏日志，避免完整文本进入 STT 服务日志。
+- 下一步仍建议修复 TTS `/exec` 与 `/v1` 的接口适配，再做真实机器人播报验证。
+
+### 注意事项
+
+- 注入队列是进程内队列，重启 STT 服务会清空未消费的注入文本。
+- 当前修复主要针对命令注入测试和异步文本注入；真实麦克风识别路径仍按原逻辑读取 `recorder.output_text`。
+- 本轮实际重启了容器内 STT 服务和 VLM QA workflow，但没有停止容器或基础服务端口。
+
+### 其它信息
+
+本轮新增日志点包括：`STT 注入文本已入队` 和 `STT 注入文本已消费`，记录 `utterance_id`、文本长度、文本 hash 和队列大小/剩余数量，用于诊断命令注入是否进入队列、是否被 workflow 消费，以及是否仍存在周期间隙吞文本问题。
+
+## 本轮补充：改为宿主机和容器都可读的 latest 日志软链
+
+### 背景和目标
+
+Aaron 反馈当前使用软链接的日志查看麻烦，希望宿主机和容器同时都有同一份日志，并且能够实时更新。问题原因是 VLM QA 的 latest 软链之前指向容器内绝对路径 `/workspace/...`，在宿主机挂载目录中查看时路径不可用或不直观。
+
+### 当前状态
+
+已完成：
+
+- 已修改 `scripts_1/start_unified_vlm_qa_workflow.sh`，创建 `vlm_qa_workflow_latest.log` 时改用相对软链，目标为当前日志文件名，例如 `vlm_qa_workflow_20260615_061510.log`。
+- 已修改 `rabbitbot/agno_agents/vlm_qa_workflow.py`，创建 `vlm_qa_dialogue_latest.log` 时改用相对软链，目标为当前纯问答日志文件名，例如 `vlm_qa_dialogue_20260615_061513.log`。
+- 已把当前已有的 latest 软链立即修正为相对软链。
+- 已重启 VLM QA workflow 验证新逻辑；未停止容器、STT、VLM、TTS 等基础服务。
+
+未完成：
+
+- 本轮只处理 VLM QA workflow 相关的两个 latest 日志：`vlm_qa_workflow_latest.log` 和 `vlm_qa_dialogue_latest.log`。
+- 本轮没有修改其它历史 workflow 或导航脚本中的 latest 日志软链。
+- TTS `/exec` 与当前 `28185 /v1` 服务之间的接口适配问题仍未修复。
+
+### 已验证的事实
+
+- `python3 -m py_compile rabbitbot/agno_agents/vlm_qa_workflow.py` 通过。
+- `bash -n scripts_1/start_unified_vlm_qa_workflow.sh` 通过。
+- `git diff --check` 通过。
+- 当前宿主机路径 `logs/vlm_qa_workflow/vlm_qa_workflow_latest.log` 指向相对目标 `vlm_qa_workflow_20260615_061510.log`，并且 `test -r` 可读。
+- 当前宿主机路径 `logs/vlm_qa_workflow/vlm_qa_dialogue_latest.log` 指向相对目标 `vlm_qa_dialogue_20260615_061513.log`，并且 `test -r` 可读。
+- 容器内同一路径也显示相同相对软链，`tail` 可直接读取。
+- 因为日志目录是宿主机和容器共享挂载，同一文件会实时更新；宿主机和容器均可直接 `tail -f` latest 文件。
+
+### 阻塞问题
+
+- 无 latest 日志可读性方面的阻塞。
+- TTS 仍有历史阻塞：workflow 的 `TTSAgent` 仍按 `/exec` 调用，而当前 `28185` 服务只提供 `/v1`。
+
+### 建议的下一步
+
+- 宿主机查看纯问答日志：
+
+```bash
+tail -f /mnt/disk1/gt/air_robot_gt_projects/rabbitbot-dev-ros2-master/logs/vlm_qa_workflow/vlm_qa_dialogue_latest.log
+```
+
+- 宿主机查看 workflow 诊断日志：
+
+```bash
+tail -f /mnt/disk1/gt/air_robot_gt_projects/rabbitbot-dev-ros2-master/logs/vlm_qa_workflow/vlm_qa_workflow_latest.log
+```
+
+- 容器内查看时使用同名路径即可：
+
+```bash
+docker exec rabbitbot-unified-runtime bash -lc 'tail -f /workspace/projects/rabbitbot-dev-ros2-master/logs/vlm_qa_workflow/vlm_qa_dialogue_latest.log'
+```
+
+### 注意事项
+
+- latest 软链本身仍由容器 root 创建，因此宿主机普通用户可能不能覆盖软链，但可以读取目标日志。后续启动脚本会自动维护软链。
+- 如果后续需要处理其它 workflow 的 latest 日志，应同样避免在共享挂载目录内创建指向容器绝对路径的软链。
+
+### 其它信息
+
+本轮没有新增业务日志点；调整的是 latest 软链目标形式。该改动提升了宿主机和容器两侧查看实时日志的可用性，降低现场排查时对容器路径的依赖。
+
+
+
+## 本轮补充：VLM QA workflow 100 问流式响应测试
+
+### 背景和目标
+
+Aaron 要求在当前 workflow 已运行的前提下，通过命令形式随机询问 100 个常见日常问题，问题覆盖多句回答场景，用于观察 VLM 问答响应速度和 TTS 流式分段提交能力；测试结束后不能终止 workflow 进程。
+
+### 当前状态
+
+已完成内容：
+
+- 已通过 `inject_text_async` 顺序注入 100 个日常问题，问题包含 3 到 6 句回答要求。
+- 已从远端 workflow 日志、STT 日志和纯问答日志重新解析统计结果。
+- 已确认 100/100 轮完成，纯问答日志中有 100 条 QA100 用户问题记录。
+- 已确认测试结束后 `run_vlm_qa_workflow.py`、`stt_app_funasr.py` 和 `tee` 日志进程仍在运行。
+
+未完成内容：
+
+- 本轮没有修复 TTS `/exec` 与当前 `28185 /v1` 服务不兼容的问题。
+- 因当前 TTS 调用仍返回无效响应，本轮只能验证 workflow 的流式文本分段提交时机，不能证明现场音箱已经真实播报。
+
+### 已验证的事实
+
+- 测试 turn 范围：21 到 120。
+- workflow 诊断日志：`/mnt/disk1/gt/air_robot_gt_projects/rabbitbot-dev-ros2-master/logs/vlm_qa_workflow/vlm_qa_workflow_latest.log`。
+- 纯问答日志：`/mnt/disk1/gt/air_robot_gt_projects/rabbitbot-dev-ros2-master/logs/vlm_qa_workflow/vlm_qa_dialogue_latest.log`。
+- STT 日志：`/mnt/disk1/gt/air_robot_gt_projects/rabbitbot-dev-ros2-master/logs/unified_runtime/rabbitbot_stt.log`。
+- 100 轮全部完成，完成率 100%。
+- 平均 STT 注入队列等待：0.409s；中位数 0.414s；P95 0.449s。
+- 平均 VLM 首 token：0.163s。
+- 平均从 VLM 请求开始到首个 TTS 分段提交：0.861s。
+- 平均 VLM 整轮生成耗时：1.227s。
+- 近似从 STT 入队到首个 TTS 分段提交：平均 1.271s，P95 1.989s。
+- 近似从 STT 入队到整轮完成：平均 1.637s，P95 2.375s。
+- 平均分段数 1.79；最大分段数 6；48/100 轮产生至少 2 个 TTS 分段。
+- 纯问答日志中 QA100 后续回答行数 179，符合多段回答被按句写入日志的现象。
+- 测试期间累计观察到 279 次 `workflow_tts_request_invalid_response`，说明 TTS 服务接口仍未打通。
+
+### 阻塞问题
+
+- TTS 真实播报仍受阻：workflow 的 TTSAgent 当前按 `/exec` 调用，但 28185 服务仍是 `/v1` 路由，日志中持续出现 `workflow_tts_request_invalid_response`。
+- 本轮最初的批量脚本尝试把 JSON 写入远端日志目录时因权限失败；已改为从日志重解析并在本地保存结果，不影响 workflow 测试本身。
+
+### 建议的下一步
+
+- 优先修复 TTS `/exec` 到当前 `/v1` 服务的适配，或把 workflow 的 TTSAgent 指向兼容 `/exec` 的 TTS 服务。
+- TTS 服务打通后，复用同类 100 问或 20 问长回答测试，统计“STT 入队到 TTS 真实首字播报”的现场时延。
+- 若希望多句问题更稳定触发多段，可继续在 prompt 中要求短句和句号，或增加按长度阈值分段。
+
+### 注意事项
+
+- 本轮测试没有停止、重启或终止 workflow，也没有停止容器/服务。
+- 当前统计中的“首个 TTS 分段提交”是 workflow 调用 TTS 接口的时间，不是音频真实播放首字时间。
+- 第一轮测试 turn=21 的 `listen_elapsed_s` 为 11.220s，是因为测试开始前 workflow 已经处于监听周期中；STT 入队到消费仅 0.076s，后续轮次稳定在约 0.4s。
+
+### 其它信息
+
+本轮没有新增或调整业务日志点；统计依赖已有日志点：`STT 注入文本已入队`、`STT 注入文本已消费`、`收到用户问题`、`VLM 首 token 到达`、`流式 TTS 分段已提交`、`VLM 流式问答完成` 和 `workflow_tts_request_invalid_response`。这些日志足够定位 STT 队列等待、VLM 推理首 token、TTS 分段提交、整轮完成耗时和 TTS 路由失败问题。
+
+## 本轮补充：收敛服务到 portable core/nav 容器
+
+### 背景和目标
+
+Aaron 指出当前 `sound_docker`、`air_vln_container` 等 legacy 容器仍承载项目服务，不符合此前为本项目做的可迁移性适配。目标是让机器人项目核心服务运行在 `ghcr.io/aaronai/rabbitbot-core-portable:20260611` 或 `ghcr.io/aaronai/rabbitbot-nav-portable:20260611` 上，避免 legacy 容器抢占端口。
+
+### 当前状态
+
+已完成内容：
+
+- 已修改统一容器入口 `scripts_1/unified_runtime/start_unified_container.sh`：
+  - TTS 健康检查从只看 `/docs` 改为检查 `/exec` 是否可用。
+  - 如果 `28185` 被非 `/exec` 兼容 TTS 占用，明确报错，不再误判为“统一容器 TTS 已运行”。
+- 已修改宿主启动入口 `scripts_1/start_unified_integration_workflow.sh`：
+  - portable 模式下自动选择 `ghcr.io/aaronai/rabbitbot-core-portable:20260611` 和 `rabbitbot-unified-runtime`，不再落回 legacy 镜像默认值。
+  - portable 模式默认停止 legacy 容器 `sound_docker air_vln_container`，可通过 `RABBITBOT_PORTABLE_STOP_LEGACY_CONTAINERS` 覆盖。
+  - 增加 `TTS /exec` 探活和归属检查；如果 core 容器已运行但 `/exec` TTS 不可用，会重启 core 容器重新执行容器内 TTS 启动流程。
+- 已执行迁移：停止了 `sound_docker` 和 `air_vln_container`，重启了 `rabbitbot-unified-runtime`。
+- 已重新拉起基础服务，并后台启动 VLM QA workflow。
+
+未完成内容：
+
+- 没有停止 `caddy` 和 `redis`，它们不是当前 VLM QA / 导航链路的 legacy 机器人服务。
+- Unitree G1 TTS 后端仍返回 `Unitree G1 TTS 请求失败: returncode=1`；这不是 `/exec` 路由不兼容问题，而是 core portable 内 TTS 调用硬件/网络后端失败。
+
+### 已验证的事实
+
+- 当前运行的机器人相关容器：
+  - `rabbitbot-unified-runtime`：`ghcr.io/aaronai/rabbitbot-core-portable:20260611`
+  - `rabbitbot-portable-rabbitbot-nav-1`：`ghcr.io/aaronai/rabbitbot-nav-portable:20260611`
+- `sound_docker` 已停止，状态为 `Exited (137)`。
+- `air_vln_container` 已停止，状态为 `Exited (137)`。
+- core portable 当前承载：
+  - VLM/vLLM：`8000`
+  - TTS `/exec`：`28185`
+  - FunASR STT：`28184`
+  - Memory Agent：`28182`
+  - Neo4j
+- nav portable 当前承载：
+  - `humble_robot_agent_bridge:app`：`28180`
+  - 导航日志 tail / tee
+- `curl -X POST http://127.0.0.1:28185/exec --form-string 'task={"task":"wait_speech","lang":"","text":"","timeout":1}'` 返回 `{"out_text":"TTS finished"}`，HTTP 200。
+- `http://127.0.0.1:8000/v1/models` 返回 Qwen2.5-VL 模型列表。
+- VLM QA workflow 已后台运行，进程为 `scripts/run_vlm_qa_workflow.py`，最新日志：
+  - `logs/vlm_qa_workflow/vlm_qa_workflow_20260615_070422.log`
+  - `logs/vlm_qa_workflow/vlm_qa_dialogue_20260615_070424.log`
+
+### 阻塞问题
+
+- TTS 路由问题已解决：现在不再返回 `{"detail":"Not Found"}`。
+- TTS 真实播报仍受硬件/网络后端影响：core portable 内 Unitree G1 TTS 返回 `returncode=1`，workflow 日志仍会记录 `workflow_tts_request_invalid_response`，但原因已经变为后端执行失败。
+
+### 建议的下一步
+
+- 排查 Unitree G1 TTS 后端失败，重点检查 `eno1` 是否连到机器人、DDS/Unitree SDK 是否能正常发包、`RABBITBOT_UNITREE_TTS_INTERFACE` 是否应调整。
+- 修复 Unitree 后端后，重新注入一个短问题，确认 workflow TTS 日志出现有效 `tts_index`，且机器人现场真实播报。
+- 如果现场临时必须保留某个 legacy 容器，可启动时设置 `RABBITBOT_PORTABLE_STOP_LEGACY_CONTAINERS` 覆盖默认清理列表，但这会重新引入端口归属风险。
+
+### 注意事项
+
+- 本轮重启了 `rabbitbot-unified-runtime`，因此 VLM 重新加载了一次；当前已就绪。
+- 大部分容器使用 host network，端口归属需要结合进程和容器内 `ps` 判断。
+- `start_unified_vlm_qa_workflow.sh` 后台启动的宿主 stdout 写在 `/tmp/start_vlm_qa_workflow_20260615_150421.out`，workflow 自身日志仍在共享 `logs/vlm_qa_workflow` 下。
+
+### 其它信息
+
+本轮新增/调整日志点主要在 shell 启动脚本：portable 模式停止 legacy 容器时记录容器名和镜像；TTS `/exec` 归属检查成功时记录成功；core 容器已运行但 TTS `/exec` 不可用时记录重启原因；容器内发现 `28185` 被非 `/exec` 服务占用时输出明确错误。这些日志用于定位服务到底由 portable core 还是 legacy 容器提供，以及排查 TTS 端口抢占。
+
+## 本轮补充：修复 VLM QA 音频桥接
+
+### 背景和目标
+
+- 目标是修复 VLM QA workflow 中“麦克风无法输入、机器人音响不播报”的问题，并确保 STT 麦克风按现场指定使用 `DJI MIC MINI`，不是 `BT67`。
+- 当前项目路径为 `/mnt/disk1/gt/air_robot_gt_projects/rabbitbot-dev-ros2-master`，分支为 `feature/qa-vlm-workflow`。
+
+### 当前状态
+
+已完成：
+
+- 已将 `runtime/portable.env` 的运行态配置改为 `STT_DEVICE_NAME="DJI MIC MINI"`，避免 shell 读取带空格设备名时报 `MIC: command not found`。
+- 已保留 `RABBITBOT_UNITREE_TTS_SPEAKER_ID=1`，当前 TTS 走 Unitree G1 本体音响，网卡为 `eno1`。
+- 已让 `scripts_1/start_unified_integration_workflow.sh` 透传 `STT_DEVICE_NAME` 到 `rabbitbot-unified-runtime`，并把该变量纳入容器兼容性检查；后续切换 STT 设备时会自动重建不匹配容器，避免复用旧设备配置。
+- 已让 `scripts/start_stt_funasr_app.bash` 默认把 STT 启动提示音发送到 `http://127.0.0.1:28185/v1`，避免继续请求错误的 TTS 地址。
+- 已补充启动日志：unified 容器创建前打印 `STT 输入设备过滤`，STT 启动前打印 `STT 启动提示 TTS 地址`，便于后续确认运行态配置是否进入容器。
+- 已重新启动 VLM QA workflow；当前 `rabbitbot-unified-runtime`、`rabbitbot-portable-rabbitbot-nav-1` 均为 portable 镜像体系，workflow 保持运行，未在验证后终止。
+
+未完成：
+
+- 远程无法实际听到机器人现场音响，也无法现场对着 DJI MIC MINI 说话；本轮通过设备选择、音频流启动、HTTP 注入和 Unitree TTS 返回码完成链路验证。现场仍需人工说一句话，确认真实拾音和物理播报体感。
+
+### 已验证的事实
+
+- 当前容器环境中 `STT_DEVICE_NAME=DJI MIC MINI`，`RABBITBOT_TTS_BACKEND=unitree`，`RABBITBOT_UNITREE_TTS_SPEAKER_ID=1`。
+- STT 日志确认：`查找输入设备，指定名称: DJI MIC MINI`，并选中 `DJI MIC MINI: USB Audio (hw:2,0)，index=24`，随后 `Starting audio stream on device 24`。
+- TTS 日志确认：Unitree 后端初始化为 `network=eno1, speaker=1, volume=100`；启动提示音、workflow 开场语和注入测试回答均返回 `Unitree G1 TTS请求完成: ret=0`。
+- workflow 日志确认：开场语“你好，请问需要我做些什么吗？”拿到有效 `tts_index=1`；注入问题后 VLM 首 token 用时约 `2.046s`，首段 TTS 提交用时约 `2.871s`，本轮测试总耗时约 `7.801s`。
+- 本轮注入验证命令返回 HTTP 200，问答日志路径为 `logs/vlm_qa_workflow/vlm_qa_dialogue_20260616_030709.log`，其中记录了用户问题和回答内容。
+- 当前三个关键端口均已就绪：VLM `8000`、STT `28184`、TTS `28185`。
+- 已执行 `bash -n scripts_1/start_unified_integration_workflow.sh` 和 `bash -n scripts/start_stt_funasr_app.bash`，语法检查通过。
+
+### 阻塞问题
+
+- 无代码层面的阻塞。
+- 物理拾音和物理播报最终效果仍依赖现场硬件连接、DJI MIC MINI 发射端状态、G1 音频服务状态和 `eno1` 到机器人网线连接，远程只能验证软件链路和后端返回码。
+
+### 建议的下一步
+
+- 现场对着 DJI MIC MINI 说一句短问题，观察 `logs/vlm_qa_workflow/vlm_qa_workflow_latest.log` 是否出现“收到用户问题”，并确认机器人音响真实播报。
+- 如现场仍听不到声音，优先查看 `logs/unified_runtime/rabbitbot_tts.log` 中最新 `speaker=1` 请求是否仍返回 `ret=0`；若返回成功但无声，排查 G1 音量、音频路由和机器人本体音响状态。
+- 如现场仍无法拾音，优先查看 `logs/unified_runtime/rabbitbot_stt.log` 是否持续使用 `DJI MIC MINI` index 24，并检查 DJI MIC MINI 接收端/发射端连接和电量。
+
+### 注意事项
+
+- `runtime/portable.env` 未纳入 Git，当前必须保持 `STT_DEVICE_NAME="DJI MIC MINI"` 这种带引号写法；不要写成未加引号的 `STT_DEVICE_NAME=DJI MIC MINI`。
+- `BT67` 当前不是 STT 麦克风；它曾被误选过一次，本轮已更正并重建 core portable 容器。
+- 当前 workflow 仍在运行；不要为了查看日志而停止 workflow。若需要重新启动，直接运行 `scripts_1/start_unified_vlm_qa_workflow.sh`，该脚本会先清理已有 workflow 进程，但不会停止容器基础服务。
+
+### 其它信息
+
+- 本轮新增/调整日志点覆盖了 STT 设备过滤、TTS 地址默认值、容器兼容性中 STT 设备变化原因，以及 STT/TTS 关键启动路径。这些日志用于快速判断问题发生在设备选择、容器复用、TTS 地址路由还是 Unitree 本体播报后端。
+
+## 本轮补充：TTS auto 选择与 DJI capture 修复
+
+### 背景和目标
+
+- Aaron 明确要求：优先使用机器人本体音响，不要直接切到 `BT67`；`BT67` 只能作为没有 `eno1` 时的回退方案，并且设备选择逻辑应放在 TTS 服务侧，不应硬编码在 workflow 启动逻辑里。
+
+### 当前状态
+
+已完成：
+
+- 已撤销 workflow 编排侧传递 `TTS_DEVICE_NAME=BT67` 的改动；当前 `scripts_1/start_unified_integration_workflow.sh` 和 `scripts_1/unified_runtime/start_unified_container.sh` 不包含 `TTS_DEVICE_NAME` 选择逻辑。
+- 已在 `scripts/start_tts_app.bash` 增加 TTS 服务侧 `auto` 后端：
+  - 默认 `RABBITBOT_TTS_BACKEND=auto`。
+  - 检测到 `RABBITBOT_UNITREE_TTS_INTERFACE` 对应接口存在时，导出 `RABBITBOT_TTS_BACKEND=unitree`，使用机器人本体音响。
+  - 只有接口不存在时才回退 `local`，并把 `TTS_DEVICE_NAME` 默认设为 `BT67`。
+- 已将运行态 `runtime/portable.env` 改为 `RABBITBOT_TTS_BACKEND=auto`，保留 `STT_DEVICE_NAME="DJI MIC MINI"` 和 `RABBITBOT_UNITREE_TTS_SPEAKER_ID=1`。
+- 已打开 DJI MIC MINI 的 ALSA capture 开关：`Mic,0` 当前为 `[on]`，音量 100%；并执行 `alsactl store` 保存当前 ALSA 状态。
+- 当前 workflow、STT、TTS、VLM 均在 `rabbitbot-unified-runtime` 内运行。
+
+未完成：
+
+- 机器人本体音响仍未成功播报。当前不是 BT67 选择问题，而是 `eno1` 物理链路/Unitree DDS 问题。
+- 现场对 DJI MIC MINI 讲话仍未在 workflow 日志中出现识别文本；已修复 capture muted 问题，但仍需现场复测发射端/接收端链路。
+
+### 已验证的事实
+
+- TTS 日志确认 auto 逻辑已按要求选择 Unitree：`TTS后端自动选择: interface=eno1, effective=unitree`，`RABBITBOT_TTS_BACKEND: unitree`。
+- 当前宿主 `eno1` 已恢复为 `UP 192.168.123.222/24`，但 Unitree bridge 仍返回 `ret=3104`，说明接口存在和链路 UP 还不足以完成机器人音频服务/DDS 响应。
+- Unitree bridge 绑定 `eno1` 时不再报“接口名不存在”，但返回 `ret=3104`；workflow 开场 TTS 和 STT 启动提示 TTS 均因 Unitree bridge 返回失败而没有有效 `tts_index`。
+- STT 日志确认仍选中 `DJI MIC MINI: USB Audio (hw:2,0)，index=24` 并启动音频流。
+- DJI MIC MINI 的 ALSA capture 曾为 `[off]`，本轮已改为 `[on]`；由于 STT 进程占用设备，宿主 `arecord` 无法并行录音验证电平，返回 `Device or resource busy`。
+- 已执行语法检查：`bash -n scripts/start_tts_app.bash` 通过。
+
+### 阻塞问题
+
+- `eno1` 当前已显示 UP，但机器人本体音响 DDS/TTS 仍返回 `ret=3104`，无法成功响应。需要现场确认 Orin 到机器人本体网络通信、机器人侧音频服务状态和 DDS 域/网卡配置。
+- DJI MIC MINI 是否真实输入语音仍未验证成功；如果现场确认已经对麦克风说话但日志仍只有空文本，需要继续检查 DJI 发射端配对、电量、静音状态和接收端输出。
+
+### 建议的下一步
+
+- 现场先确认 Orin 与机器人之间 `eno1` 网络通信和机器人音频服务状态；当前 `ip -br addr show eno1` 已显示 `UP 192.168.123.222/24`，下一步应让 Unitree bridge 返回 `ret=0`。
+- 链路恢复后查看 `logs/unified_runtime/rabbitbot_tts.log`，期待 Unitree TTS 请求返回 `ret=0`，workflow 开场语拿到有效 `tts_index`。
+- 对 DJI MIC MINI 说一句短问题，同时查看 `logs/vlm_qa_workflow/vlm_qa_workflow_latest.log` 是否出现“收到用户问题”。
+
+### 注意事项
+
+- 不要把 `RABBITBOT_TTS_BACKEND` 固定成 `local`，也不要在 workflow 启动脚本里传 `TTS_DEVICE_NAME=BT67`。
+- `BT67` 只作为 TTS 服务侧 auto 逻辑在 `eno1` 接口不存在时的回退设备；当前 `eno1` 存在，因此不会自动切 BT67。
+
+### 其它信息
+
+- 本轮新增日志点位于 `scripts/start_tts_app.bash`：`TTS后端自动选择` 会记录 auto 决策、Unitree 接口名和最终有效后端，用于区分“按要求选择了机器人本体音响但 DDS 失败”和“接口缺失后回退本地声卡”。
+
+
+## 本轮补充：最新 workflow TTS/STT 日志判断
+
+### 背景和目标
+
+- Aaron 重新启动了一次 VLM QA workflow，要求只通过各类日志判断 TTS 和 STT 是否有问题。
+
+### 当前状态
+
+- 最新 workflow 日志为 `logs/vlm_qa_workflow/vlm_qa_workflow_20260616_035129.log`。
+- 当前 workflow、TTS、STT、VLM 均在 `rabbitbot-unified-runtime` 内运行，端口 `8000/28184/28185` 均可用。
+- 本轮只读排查日志，未改动运行中的服务状态。
+
+### 已验证的事实
+
+- TTS 本轮正常：workflow 开场语“你好，请问需要我做些什么吗？”在 `2026-06-16 03:51:31` 发出，`workflow_tts_request_done` 返回 `tts_index=3`，耗时约 `0.370s`。
+- TTS 服务端确认走 Unitree：日志包含 `TTS后端自动选择: interface=eno1, effective=unitree` 和 `RABBITBOT_TTS_BACKEND: unitree`。
+- TTS 服务端确认 Unitree 成功：同一开场语返回 `Unitree G1 设置音量完成: ret=0` 和 `Unitree G1 TTS请求完成: ret=0`，HTTP `/exec` 返回 200。
+- STT 服务本身运行正常并选中 DJI MIC MINI：日志显示 `使用输入音频设备 DJI MIC MINI: USB Audio (hw:2,0)，index=24`、`Starting audio stream on device 24`。
+- DJI MIC MINI ALSA capture 当前为打开状态：`Mic,0` 和 `Mic,1` 均为 `[on]`。
+- STT 当前没有识别到真实用户文本：最近 workflow 多轮只看到 `audio_input: timeout 30`，STT 日志持续返回 `<REC_START>` 和空字符串，没有出现可用于问答的中文文本；最新问答日志 `vlm_qa_dialogue_20260616_035131.log` 仍为空。
+
+### 阻塞问题
+
+- TTS 从日志看本轮无软件链路问题；若现场仍听不到，优先查机器人本体音量、扬声器或现场音频输出状态。
+- STT 的服务和设备选择正常，但没有有效识别结果；如果现场确实对 DJI MIC MINI 讲话，需要继续查 DJI 发射端配对、电量、静音、接收端输出或输入电平。
+
+### 建议的下一步
+
+- 现场对 DJI MIC MINI 说一句短句，同时观察 `logs/unified_runtime/rabbitbot_stt.log` 是否出现非空识别文本；若仍为空，优先在停止 STT 后用 `arecord` 直接录 DJI MIC MINI 验证输入电平。
+- 若现场听不到开场语但日志仍显示 Unitree `ret=0`，需要现场检查机器人本体音量/音频服务，而不是切换到 BT67。
+
+### 其它信息
+
+- 本轮未新增代码日志点；排查使用了已有 workflow TTS 请求链路日志、Unitree TTS 服务端日志、STT 设备选择日志和 STT 输出日志。
+
+
+## 本轮补充：STT 设备选择从 workflow 解耦
+
+### 背景和目标
+
+- Aaron 要求确认并移除 workflow 编排层中的 STT 音频设备选择逻辑，让设备选择由 STT 服务自身完成。
+- 目标选择策略为：优先选择外接麦克风类设备；如果没有外接麦克风，再回退 Orin 自身音频设备。
+
+### 当前状态
+
+已完成：
+
+- 已从 `scripts_1/start_unified_integration_workflow.sh` 移除 `STT_DEVICE_NAME` 的默认值、容器兼容性比较、创建容器时的 `-e STT_DEVICE_NAME=...` 透传，以及 workflow 编排层的 STT 设备过滤日志。
+- 已从 `runtime/portable.env` 移除 `STT_DEVICE_NAME="DJI MIC MINI"`，当前运行态不再由 portable workflow 配置固定 STT 设备名。
+- 已保留 STT 服务脚本中的可选人工覆盖能力：只有调用方显式设置 `STT_DEVICE_NAME` 时，STT 服务才按名称优先选择；默认不设置时由 STT 服务自行扫描。
+- 已在 `scripts/start_stt_funasr_app.bash` 和 `scripts/start_stt_app.bash` 增加选择策略日志：`显式指定名称 > 外接麦克风类设备 > 其它外接输入设备 > Orin 内置音频设备`。
+- 已同步 legacy `scripts/start_all_services.sh`：不再默认 `STT_DEVICE_NAME=Wireless Mic Rx`；只有显式设置 `STT_DEVICE_NAME` 时才传给 STT 服务。
+
+### 已验证的事实
+
+- 语法检查通过：`bash -n scripts_1/start_unified_integration_workflow.sh`、`bash -n scripts/start_stt_funasr_app.bash`、`bash -n scripts/start_all_services.sh`、`bash -n scripts/start_stt_app.bash`。
+- 已用 `RECREATE_CONTAINER=1 bash scripts_1/start_unified_vlm_qa_workflow.sh` 重建 core portable 容器；新容器环境中没有 `STT_DEVICE_NAME`，仅保留 `RABBITBOT_UNIFIED_START_STT=1`。
+- 最新 STT 日志显示 `查找输入设备，指定名称: 未指定`，随后打印自动选择策略，并自行扫描候选设备。
+- 最新 STT 自动选择结果为 `DJI MIC MINI: USB Audio (hw:2,0)，index=24`，说明未指定设备名时仍会优先选中外接麦克风类设备。
+- 当前 workflow、VLM、TTS、STT 均在 `rabbitbot-unified-runtime` 内运行，端口 `8000/28184/28185` 均可用。
+
+### 阻塞问题
+
+- STT 设备选择已按要求解耦；仍未证明 DJI MIC MINI 真实收到现场语音，后续若仍无识别文本，需要继续检查物理麦克风链路。
+- 本轮重建后 Unitree TTS 仍出现 `ret=3104`，这是机器人本体音响/DDS 响应问题，与 STT 设备选择解耦无关。
+
+### 建议的下一步
+
+- 现场对 DJI MIC MINI 说一句短句，确认 `logs/unified_runtime/rabbitbot_stt.log` 是否出现非空识别文本。
+- 如果需要临时强制某个 STT 设备，仍可在启动 STT 服务前显式设置 `STT_DEVICE_NAME`；默认情况下不要在 workflow 编排层设置该变量。
+
+### 注意事项
+
+- 后续不要把 `STT_DEVICE_NAME` 写回 `runtime/portable.env`，否则会重新把设备选择上移到编排层。
+- 如果新增其它启动脚本，应遵循同一原则：STT 设备选择留在 STT 服务入口脚本内完成。
+
+### 其它信息
+
+- 本轮新增/调整日志点用于证明 STT 服务自身的选择策略和最终设备选择，便于排查是否又被外层环境变量覆盖。

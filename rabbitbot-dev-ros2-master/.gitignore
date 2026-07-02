@@ -28,6 +28,7 @@
 !requirements*.txt
 !constraints*.txt
 !Dockerfile
+!*.Dockerfile
 !docker-compose*.yml
 !Makefile
 
@@ -105,3 +106,9 @@ logs/**
 
 # 临时构思文件
 .superpowers/
+
+# runtime 目录：Git 只跟踪可迁移模板（portable.env.example）和占位文件。
+# 本机 portable.env、control_console_venv 等运行态由 bootstrap_host.sh 在目标机器生成，不进入 Git。
+runtime/**
+!runtime/.gitkeep
+!runtime/portable.env.example

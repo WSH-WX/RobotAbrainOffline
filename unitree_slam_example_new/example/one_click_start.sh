@@ -6,12 +6,14 @@ PCD_PATH="${2:-/home/unitree/test3.pcd}"
 NAV_SPEED="${3:-0.6}"
 SUDO_PASSWORD="${SUDO_PASSWORD:-111111}"
 
-ROS_SETUP="/opt/ros/humble/setup.bash"
-WS_SETUP="/mnt/ssd/navgation/projects/custom_action_ws/install/setup.bash"
-PROJECTS_DIR="/mnt/ssd/navgation/projects"
-EXAMPLE_DIR="$PROJECTS_DIR/unitree_slam_example_new/example"
-LOCO_DIR="$PROJECTS_DIR/unitree_sdk2/build/bin"
-INSPIRE_DIR="$PROJECTS_DIR/dfx_inspire_service/build"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECTS_DIR="${RABBITBOT_PROJECTS_DIR:-$(cd "${SCRIPT_DIR}/../.." && pwd)}"
+ROS_SETUP="${ROS_SETUP:-/opt/ros/humble/setup.bash}"
+WS_SETUP="${WS_SETUP:-${PROJECTS_DIR}/custom_action_ws/install/setup.bash}"
+WS_PREFIX="$(cd "$(dirname "$WS_SETUP")" && pwd)"
+EXAMPLE_DIR="${NAV_EXAMPLE_DIR:-${SCRIPT_DIR}}"
+LOCO_DIR="${LOCO_DIR:-${PROJECTS_DIR}/unitree_sdk2/build/bin}"
+INSPIRE_DIR="${INSPIRE_DIR:-${PROJECTS_DIR}/dfx_inspire_service/build}"
 BRIDGE_APP="humble_robot_agent_bridge:app"
 RUN_DIR="$EXAMPLE_DIR/run_logs/$(date +%Y%m%d_%H%M%S)"
 LATEST_LINK="$EXAMPLE_DIR/run_logs/latest"
@@ -91,7 +93,7 @@ fi
 stop_known_conflicts
 check_bridge_port_free
 
-COMMON_ENV="source '$ROS_SETUP' && source '$WS_SETUP'"
+COMMON_ENV="set +u; source '$ROS_SETUP'; export COLCON_CURRENT_PREFIX='$WS_PREFIX'; source '$WS_SETUP'; set -u"
 CMD_LOCO="cd '$LOCO_DIR' && ./g1_loco_client --network_interface='$NETWORK_INTERFACE' --set_fsm_id=801 --disable_service=vui_service"
 CMD_NAV="$COMMON_ENV && cd '$EXAMPLE_DIR' && ./build/goGoalNavigation '$NETWORK_INTERFACE' '$PCD_PATH' --nav_speed='$NAV_SPEED'"
 CMD_BRIDGE="$COMMON_ENV && cd '$PROJECTS_DIR' && python3 -m uvicorn $BRIDGE_APP --host 0.0.0.0 --port 28180 --log-level info"
@@ -103,6 +105,9 @@ echo "  interface : $NETWORK_INTERFACE"
 echo "  pcd       : $PCD_PATH"
 echo "  nav_speed : $NAV_SPEED"
 echo "  logs      : $RUN_DIR"
+echo "  ros setup : $ROS_SETUP"
+echo "  ws setup  : $WS_SETUP"
+echo "  ws prefix : $WS_PREFIX"
 echo
 
 # 1. Disable service and switch to walk/run locomotion mode.

@@ -8,11 +8,14 @@ def make_config(tmp_path):
     project_root = tmp_path / "project"
     command_script = project_root / "scripts_1" / "send_nav_workflow_command.sh"
     systemctl_path = project_root / "bin" / "systemctl"
+    docker_path = project_root / "bin" / "docker"
     systemctl_record = project_root / "systemctl_args.txt"
+    docker_record = project_root / "docker_args.txt"
     map_env_file = project_root / "runtime" / "rabbitbot-loop.env"
     workflow_control_dir = project_root / "logs" / "nav_workflow_control" / "workflow_control"
     nav_log_dir = project_root / "logs" / "nav_workflow_control"
     workflow_log_dir = project_root / "logs" / "nav_workflow_control"
+    current_runtime_log = project_root / "logs" / "current_runtime.log"
     dialogue_dir = project_root / "conf"
     command_script.parent.mkdir(parents=True)
     systemctl_path.parent.mkdir(parents=True)
@@ -28,6 +31,8 @@ def make_config(tmp_path):
     command_script.chmod(0o755)
     systemctl_path.write_text(f"#!/usr/bin/env bash\nprintf '%s\n' \"$@\" > {systemctl_record}\n", encoding="utf-8")
     systemctl_path.chmod(0o755)
+    docker_path.write_text(f"#!/usr/bin/env bash\nprintf '%s\n' \"$@\" > {docker_record}\necho rabbitbot-unified-runtime\n", encoding="utf-8")
+    docker_path.chmod(0o755)
     return ConsoleConfig(
         project_root=project_root,
         host="127.0.0.1",
@@ -37,7 +42,11 @@ def make_config(tmp_path):
         command_script=command_script,
         workflow_control_dir=workflow_control_dir,
         nav_log_dir=nav_log_dir,
+        nav_container_name="",
+        runtime_container_name="rabbitbot-unified-runtime",
+        docker_path=docker_path,
         workflow_log_dir=workflow_log_dir,
+        current_runtime_log=current_runtime_log,
         loop_service_name="rabbitbot-loop.service",
         systemctl_path=systemctl_path,
         sudo_path=None,
@@ -54,7 +63,12 @@ def test_status_does_not_require_login(tmp_path):
     response = client.get("/api/status")
 
     assert response.status_code == 200
-    assert response.json()["map_path"] == "/home/unitree/test9.pcd"
+    body = response.json()
+    assert body["map_path"] == "/home/unitree/test9.pcd"
+    service_by_key = {item["key"]: item for item in body["services"]}
+    assert {"tts", "stt", "memory", "neo4j", "vlm", "embedding"}.issubset(service_by_key)
+    assert service_by_key["vlm"]["required"] is True
+    assert service_by_key["embedding"]["required"] is True
 
 
 def test_status_prefers_runtime_map_env_file(tmp_path):
@@ -110,6 +124,15 @@ def test_command_sends_go_without_login(tmp_path):
     assert response.json()["command"] == "go"
 
 
+def test_command_sends_arrive_without_login(tmp_path):
+    client = TestClient(create_app(make_config(tmp_path)))
+
+    response = client.post("/api/command", json={"command": "arrive"})
+
+    assert response.status_code == 200
+    assert response.json()["command"] == "arrive"
+
+
 def test_task_guide_sends_go_without_login(tmp_path):
     client = TestClient(create_app(make_config(tmp_path)))
 
@@ -144,8 +167,25 @@ def test_start_starts_loop_service_without_login(tmp_path):
     assert response.status_code == 200
     assert response.json()["service"] == "rabbitbot-loop.service"
     assert response.json()["message"] == "已启动导航主程序"
+    assert 'RABBITBOT_NAV_WORKFLOW_NO_ROBOT="0"' in config.map_env_file.read_text(encoding="utf-8")
     record = config.project_root / "systemctl_args.txt"
     assert record.read_text(encoding="utf-8").splitlines() == ["start", "rabbitbot-loop.service"]
+
+
+def test_start_no_robot_restarts_loop_service_and_writes_mode(tmp_path):
+    config = make_config(tmp_path)
+    client = TestClient(create_app(config))
+
+    response = client.post("/api/start-no-robot")
+
+    assert response.status_code == 200
+    assert response.json()["service"] == "rabbitbot-loop.service"
+    assert response.json()["no_robot_mode"] is True
+    content = config.map_env_file.read_text(encoding="utf-8")
+    assert 'RABBITBOT_NAV_WORKFLOW_NO_ROBOT="1"' in content
+    assert 'RABBITBOT_WORKFLOW_NON_INTEGRATION="1"' in content
+    record = config.project_root / "systemctl_args.txt"
+    assert record.read_text(encoding="utf-8").splitlines() == ["restart", "rabbitbot-loop.service"]
 
 
 def test_restart_restarts_loop_service_without_login(tmp_path):
@@ -157,7 +197,9 @@ def test_restart_restarts_loop_service_without_login(tmp_path):
     assert response.status_code == 200
     assert response.json()["service"] == "rabbitbot-loop.service"
     assert response.json()["map_path"] == "/home/unitree/test10.pcd"
-    assert config.map_env_file.read_text(encoding="utf-8") == 'NAV_PCD_PATH="/home/unitree/test10.pcd"\n'
+    content = config.map_env_file.read_text(encoding="utf-8")
+    assert 'NAV_PCD_PATH="/home/unitree/test10.pcd"' in content
+    assert 'RABBITBOT_NAV_WORKFLOW_NO_ROBOT="0"' in content
     record = config.project_root / "systemctl_args.txt"
     assert record.read_text(encoding="utf-8").splitlines() == ["restart", "rabbitbot-loop.service"]
 
@@ -170,9 +212,14 @@ def test_stop_stops_loop_service_without_login(tmp_path):
 
     assert response.status_code == 200
     assert response.json()["service"] == "rabbitbot-loop.service"
-    assert response.json()["message"] == "已关闭导航主程序"
+    assert response.json()["container"] == "rabbitbot-unified-runtime"
+    assert response.json()["container_restarted"] is True
+    assert "已关闭导航主程序" in response.json()["message"]
+    assert "已重启 Docker 容器 rabbitbot-unified-runtime" in response.json()["message"]
     record = config.project_root / "systemctl_args.txt"
     assert record.read_text(encoding="utf-8").splitlines() == ["stop", "rabbitbot-loop.service"]
+    docker_record = config.project_root / "docker_args.txt"
+    assert docker_record.read_text(encoding="utf-8").splitlines() == ["restart", "rabbitbot-unified-runtime"]
 
 
 def test_dialogue_loads_current_config(tmp_path):
@@ -234,6 +281,88 @@ def test_logs_return_latest_nav_log_lines(tmp_path):
     assert response.json()["lines"] == ["two", "three"]
 
 
+def test_logs_return_current_workflow_log_by_run_id(tmp_path):
+    config = make_config(tmp_path)
+    (config.workflow_control_dir / "20260609_100000.status").write_text("finished\n", encoding="utf-8")
+    (config.workflow_log_dir / "rabbitbot_workflow_20260609_100000.log").write_text("old\n", encoding="utf-8")
+    (config.workflow_control_dir / "20260609_110000.status").write_text("running\n", encoding="utf-8")
+    (config.workflow_control_dir / "20260609_110000.ready").write_text("ready\n", encoding="utf-8")
+    (config.workflow_log_dir / "rabbitbot_workflow_20260609_110000.log").write_text("one\ntwo\nthree\n", encoding="utf-8")
+    client = TestClient(create_app(config))
+
+    response = client.get("/api/logs?target=workflow&lines=2")
+
+    assert response.status_code == 200
+    assert response.json()["path"].endswith("rabbitbot_workflow_20260609_110000.log")
+    assert response.json()["lines"] == ["two", "three"]
+
+
+def test_logs_do_not_fallback_to_old_workflow_when_no_current_run(tmp_path):
+    config = make_config(tmp_path)
+    (config.workflow_log_dir / "rabbitbot_workflow_20260616_143251.log").write_text("old workflow\n", encoding="utf-8")
+    client = TestClient(create_app(config))
+
+    response = client.get("/api/logs?target=workflow&lines=2")
+
+    assert response.status_code == 200
+    assert response.json()["path"] is None
+    assert response.json()["lines"] == []
+
+
+def test_logs_do_not_fallback_to_old_workflow_when_current_log_missing(tmp_path):
+    config = make_config(tmp_path)
+    (config.workflow_control_dir / "20260629_120000.status").write_text("running\n", encoding="utf-8")
+    (config.workflow_control_dir / "20260629_120000.ready").write_text("ready\n", encoding="utf-8")
+    (config.workflow_log_dir / "rabbitbot_workflow_20260616_143251.log").write_text("old workflow\n", encoding="utf-8")
+    client = TestClient(create_app(config))
+
+    response = client.get("/api/logs?target=workflow&lines=2")
+
+    assert response.status_code == 200
+    assert response.json()["path"] is None
+    assert response.json()["lines"] == []
+
+
+def test_runtime_logs_use_workflow_log_when_current_run_exists(tmp_path):
+    config = make_config(tmp_path)
+    (config.workflow_control_dir / "20260609_110000.status").write_text("running\n", encoding="utf-8")
+    (config.workflow_control_dir / "20260609_110000.ready").write_text("ready\n", encoding="utf-8")
+    (config.workflow_log_dir / "rabbitbot_workflow_20260609_110000.log").write_text("one\ntwo\nthree\n", encoding="utf-8")
+    client = TestClient(create_app(config))
+
+    response = client.get("/api/logs?target=runtime&lines=2")
+
+    assert response.status_code == 200
+    assert response.json()["source"] == "workflow"
+    assert response.json()["path"].endswith("rabbitbot_workflow_20260609_110000.log")
+    assert response.json()["lines"] == ["two", "three"]
+
+
+def test_runtime_logs_use_current_runtime_log_when_no_current_run(tmp_path):
+    config = make_config(tmp_path)
+    config.current_runtime_log.parent.mkdir(parents=True, exist_ok=True)
+    config.current_runtime_log.write_text("loop starting\nwaiting TTS without newline", encoding="utf-8")
+    client = TestClient(create_app(config))
+
+    response = client.get("/api/logs?target=runtime&lines=2")
+
+    assert response.status_code == 200
+    assert response.json()["source"] == "current"
+    assert response.json()["path"].endswith("current_runtime.log")
+    assert response.json()["lines"] == ["loop starting", "waiting TTS without newline"]
+
+
+def test_runtime_logs_return_empty_when_no_current_run_log(tmp_path):
+    config = make_config(tmp_path)
+    client = TestClient(create_app(config))
+
+    response = client.get("/api/logs?target=runtime&lines=2")
+
+    assert response.status_code == 200
+    assert response.json()["source"] == "none"
+    assert response.json()["path"] is None
+    assert response.json()["lines"] == []
+
 
 def test_main_module_exposes_run_function():
     from rabbitbot.control_console.__main__ import run
@@ -263,20 +392,28 @@ def test_page_shows_console_without_login_form(tmp_path):
     assert '定位状态' in response.text
     assert '当前位姿' in response.text
     assert '开始程序' in response.text
-    assert '一键重启' in response.text
+    assert '一键重启主循环' in response.text
     assert '关闭程序' in response.text
     assert '/api/start' in response.text
     assert 'startProgram' in response.text
     assert 'waitForServicesReady' in response.text
     assert '所有服务已加载成功，可执行相关操作' in response.text
-    assert '服务仍未全部就绪，请查看状态或打开日志排查' in response.text
+    assert '服务仍未全部就绪' not in response.text
     assert '/api/stop' in response.text
     assert 'stopProgram' in response.text
     assert '/api/restart' in response.text
     assert '重启地图' in response.text
     assert 'mapPathInput' in response.text
     assert 'map_path' in response.text
+    assert '服务状态' in response.text
+    assert 'serviceStatusGrid' in response.text
+    assert 'renderServiceStatus' in response.text
+    assert 'restartService' in response.text
+    assert 'pendingRestartUntil' in response.text
+    assert '/api/service/restart' in response.text
+    assert '位于同一容器，将被一并重启' in response.text
     assert '导览讲解词' in response.text
+    assert response.text.index('服务状态') < response.text.index('导览讲解词')
     assert '加载讲解词' in response.text
     assert '保存讲解词' in response.text
     assert '折叠讲解词' in response.text
@@ -289,3 +426,51 @@ def test_page_shows_console_without_login_form(tmp_path):
     assert '关闭日志' in response.text
     assert 'logsVisible=false' in response.text
     assert '<pre id="logs" class="log" hidden>' in response.text
+    assert 'setInterval(refreshLogs,500)' in response.text
+
+def test_restart_preserves_no_robot_mode(tmp_path):
+    # 一键重启主循环：若重启前为无机器人模式，应沿用无机器人模式而非覆盖成真机。
+    config = make_config(tmp_path)
+    client = TestClient(create_app(config))
+    config.map_env_file.parent.mkdir(parents=True, exist_ok=True)
+    config.map_env_file.write_text(
+        'RABBITBOT_NAV_WORKFLOW_NO_ROBOT="1"\nRABBITBOT_WORKFLOW_NON_INTEGRATION="1"\n',
+        encoding="utf-8",
+    )
+
+    response = client.post("/api/restart", json={"map_path": "/home/unitree/test10.pcd"})
+
+    assert response.status_code == 200
+    assert response.json()["service"] == "rabbitbot-loop.service"
+    content = config.map_env_file.read_text(encoding="utf-8")
+    assert 'RABBITBOT_NAV_WORKFLOW_NO_ROBOT="1"' in content
+    assert 'RABBITBOT_WORKFLOW_NON_INTEGRATION="1"' in content
+    record = config.project_root / "systemctl_args.txt"
+    assert record.read_text(encoding="utf-8").splitlines() == ["restart", "rabbitbot-loop.service"]
+
+
+def test_service_restart_restarts_audio_container_for_tts(tmp_path, monkeypatch):
+    # 重启 TTS：compose 栈下应重启 rabbitbot-audio 容器(TTS/STT 同容器)。
+    from rabbitbot.control_console import status as status_mod
+
+    monkeypatch.setenv("RABBITBOT_BASE_RUNTIME", "compose")
+    monkeypatch.setattr(status_mod, "_recent_container_restarts", {})
+    config = make_config(tmp_path)
+    client = TestClient(create_app(config))
+
+    response = client.post("/api/service/restart", json={"key": "tts"})
+
+    assert response.status_code == 200
+    assert response.json()["container"] == "rabbitbot-audio"
+    record = config.project_root / "docker_args.txt"
+    assert record.read_text(encoding="utf-8").splitlines() == ["restart", "-t", "20", "rabbitbot-audio"]
+
+
+def test_service_restart_rejects_unknown_service(tmp_path):
+    # 未知服务 key 应返回 400。
+    config = make_config(tmp_path)
+    client = TestClient(create_app(config))
+
+    response = client.post("/api/service/restart", json={"key": "nope"})
+
+    assert response.status_code == 400

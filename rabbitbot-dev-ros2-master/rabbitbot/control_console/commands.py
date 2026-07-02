@@ -7,11 +7,14 @@ import subprocess
 
 logger = logging.getLogger(__name__)
 
-ALLOWED_COMMANDS = {"go", "back"}
+ALLOWED_COMMANDS = {"go", "back", "arrive"}
 TASK_LABELS = {"guide": "导览", "dialogue": "对话", "vision": "视觉导航"}
 PLACEHOLDER_TASKS = {"dialogue", "vision"}
 LOOP_SERVICE_NAME = "rabbitbot-loop.service"
+RUNTIME_CONTAINER_NAME = "rabbitbot-unified-runtime"
 MAP_ENV_KEY = "NAV_PCD_PATH"
+NO_ROBOT_ENV_KEY = "RABBITBOT_NAV_WORKFLOW_NO_ROBOT"
+WORKFLOW_MANUAL_ENV_KEY = "RABBITBOT_WORKFLOW_NON_INTEGRATION"
 
 
 class CommandError(RuntimeError):
@@ -54,13 +57,73 @@ def read_map_path(map_env_file: Path, default_map_path: str) -> str:
     return current
 
 
+def _quote_env_value(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _read_env_lines(env_file: Path) -> list[str]:
+    try:
+        return env_file.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+
+
+def _write_loop_env_values(env_file: Path, updates: dict[str, str]) -> None:
+    lines = _read_env_lines(env_file)
+    written: set[str] = set()
+    output: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            output.append(line)
+            continue
+        key, _ = stripped.split("=", 1)
+        key = key.strip()
+        if key in updates:
+            output.append(f'{key}="{_quote_env_value(updates[key])}"')
+            written.add(key)
+        else:
+            output.append(line)
+    for key, value in updates.items():
+        if key not in written:
+            output.append(f'{key}="{_quote_env_value(value)}"')
+    env_file.parent.mkdir(parents=True, exist_ok=True)
+    env_file.write_text("\n".join(output).rstrip() + "\n", encoding="utf-8")
+
+
 def write_map_path(map_env_file: Path, map_path: str) -> str:
     value = validate_map_path(map_path)
-    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
-    map_env_file.parent.mkdir(parents=True, exist_ok=True)
-    map_env_file.write_text(f'{MAP_ENV_KEY}="{escaped}"\n', encoding="utf-8")
+    _write_loop_env_values(map_env_file, {MAP_ENV_KEY: value})
     logger.info("已写入控制台地图环境文件：env_file=%s, map_path=%s", map_env_file, value)
     return value
+
+
+def read_loop_no_robot_mode(map_env_file: Path) -> bool:
+    for line in _read_env_lines(map_env_file):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        if key.strip() != NO_ROBOT_ENV_KEY:
+            continue
+        return _unquote_env_value(value).strip().lower() in {"1", "true", "yes", "on"}
+    return False
+
+
+def write_loop_mode(map_env_file: Path, no_robot_mode: bool) -> bool:
+    value = "1" if no_robot_mode else "0"
+    updates = {
+        NO_ROBOT_ENV_KEY: value,
+        WORKFLOW_MANUAL_ENV_KEY: value,
+    }
+    _write_loop_env_values(map_env_file, updates)
+    logger.info(
+        "已写入控制台启动模式环境文件：env_file=%s, no_robot_mode=%s, workflow_manual=%s",
+        map_env_file,
+        no_robot_mode,
+        value,
+    )
+    return no_robot_mode
 
 
 def send_workflow_command(command: str, script: Path, extra_args: list[str] | None = None) -> dict:
@@ -106,6 +169,54 @@ def start_task(task: str, script: Path, extra_args: list[str] | None = None) -> 
         "command": result["command"],
         "message": f"{label}任务已启动",
     }
+
+
+def _restart_runtime_container(container_name: str, docker_path: Path) -> str:
+    if not container_name.strip():
+        raise CommandError("Docker 容器名不能为空")
+    if not docker_path.exists():
+        raise CommandError(f"docker 不存在：{docker_path}")
+
+    args = [str(docker_path), "restart", container_name]
+    logger.info("准备重启 Docker 容器：container=%s, docker=%s", container_name, docker_path)
+    result = subprocess.run(
+        args,
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    output = (result.stdout or result.stderr or "").strip()
+    if result.returncode != 0:
+        logger.error(
+            "Docker 容器重启失败：container=%s, returncode=%s, output=%s",
+            container_name,
+            result.returncode,
+            output,
+        )
+        raise CommandError(output or f"Docker 容器重启失败，退出码：{result.returncode}")
+    logger.info("Docker 容器重启完成：container=%s", container_name)
+    return output
+
+
+def restart_service_container(container_name: str, docker_path: Path = Path("/usr/bin/docker"), timeout: float = 90.0) -> str:
+    # 重启单个服务所在容器（解耦栈下即重启该容器内对应服务；nvidia 在 docker 组，免 sudo）。
+    if not container_name.strip():
+        raise CommandError("Docker 容器名不能为空")
+    if not docker_path.exists():
+        raise CommandError(f"docker 不存在：{docker_path}")
+    args = [str(docker_path), "restart", "-t", "20", container_name]
+    logger.info("准备重启服务容器：container=%s, docker=%s, timeout=%s", container_name, docker_path, timeout)
+    try:
+        result = subprocess.run(args, check=False, text=True, capture_output=True, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        logger.error("重启服务容器超时：container=%s, timeout=%s", container_name, timeout)
+        raise CommandError(f"重启容器 {container_name} 超时（{timeout:.0f}s）") from exc
+    output = (result.stdout or result.stderr or "").strip()
+    if result.returncode != 0:
+        logger.error("重启服务容器失败：container=%s, returncode=%s, output=%s", container_name, result.returncode, output)
+        raise CommandError(output or f"重启容器 {container_name} 失败，退出码：{result.returncode}")
+    logger.info("重启服务容器完成：container=%s", container_name)
+    return output
 
 
 def _run_loop_service_action(
@@ -160,11 +271,17 @@ def start_loop_service(
     service_name: str = LOOP_SERVICE_NAME,
     systemctl_path: Path = Path("/usr/bin/systemctl"),
     sudo_path: Path | None = Path("/usr/bin/sudo"),
+    map_env_file: Path | None = None,
+    no_robot_mode: bool = False,
 ) -> dict:
     if service_name != LOOP_SERVICE_NAME:
         raise CommandError(f"不支持启动的服务：{service_name}")
-    output = _run_loop_service_action("start", service_name, systemctl_path, sudo_path, "启动")
-    return {"ok": True, "service": service_name, "message": output or "已启动导航主程序"}
+    if map_env_file is not None:
+        write_loop_mode(map_env_file, no_robot_mode)
+    action = "restart" if no_robot_mode else "start"
+    output = _run_loop_service_action(action, service_name, systemctl_path, sudo_path, "启动")
+    message = "已启动无机器人模式，导览到点时请点击到达下一个点位" if no_robot_mode else "已启动导航主程序"
+    return {"ok": True, "service": service_name, "no_robot_mode": no_robot_mode, "message": output or message}
 
 
 def restart_loop_service(
@@ -173,6 +290,7 @@ def restart_loop_service(
     sudo_path: Path | None = Path("/usr/bin/sudo"),
     map_path: str | None = None,
     map_env_file: Path | None = None,
+    no_robot_mode: bool | None = None,
 ) -> dict:
     if service_name != LOOP_SERVICE_NAME:
         raise CommandError(f"不支持重启的服务：{service_name}")
@@ -182,6 +300,10 @@ def restart_loop_service(
         if map_env_file is None:
             raise CommandError("缺少地图配置文件路径")
         active_map_path = write_map_path(map_env_file, map_path)
+    if no_robot_mode is not None:
+        if map_env_file is None:
+            raise CommandError("缺少启动模式配置文件路径")
+        write_loop_mode(map_env_file, no_robot_mode)
 
     output = _run_loop_service_action("restart", service_name, systemctl_path, sudo_path, "重启")
 
@@ -196,8 +318,19 @@ def stop_loop_service(
     service_name: str = LOOP_SERVICE_NAME,
     systemctl_path: Path = Path("/usr/bin/systemctl"),
     sudo_path: Path | None = Path("/usr/bin/sudo"),
+    docker_path: Path = Path("/usr/bin/docker"),
+    runtime_container_name: str = RUNTIME_CONTAINER_NAME,
 ) -> dict:
     if service_name != LOOP_SERVICE_NAME:
         raise CommandError(f"不支持关闭的服务：{service_name}")
-    output = _run_loop_service_action("stop", service_name, systemctl_path, sudo_path, "关闭")
-    return {"ok": True, "service": service_name, "message": output or "已关闭导航主程序"}
+    service_output = _run_loop_service_action("stop", service_name, systemctl_path, sudo_path, "关闭")
+    container_output = _restart_runtime_container(runtime_container_name, docker_path)
+    message_parts = [service_output or "已关闭导航主程序", f"已重启 Docker 容器 {runtime_container_name}"]
+    return {
+        "ok": True,
+        "service": service_name,
+        "container": runtime_container_name,
+        "container_restarted": True,
+        "message": "；".join(message_parts),
+        "docker_output": container_output,
+    }

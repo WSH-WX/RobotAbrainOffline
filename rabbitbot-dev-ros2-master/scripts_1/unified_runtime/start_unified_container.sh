@@ -1,19 +1,23 @@
 #!/usr/bin/env bash
-# 单容器实验入口：在一个容器内启动 Neo4j、TTS、Memory Agent、Robot Agent 和 workflow；VLM/Embedding/STT 默认跳过。
+# 单容器实验入口：在一个容器内启动 Neo4j、TTS、Memory Agent、Robot Agent 和 workflow；Embedding 默认启动，VLM/STT 默认跳过。
 
 set -Eeuo pipefail
 
 PROJECT_DIR="${RABBITBOT_DIR:-/data/rabbitbot-dev-ros2-master}"
 MODELS_DIR="${RABBITBOT_MODELS_DIR:-/models}"
-LOG_DIR="${RABBITBOT_LOG_DIR:-${PROJECT_DIR}/logs/unified_runtime}"
+LOG_DIR="${RABBITBOT_LOG_DIR:-${PROJECT_DIR%/*}/logs/unified_runtime}"
 WAIT_DEFAULT_SECONDS="${WAIT_DEFAULT_SECONDS:-420}"
 WAIT_VLM_SECONDS="${WAIT_VLM_SECONDS:-600}"
 AUTO_START_WORKFLOW="${AUTO_START_WORKFLOW:-1}"
 RABBITBOT_WORKFLOW_VERBOSE="${RABBITBOT_WORKFLOW_VERBOSE:-0}"
 RABBITBOT_WORKFLOW_NON_INTEGRATION="${RABBITBOT_WORKFLOW_NON_INTEGRATION:-0}"
 RABBITBOT_UNIFIED_START_VLM="${RABBITBOT_UNIFIED_START_VLM:-0}"
-RABBITBOT_UNIFIED_START_EMBEDDING="${RABBITBOT_UNIFIED_START_EMBEDDING:-0}"
+RABBITBOT_UNIFIED_START_EMBEDDING="${RABBITBOT_UNIFIED_START_EMBEDDING:-1}"
 RABBITBOT_UNIFIED_START_STT="${RABBITBOT_UNIFIED_START_STT:-0}"
+# 是否在本容器内启动 Robot Agent（robot_app.py，监听 28180）。
+# legacy 默认 1；portable 模式由宿主以 -e 传入 0，此时 28180 归属 nav bridge 的 humble_robot_agent_bridge。
+RABBITBOT_UNIFIED_START_ROBOT_AGENT="${RABBITBOT_UNIFIED_START_ROBOT_AGENT:-1}"
+RABBITBOT_ROBOT_AGENT_URL="${RABBITBOT_ROBOT_AGENT_URL:-http://127.0.0.1:28180}"
 RABBITBOT_TTS_BACKEND="${RABBITBOT_TTS_BACKEND:-unitree}"
 RABBITBOT_UNITREE_TTS_INTERFACE="${RABBITBOT_UNITREE_TTS_INTERFACE:-eno1}"
 RABBITBOT_UNITREE_TTS_VOLUME="${RABBITBOT_UNITREE_TTS_VOLUME:-100}"
@@ -23,6 +27,7 @@ RABBITBOT_UNITREE_TTS_TIMEOUT="${RABBITBOT_UNITREE_TTS_TIMEOUT:-10}"
 mkdir -p "${LOG_DIR}"
 
 log_info() { echo -e "\033[32m[INFO]\033[0m $1"; }
+log_warn() { echo -e "\033[33m[WARN]\033[0m $1"; }
 log_error() { echo -e "\033[31m[ERROR]\033[0m $1"; }
 log_success() { echo -e "\033[32m[SUCCESS]\033[0m $1"; }
 
@@ -47,6 +52,14 @@ http_ok() {
     else
         code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "${url}" 2>/dev/null || true)
     fi
+    [ "${code}" = "200" ]
+}
+
+tts_exec_ok() {
+    local code
+    code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 \
+        -X POST http://127.0.0.1:28185/exec \
+        --form-string 'task={"task":"wait_speech","lang":"","text":"","timeout":1}' 2>/dev/null || true)
     [ "${code}" = "200" ]
 }
 
@@ -145,13 +158,17 @@ start_vlm_and_embedding() {
 }
 
 start_tts() {
-    if http_ok http://127.0.0.1:28185/docs; then
-        log_success "TTS 已运行"
+    if tts_exec_ok; then
+        log_success "TTS /exec 服务已运行"
         return 0
+    fi
+    if port_open 28185; then
+        log_error "28185 端口已被非 /exec 兼容 TTS 服务占用，无法在统一容器内启动 portable TTS。请先停止 legacy TTS 容器或进程。"
+        return 1
     fi
     log_info "TTS 启动配置：后端=${RABBITBOT_TTS_BACKEND}，Unitree 网卡=${RABBITBOT_UNITREE_TTS_INTERFACE}，音量=${RABBITBOT_UNITREE_TTS_VOLUME}"
     start_background "TTS" "${LOG_DIR}/rabbitbot_tts.log" bash -lc "cd '${PROJECT_DIR}' && export RABBITBOT_TTS_BACKEND='${RABBITBOT_TTS_BACKEND}' && export RABBITBOT_UNITREE_TTS_INTERFACE='${RABBITBOT_UNITREE_TTS_INTERFACE}' && export RABBITBOT_UNITREE_TTS_VOLUME='${RABBITBOT_UNITREE_TTS_VOLUME}' && export RABBITBOT_UNITREE_TTS_SPEAKER_ID='${RABBITBOT_UNITREE_TTS_SPEAKER_ID}' && export RABBITBOT_UNITREE_TTS_TIMEOUT='${RABBITBOT_UNITREE_TTS_TIMEOUT}' && export RABBITBOT_TTS_DEVICE=\${RABBITBOT_UNIFIED_TTS_DEVICE:-cuda} && export RABBITBOT_TTS_FAST_SOUND_PRELOAD=\${RABBITBOT_UNIFIED_TTS_FAST_SOUND_PRELOAD:-0} && export RABBITBOT_TTS_STARTUP_SPEECH=\${RABBITBOT_UNIFIED_TTS_STARTUP_SPEECH:-0} && bash scripts/start_tts_app.bash"
-    wait_until "TTS 服务 (28185)" "${WAIT_DEFAULT_SECONDS}" http_ok http://127.0.0.1:28185/docs
+    wait_until "TTS /exec 服务 (28185)" "${WAIT_DEFAULT_SECONDS}" tts_exec_ok
 }
 
 start_stt() {
@@ -177,6 +194,10 @@ start_memory_agent() {
 }
 
 start_robot_agent() {
+    if [ "${RABBITBOT_UNIFIED_START_ROBOT_AGENT}" != "1" ]; then
+        log_info "RABBITBOT_UNIFIED_START_ROBOT_AGENT=${RABBITBOT_UNIFIED_START_ROBOT_AGENT}，本容器不启动 Robot Agent（robot_app.py）；28180 由 nav bridge 的 humble_robot_agent_bridge 提供：${RABBITBOT_ROBOT_AGENT_URL}"
+        return 0
+    fi
     if port_open 28180; then
         log_success "Robot Agent 已运行"
         return 0
@@ -185,11 +206,32 @@ start_robot_agent() {
     wait_until "Robot Agent 服务 (28180)" "${WAIT_DEFAULT_SECONDS}" port_open 28180
 }
 
+check_external_robot_agent() {
+    # core 不托管 Robot Agent 时，在 workflow 启动前确认外部 28180 可达，避免 workflow 启动后才暴露依赖缺失。
+    if [ "${RABBITBOT_UNIFIED_START_ROBOT_AGENT}" = "1" ]; then
+        return 0
+    fi
+    local host_port
+    host_port="$(printf '%s' "${RABBITBOT_ROBOT_AGENT_URL}" | sed -E 's#^[a-zA-Z]+://##; s#/.*$##')"
+    local host="${host_port%%:*}"
+    local port="${host_port##*:}"
+    if [ -z "${port}" ] || [ "${port}" = "${host}" ]; then
+        port=80
+    fi
+    if timeout 3 bash -lc "</dev/tcp/${host}/${port}" >/dev/null 2>&1; then
+        log_success "外部 Robot Agent 可达：${RABBITBOT_ROBOT_AGENT_URL}"
+        return 0
+    fi
+    log_error "外部 Robot Agent 不可达：${RABBITBOT_ROBOT_AGENT_URL}。portable 模式下 28180 应由 nav bridge 提供，请先启动 nav bridge（start_loop_entry.sh 会按 nav 先行的顺序启动）。"
+    return 1
+}
+
 start_workflow() {
     if [ "${AUTO_START_WORKFLOW}" != "1" ]; then
         log_info "AUTO_START_WORKFLOW=${AUTO_START_WORKFLOW}，跳过 workflow"
         tail -f /dev/null
     fi
+    check_external_robot_agent
     local workflow_log="${LOG_DIR}/rabbitbot_workflow_$(date +%Y%m%d_%H%M%S).log"
     local workflow_group_pid=""
     ln -sf "${workflow_log}" "${LOG_DIR}/rabbitbot_workflow_latest.log"
@@ -258,4 +300,8 @@ main() {
     start_workflow
 }
 
-main "$@"
+# 仅在“直接执行”时运行 main；被其它脚本 source（如 start_role_container.sh 复用本文件的
+# 服务启动函数）时不自动启动全部服务，从而支持容器解耦按角色只起部分服务。
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+    main "$@"
+fi

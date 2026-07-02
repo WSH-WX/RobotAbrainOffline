@@ -52,6 +52,24 @@ def _robot_arm_http_timeout(action_name):
     return _provider_env_float("RABBITBOT_ARM_ACTION_HTTP_TIMEOUT", 45.0)
 
 
+def _arm_action_no_robot_skip():
+    """判断当前是否应在无机器人模式下跳过手臂动作 HTTP 请求。
+
+    无机器人模式（RABBITBOT_WORKFLOW_NON_INTEGRATION=1 或 RABBITBOT_NAV_WORKFLOW_NO_ROBOT=1）下，
+    机器人 Agent（28180）由导航桥接提供且不会启动，手臂动作请求必然读超时（默认 45 秒），
+    会卡住导览台词推进。默认在该模式下直接跳过动作请求、不等待机器人回执。
+    若确有需要在无机器人模式下仍尝试发送动作，可设置
+    RABBITBOT_ARM_ACTION_FORCE_WHEN_NO_ROBOT=1 强制恢复发送。
+    """
+    truthy = {"1", "true", "yes", "on"}
+    if os.getenv("RABBITBOT_ARM_ACTION_FORCE_WHEN_NO_ROBOT", "0").strip().lower() in truthy:
+        return False
+    for name in ("RABBITBOT_WORKFLOW_NON_INTEGRATION", "RABBITBOT_NAV_WORKFLOW_NO_ROBOT"):
+        if os.getenv(name, "0").strip().lower() in truthy:
+            return True
+    return False
+
+
 from agno.models.vllm import vLLM
 
 #from rabbitbot.agents import MapAgent, Brain
@@ -575,6 +593,10 @@ class RobotAgent:
         if not provider_configs['enable_remote_robot_agent']:
             _robot_action_chain_log("remote_robot_agent_disabled", action_name, mode=call_type)
             return
+        # 无机器人模式：机器人 Agent(28180) 不会启动，动作请求必然超时，直接跳过且不等待回执
+        if _arm_action_no_robot_skip():
+            _robot_action_chain_log("no_robot_mode_skip", action_name, mode=call_type)
+            return {"success": True, "skipped": True, "message": "无机器人模式：跳过手臂动作，不等待机器人回执"}
         data = {'task': action_name}
         url = urljoin(self.host_url, 'do_arm_async')
         timeout_seconds = _robot_arm_http_timeout(action_name)

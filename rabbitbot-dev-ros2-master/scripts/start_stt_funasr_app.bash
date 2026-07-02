@@ -29,14 +29,19 @@ export STT_MIN_UTTERANCE_SEC=${STT_MIN_UTTERANCE_SEC:-0.35}
 export STT_INPUT_BLOCK_SEC=${STT_INPUT_BLOCK_SEC:-0.1}
 export STT_INPUT_LATENCY=${STT_INPUT_LATENCY:-high}
 export STT_AUDIO_QUEUE_MAX_CHUNKS=${STT_AUDIO_QUEUE_MAX_CHUNKS:-160}
-export STT_INPUT_GAIN=${STT_INPUT_GAIN:-1.0}
+# DJI Mic Mini 现场右声道电平约 -48 dBFS，默认放大后再进入 VAD，仍允许环境变量覆盖。
+export STT_INPUT_GAIN=${STT_INPUT_GAIN:-8.0}
 export STT_INPUT_VOLUME_PERCENT=${STT_INPUT_VOLUME_PERCENT:-80}
+export REALTIME_TTS_BASE_URL=${REALTIME_TTS_BASE_URL:-http://127.0.0.1:28185/v1}
+export RABBITBOT_TTS_AGENT_URL=${RABBITBOT_TTS_AGENT_URL:-${REALTIME_TTS_BASE_URL}}
+echo "STT 启动提示 TTS 地址: ${RABBITBOT_TTS_AGENT_URL}"
 
 # STT_DEVICE_NAME 只在明确指定时作为最高优先级；默认自动选择外接麦克风。
 DEVICE_NAME="${STT_DEVICE_NAME:-}"
 
 # 查找输入设备。必须在激活虚拟环境后执行，否则默认 python 可能没有 sounddevice。
 echo "查找输入设备，指定名称: ${DEVICE_NAME:-未指定}"
+echo "STT 输入设备自动选择策略: 显式指定名称 > 外接麦克风类设备 > 其它外接输入设备 > Orin 内置音频设备"
 DEVICE_INFO=$(python - <<'PYDEV'
 import os
 import sys

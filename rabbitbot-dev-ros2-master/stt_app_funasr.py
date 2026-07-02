@@ -7,6 +7,7 @@ import queue
 import threading
 import traceback
 import logging
+import hashlib
 from functools import partial
 
 import numpy as np
@@ -34,9 +35,24 @@ from rabbitbot.tools.sound_agno import tts_sound
 app = FastAPI()
 
 cc = OpenCC('t2s')
+LOGGER = logging.getLogger("rabbitbot.stt_app_funasr")
+if not LOGGER.handlers:
+    _stt_log_handler = logging.StreamHandler()
+    _stt_log_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    LOGGER.addHandler(_stt_log_handler)
+LOGGER.setLevel(logging.INFO)
+LOGGER.propagate = False
+
+
+def _text_digest(text: str) -> str:
+    return hashlib.sha256((text or "").encode("utf-8")).hexdigest()[:12]
 
 # ===== 配置参数 =====
-INPUT_CHANNELS = 1
+# DJI Mic Mini 在现场表现为右声道有信号、左声道静音；默认采集双声道并自动选择电平最大的声道。
+INPUT_CHANNELS = max(1, int(os.environ.get("STT_INPUT_CHANNELS", "2")))
+INPUT_CHANNEL_SELECT_MODE = os.environ.get("STT_INPUT_CHANNEL_SELECT_MODE", "max_rms").strip().lower()
+INPUT_CHANNEL_INDEX = max(0, int(os.environ.get("STT_INPUT_CHANNEL_INDEX", "0")))
+STT_LEVEL_LOG_INTERVAL = max(0.0, float(os.environ.get("STT_LEVEL_LOG_INTERVAL", "10")))
 SAMPLE_RATE_MODEL = 16000
 SILENCE_SEC = float(os.environ.get("STT_SILENCE_SEC", "0.50"))
 BUFFER_MAX_SEC = float(os.environ.get("STT_BUFFER_MAX_SEC", "15"))
@@ -76,7 +92,9 @@ print(
     f"vad_speech_thres={VAD_SPEECH_THRES}, vad_start_hits={VAD_START_HITS}, "
     f"min_rms={MIN_RMS}, min_utterance_sec={MIN_UTTERANCE_SEC}, "
     f"input_block_sec={INPUT_BLOCK_SEC}, input_latency={INPUT_LATENCY}, "
-    f"audio_queue_max_chunks={AUDIO_QUEUE_MAX_CHUNKS}, input_gain={INPUT_GAIN}"
+    f"audio_queue_max_chunks={AUDIO_QUEUE_MAX_CHUNKS}, input_gain={INPUT_GAIN}, "
+    f"input_channels={INPUT_CHANNELS}, channel_select={INPUT_CHANNEL_SELECT_MODE}, "
+    f"fixed_channel={INPUT_CHANNEL_INDEX}, level_log_interval={STT_LEVEL_LOG_INTERVAL}"
 )
 
 import re
@@ -113,15 +131,30 @@ _ = vad_model.generate(input=dummy_audio, chunk_size=320)
 print("Models warmed up!")
 
 # ===== 麦克风配置 =====
+if in_device_id is not None:
+    device_info = sd.query_devices(in_device_id, 'input')
+    device_max_input_channels = int(device_info.get("max_input_channels", INPUT_CHANNELS) or INPUT_CHANNELS)
+    STREAM_INPUT_CHANNELS = max(1, min(INPUT_CHANNELS, device_max_input_channels))
+else:
+    device_info = sd.query_devices(None, 'input')
+    device_max_input_channels = int(device_info.get("max_input_channels", INPUT_CHANNELS) or INPUT_CHANNELS)
+    STREAM_INPUT_CHANNELS = max(1, min(INPUT_CHANNELS, device_max_input_channels))
+
 try:
-    sd.check_input_settings(device=in_device_id, samplerate=SAMPLE_RATE_MODEL)
+    sd.check_input_settings(device=in_device_id, samplerate=SAMPLE_RATE_MODEL, channels=STREAM_INPUT_CHANNELS)
     DEVICE_SR = SAMPLE_RATE_MODEL
     NEED_RESAMPLE = False
     print(f"Device supports {SAMPLE_RATE_MODEL} Hz directly")
-except:
-    DEVICE_SR = int(sd.query_devices(in_device_id, 'input')['default_samplerate'])
+except Exception as exc:
+    DEVICE_SR = int(device_info['default_samplerate'])
     NEED_RESAMPLE = True
-    print(f"Device default samplerate: {DEVICE_SR} Hz, will resample to {SAMPLE_RATE_MODEL} Hz")
+    print(f"Device default samplerate: {DEVICE_SR} Hz, will resample to {SAMPLE_RATE_MODEL} Hz; reason={type(exc).__name__}: {exc}")
+
+print(
+    "STT input channel config: "
+    f"device_max_channels={device_max_input_channels}, stream_channels={STREAM_INPUT_CHANNELS}, "
+    f"select_mode={INPUT_CHANNEL_SELECT_MODE}, fixed_channel={INPUT_CHANNEL_INDEX}"
+)
 
 # ===== 录音状态管理 =====
 class AudioRecorder:
@@ -272,8 +305,23 @@ recorder = AudioRecorder()
 recorder.output_text = ""
 recorder.output_utterance_id = 0
 audio_queue = queue.Queue(maxsize=AUDIO_QUEUE_MAX_CHUNKS)
+injected_text_queue = queue.Queue()
+# 标记“最近一次 get_text_async 消费的文本是否来自注入(inject_text_async)”。
+# 注入文本是显式口令、无真实音频，不应被打断音量阈值(忽略低音量打断)过滤；
+# get_last_rms 在此为真时返回高音量哨兵值，使注入文本无条件视为有效打断。
+injection_state = {"last_consumed_injected": False}
 audio_drop_count = 0
 last_audio_status_log_time = 0.0
+last_audio_level_log_time = 0.0
+audio_level_lock = threading.Lock()
+last_audio_level = {
+    "rms": 0.0,
+    "peak": 0.0,
+    "channel": 0,
+    "channels": STREAM_INPUT_CHANNELS,
+    "channel_rms": [],
+    "updated_at": 0.0,
+}
 
 
 def audio_worker():
@@ -297,16 +345,62 @@ def audio_worker():
             audio_queue.task_done()
 
 
+def _select_audio_channel(indata):
+    if indata.ndim == 1 or indata.shape[1] <= 1:
+        audio = indata.reshape(-1).copy()
+        channel_rms = [float(np.sqrt(np.mean(audio.astype(np.float32) ** 2)))] if audio.size else [0.0]
+        return audio, 0, channel_rms
+
+    frame = indata.astype(np.float32, copy=False)
+    channel_rms_array = np.sqrt(np.mean(frame ** 2, axis=0))
+    channel_rms = [float(value) for value in channel_rms_array]
+
+    if INPUT_CHANNEL_SELECT_MODE in {"fixed", "index"}:
+        selected_channel = min(INPUT_CHANNEL_INDEX, frame.shape[1] - 1)
+        audio = frame[:, selected_channel].copy()
+    elif INPUT_CHANNEL_SELECT_MODE in {"mix", "mean", "mono"}:
+        selected_channel = int(np.argmax(channel_rms_array))
+        audio = frame.mean(axis=1).copy()
+    else:
+        selected_channel = int(np.argmax(channel_rms_array))
+        audio = frame[:, selected_channel].copy()
+    return audio, selected_channel, channel_rms
+
+
 # ===== 音频流回调 =====
 def audio_callback(indata, frames, time_info, status):
-    global audio_drop_count, last_audio_status_log_time
+    global audio_drop_count, last_audio_status_log_time, last_audio_level_log_time
     if status:
         now = time.time()
         if now - last_audio_status_log_time > 5:
             print(f"Audio status: {status}")
             last_audio_status_log_time = now
-    
-    audio_48k = indata[:, 0].copy()
+
+    audio_48k, selected_channel, channel_rms = _select_audio_channel(indata)
+    rms = float(np.sqrt(np.mean(audio_48k.astype(np.float32) ** 2))) if audio_48k.size else 0.0
+    peak = float(np.max(np.abs(audio_48k))) if audio_48k.size else 0.0
+    with audio_level_lock:
+        last_audio_level.update(
+            rms=rms,
+            peak=peak,
+            channel=selected_channel,
+            channels=int(indata.shape[1]) if indata.ndim > 1 else 1,
+            channel_rms=channel_rms,
+            updated_at=time.time(),
+        )
+
+    now = time.time()
+    if recorder.is_recording and STT_LEVEL_LOG_INTERVAL > 0 and now - last_audio_level_log_time >= STT_LEVEL_LOG_INTERVAL:
+        LOGGER.info(
+            "STT 输入电平: selected_channel=%s, rms=%.6f, peak=%.6f, channel_rms=%s, channels=%s",
+            selected_channel,
+            rms,
+            peak,
+            [round(value, 6) for value in channel_rms],
+            last_audio_level["channels"],
+        )
+        last_audio_level_log_time = now
+
     try:
         audio_queue.put_nowait(audio_48k)
     except queue.Full:
@@ -324,7 +418,7 @@ if in_device_id is not None:
     threading.Thread(target=audio_worker, daemon=True).start()
     audio_stream = sd.InputStream(
         device=in_device_id,
-        channels=INPUT_CHANNELS,
+        channels=STREAM_INPUT_CHANNELS,
         samplerate=DEVICE_SR,
         callback=audio_callback,
         blocksize=int(DEVICE_SR * INPUT_BLOCK_SEC),
@@ -390,25 +484,53 @@ async def _exec(task, lang, text, timeout):
         
     elif task == "get_status_async":
         out_text = recorder.get_status()
-        
-    elif task == "get_text_async":
-        out_text = recorder.get_text()
-        utterance_id = recorder.get_utterance_id()
-        if lang == "zh" and out_text:
-            out_text = cc.convert(out_text)
-        if out_text is None:
-            out_text = ""
+
+    elif task == "get_last_rms":
+        if injection_state["last_consumed_injected"]:
+            # 注入文本无真实音频，按高音量哨兵返回，避免被打断音量阈值过滤掉。
+            out_text = f"{float(os.environ.get('STT_INJECTED_RMS', '1.0')):.8f}"
         else:
-            recorder.output_text = ""
-            recorder.output_utterance_id = 0
+            with audio_level_lock:
+                out_text = f"{last_audio_level['rms']:.8f}"
+
+    elif task == "get_text_async":
+        try:
+            utterance_id, out_text = injected_text_queue.get_nowait()
+            injection_state["last_consumed_injected"] = True
+            if lang == "zh" and out_text:
+                out_text = cc.convert(out_text)
+            LOGGER.info(
+                "STT 注入文本已消费：utterance_id=%s, text_len=%s, text_hash=%s, queue_remaining=%s",
+                utterance_id,
+                len(out_text or ""),
+                _text_digest(out_text or ""),
+                injected_text_queue.qsize(),
+            )
+        except queue.Empty:
+            out_text = recorder.get_text()
+            utterance_id = recorder.get_utterance_id()
+            if lang == "zh" and out_text:
+                out_text = cc.convert(out_text)
+            if out_text is None:
+                out_text = ""
+            else:
+                recorder.output_text = ""
+                recorder.output_utterance_id = 0
+                injection_state["last_consumed_injected"] = False
 
     elif task == "inject_text_async":
-        recorder.utterance_id += 1
-        recorder.output_utterance_id = recorder.utterance_id
-        recorder.output_text = text or ""
-        recorder.has_recognized = True
-        out_text = recorder.output_text
-        utterance_id = recorder.output_utterance_id
+        out_text = text or ""
+        with recorder.lock:
+            recorder.utterance_id += 1
+            utterance_id = recorder.utterance_id
+        injected_text_queue.put((utterance_id, out_text))
+        LOGGER.info(
+            "STT 注入文本已入队：utterance_id=%s, text_len=%s, text_hash=%s, queue_size=%s",
+            utterance_id,
+            len(out_text),
+            _text_digest(out_text),
+            injected_text_queue.qsize(),
+        )
             
     else:
         out_text = f"Unsupported task: {task}"

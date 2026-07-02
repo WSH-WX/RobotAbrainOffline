@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # =============================================================================
-# 夸父机器人 - 统一容器非联调模式启动 workflow
+# 夸父机器人 - 统一容器无机器人模式启动 workflow
 # =============================================================================
 #
 # 说明：
@@ -22,7 +22,7 @@
 # workflow 运行环境变量速查：
 # - RABBITBOT_STRICT_DOCX_SCRIPT：是否启用严格 DOCX 剧本模式，默认启用。
 # - RABBITBOT_SCRIPTED_TOUR：是否启用脚本化导览推进，默认启用。
-# - RABBITBOT_WORKFLOW_NON_INTEGRATION：是否使用非联调手动确认导航模式。
+# - RABBITBOT_WORKFLOW_NON_INTEGRATION：是否使用无机器人手动确认导航模式（兼容旧变量名）。
 # - RABBITBOT_WORKFLOW_VERBOSE：是否打印调试级 workflow 过程日志。
 # - RABBITBOT_WORKFLOW_PROFILE：是否写入 workflow profile JSONL，默认启用。
 # - RABBITBOT_WORKFLOW_PROFILE_LOG：显式指定 workflow profile JSONL 路径。
@@ -61,7 +61,7 @@ export RUN_WORKFLOW_AFTER_START="${RUN_WORKFLOW_AFTER_START:-1}"
 export RABBITBOT_UNIFIED_ATTACH_STDIN="${RABBITBOT_UNIFIED_ATTACH_STDIN:-1}"
 export RABBITBOT_TTS_ALLOW_BUILTIN="${RABBITBOT_TTS_ALLOW_BUILTIN:-1}"
 
-echo "[INFO] 启动统一容器非联调 workflow：导航点位由终端按回车确认成功"
+echo "[INFO] 启动统一容器无机器人模式 workflow：导航点位由终端按回车确认成功"
 echo "[INFO] 项目目录：${PROJECT_DIR}"
 echo "[INFO] 共用统一容器：${CONTAINER_NAME}"
 

@@ -1,22 +1,32 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-from .commands import CommandError, read_map_path, restart_loop_service, send_workflow_command, start_loop_service, start_task, stop_loop_service
+from .commands import CommandError, read_loop_no_robot_mode, read_map_path, restart_loop_service, restart_service_container, send_workflow_command, start_loop_service, start_task, stop_loop_service
 from .config import ConsoleConfig
 from .dialogue import DialogueError, read_dialogue_editor, resolve_dialogue_path, write_dialogue_config
 from .status import (
     detect_main_loop_running,
     get_latest_workflow_status,
+    get_runtime_service_statuses,
+    mark_container_restarted,
+    resolve_service_container,
     get_tail_lines,
+    workflow_log_for_status,
+    detect_nav_bridge_status_from_lines,
     is_port_open,
     latest_file,
-    parse_latest_pose,
+    parse_latest_pose_from_lines,
+    runtime_nav_log_lines,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 class CommandRequest(BaseModel):
@@ -35,6 +45,10 @@ class DialogueRequest(BaseModel):
     content: str
 
 
+class ServiceRestartRequest(BaseModel):
+    key: str
+
+
 def _html() -> str:
     return """<!doctype html>
 <html lang="zh-CN">
@@ -43,7 +57,7 @@ def _html() -> str:
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>RabbitBot 控制台</title>
   <style>
-    :root{font-family:Arial,'Noto Sans SC',sans-serif;color:#172033;background:#eef2f6}body{margin:0}.wrap{max-width:1180px;margin:0 auto;padding:20px}.top{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:16px}.panel{background:white;border:1px solid #d7dde8;border-radius:8px;padding:16px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.card{background:#f7f9fc;border-radius:6px;padding:12px}.label{font-size:12px;color:#667085;text-transform:uppercase}.value{font-size:18px;font-weight:700;margin-top:4px}.actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px}.field{margin-top:16px}.text-input,.dialogue-editor{width:100%;box-sizing:border-box;padding:10px 11px;border:1px solid #cbd5e1;border-radius:6px;font-size:14px;color:#172033;background:#fff}.dialogue-editor{font-family:ui-monospace,Menlo,monospace;min-height:420px;line-height:1.45;resize:vertical}button{border:0;border-radius:6px;color:white;padding:11px 16px;font-size:15px;cursor:pointer}button:disabled{opacity:.45;cursor:not-allowed}.go{background:#137333}.task{background:#0f766e}.placeholder{background:#64748b}.back{background:#b3261e}.refresh{background:#334155}.restart{background:#7c2d12}.log{font-family:ui-monospace,Menlo,monospace;background:#111827;color:#d1d5db;border-radius:6px;padding:12px;line-height:1.5;font-size:12px;min-height:220px;overflow:auto}.error{color:#b3261e}.ok{color:#137333}.pose-line{white-space:pre-line}@media(max-width:820px){.grid,.cards{grid-template-columns:1fr}.top{align-items:flex-start;flex-direction:column}}</style>
+    :root{font-family:Arial,'Noto Sans SC',sans-serif;color:#172033;background:#eef2f6}body{margin:0}.wrap{max-width:1180px;margin:0 auto;padding:20px}.top{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:16px}.panel{background:white;border:1px solid #d7dde8;border-radius:8px;padding:16px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.service-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.service-card{background:#f7f9fc;border-radius:6px;padding:12px;display:flex;justify-content:space-between;gap:10px;align-items:center}.service-name{font-size:14px;font-weight:700}.service-meta{font-size:12px;color:#667085;margin-top:4px}.badge{border-radius:999px;padding:5px 9px;font-size:12px;font-weight:700;white-space:nowrap}.badge-ok{background:#dcfce7;color:#166534}.badge-bad{background:#fee2e2;color:#991b1b}.badge-optional{background:#e2e8f0;color:#334155}.badge-starting{background:#fde68a;color:#92400e}.svc-actions{display:flex;align-items:center;gap:8px}.svc-restart{background:#7c2d12;color:#fff;border:0;border-radius:6px;padding:4px 10px;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap}.svc-restart:disabled{opacity:.45;cursor:not-allowed}.card{background:#f7f9fc;border-radius:6px;padding:12px}.label{font-size:12px;color:#667085;text-transform:uppercase}.value{font-size:18px;font-weight:700;margin-top:4px}.actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px}.field{margin-top:16px}.text-input,.dialogue-editor{width:100%;box-sizing:border-box;padding:10px 11px;border:1px solid #cbd5e1;border-radius:6px;font-size:14px;color:#172033;background:#fff}.dialogue-editor{font-family:ui-monospace,Menlo,monospace;min-height:420px;line-height:1.45;resize:vertical}button{border:0;border-radius:6px;color:white;padding:11px 16px;font-size:15px;cursor:pointer}button:disabled{opacity:.45;cursor:not-allowed}.go{background:#137333}.task{background:#0f766e}.placeholder{background:#64748b}.back{background:#b3261e}.refresh{background:#334155}.restart{background:#7c2d12}.log{font-family:ui-monospace,Menlo,monospace;background:#111827;color:#d1d5db;border-radius:6px;padding:12px;line-height:1.5;font-size:12px;min-height:220px;overflow:auto}.error{color:#b3261e}.ok{color:#137333}.pose-line{white-space:pre-line}@media(max-width:820px){.grid,.cards,.service-grid{grid-template-columns:1fr}.top{align-items:flex-start;flex-direction:column}}</style>
 </head>
 <body>
   <div class="wrap">
@@ -68,9 +82,11 @@ def _html() -> str:
           <div class="actions">
             <button class="back" onclick="sendCommand('back')">返航</button>
             <button class="refresh" onclick="refresh()">刷新状态</button>
-            <button id="startBtn" class="go" onclick="startProgram()">开始程序</button>
-            <button id="restartBtn" class="restart" onclick="restartProgram()">一键重启</button>
+            <button id="startBtn" class="go" onclick="startProgram(false)">开始程序</button>
+            <button id="restartBtn" class="restart" onclick="restartProgram()">一键重启主循环</button>
             <button id="stopBtn" class="back" onclick="stopProgram()">关闭程序</button>
+            <button id="startNoRobotBtn" class="task" onclick="startProgram(true)">开始程序(无机器人模式)</button>
+            <button id="arriveBtn" class="task" onclick="sendCommand('arrive')">到达下一个点位(无机器人模式)</button>
           </div>
           <div class="field">
             <div class="label">重启地图</div>
@@ -87,6 +103,13 @@ def _html() -> str:
       </div>
       <section class="panel" style="margin-top:16px">
         <div class="top" style="margin-bottom:10px">
+          <div class="label">服务状态</div>
+          <div id="serviceSummary" class="label">读取中</div>
+        </div>
+        <div id="serviceStatusGrid" class="service-grid"></div>
+      </section>
+      <section class="panel" style="margin-top:16px">
+        <div class="top" style="margin-bottom:10px">
           <div class="label">导览讲解词</div>
           <div class="actions" style="margin-top:0">
             <button id="dialogueLoadBtn" class="refresh" onclick="loadDialogue()">加载讲解词</button>
@@ -100,7 +123,7 @@ def _html() -> str:
       </section>
       <section class="panel" style="margin-top:16px">
         <div class="top" style="margin-bottom:10px">
-          <div class="label">最近日志</div>
+          <div class="label">当前运行日志</div>
           <button id="logsToggleBtn" class="refresh" onclick="toggleLogs()">显示日志</button>
         </div>
         <pre id="logs" class="log" hidden></pre>
@@ -109,9 +132,11 @@ def _html() -> str:
   </div>
 <script>
 var logsVisible=false;
+var logsTimer=null;
 var mapPathTouched=false;
 var dialogueLoaded=false;
 var dialogueCollapsed=false;
+var pendingRestartUntil={};
 function setText(id,text){document.getElementById(id).textContent=text;}
 function requestJson(method,url,payload,callback){
   var xhr=new XMLHttpRequest();
@@ -133,16 +158,91 @@ function showError(message){
   setText('message',message);
 }
 function servicesReady(data){
-  return data&&data.main_loop==='running'&&data.nav_bridge&&data.nav_bridge.ready&&data.workflow&&data.workflow.ready;
+  return data&&data.main_loop==='running'&&data.workflow&&data.workflow.ready&&(data.no_robot_mode||(data.nav_bridge&&data.nav_bridge.ready));
+}
+
+function renderServiceStatus(services){
+  var grid=document.getElementById('serviceStatusGrid');
+  if(!grid){return;}
+  grid.innerHTML='';
+  services=services||[];
+  var online=0;
+  var siblingsByContainer={};
+  services.forEach(function(service){
+    if(service.container){(siblingsByContainer[service.container]=siblingsByContainer[service.container]||[]).push(service.label||service.key);}
+  });
+  services.forEach(function(service){
+    if(service.online){online+=1;}
+    var item=document.createElement('div');
+    item.className='service-card';
+    item.dataset.container=service.container||'';
+    var left=document.createElement('div');
+    var name=document.createElement('div');
+    name.className='service-name';
+    name.textContent=service.label||service.key||'-';
+    var meta=document.createElement('div');
+    meta.className='service-meta';
+    meta.textContent=(service.message||((service.host||'127.0.0.1')+':'+service.port))+(service.required?'':' / 可选');
+    left.appendChild(name);
+    left.appendChild(meta);
+    var badge=document.createElement('div');
+    var badgeClass,badgeText;
+    var pendingUntil=pendingRestartUntil[service.container]||0;
+    if(pendingUntil&&pendingUntil<=Date.now()){delete pendingRestartUntil[service.container];pendingUntil=0;}
+    if(pendingUntil>Date.now()){badgeClass='badge-starting';badgeText='启动中';}
+    else if(service.online){badgeClass='badge-ok';badgeText='在线';}
+    else if(service.state==='starting'){badgeClass='badge-starting';badgeText='启动中';}
+    else if(service.required){badgeClass='badge-bad';badgeText='离线';}
+    else{badgeClass='badge-optional';badgeText='可选离线';}
+    badge.className='badge '+badgeClass;
+    badge.textContent=badgeText;
+    var actions=document.createElement('div');
+    actions.className='svc-actions';
+    var restartBtn=document.createElement('button');
+    restartBtn.className='svc-restart';
+    restartBtn.textContent='重启';
+    var label=service.label||service.key||'-';
+    var siblings=(siblingsByContainer[service.container]||[]).filter(function(other){return other!==label;});
+    if(!service.container){restartBtn.disabled=true;}
+    restartBtn.onclick=(function(key,lbl,sibs,cont){return function(){restartService(key,lbl,sibs,cont);};})(service.key,label,siblings,service.container);
+    actions.appendChild(badge);
+    actions.appendChild(restartBtn);
+    item.appendChild(left);
+    item.appendChild(actions);
+    grid.appendChild(item);
+  });
+  setText('serviceSummary',services.length?('在线 '+online+' / '+services.length):'暂无服务状态');
+}
+function markServiceCardsStarting(container){
+  if(!container){return;}
+  var cards=document.querySelectorAll('.service-card[data-container="'+container+'"]');
+  for(var i=0;i<cards.length;i++){
+    var b=cards[i].querySelector('.badge');
+    if(b){b.className='badge badge-starting';b.textContent='启动中';}
+  }
+}
+function restartService(key,label,siblings,container){
+  var msg='是否确认重启 '+label+' 服务？';
+  if(siblings&&siblings.length){msg+=String.fromCharCode(10)+'注意：'+label+' 与 '+siblings.join('、')+' 位于同一容器，将被一并重启。';}
+  if(!window.confirm(msg)){return;}
+  if(container){pendingRestartUntil[container]=Date.now()+22000;}
+  markServiceCardsStarting(container);
+  setText('message','正在重启 '+label+' 服务...');
+  requestJson('POST','/api/service/restart',{key:key},function(error,body){
+    setText('message',error?error.message:body.message);
+    refresh();
+  });
 }
 function renderStatus(data){
   setText('map','地图：'+data.map_path);
   if(!mapPathTouched&&data.map_path){document.getElementById('mapPathInput').value=data.map_path;}
-  setText('overall',servicesReady(data)?'全部就绪':(data.nav_bridge.ready?'在线':'导航未就绪'));
+  setText('overall',servicesReady(data)?(data.no_robot_mode?'无机器人模式就绪':'全部就绪'):(data.nav_bridge.ready?'在线':'导航未就绪'));
   setText('mainLoop',data.main_loop);
-  setText('navBridge',data.nav_bridge.ready?'28180 就绪':'未就绪');
+  setText('navBridge',(data.nav_bridge&&data.nav_bridge.message)||(data.nav_bridge.ready?'28180 就绪':'未就绪'));
   setText('workflow',data.workflow.status||'unknown');
-  document.getElementById('guideBtn').disabled=!data.nav_bridge.ready;
+  renderServiceStatus(data.services);
+  document.getElementById('guideBtn').disabled=!servicesReady(data);
+  document.getElementById('arriveBtn').disabled=!(data.no_robot_mode&&data.main_loop==='running');
   setText('poseStatus',(data.pose&&data.pose.status_message)||(data.pose&&data.pose.localized?'定位成功':'定位未成功：程序会持续重定位，需要遥控机器人的位姿，帮助机器人完成定位'));
   if(data.pose&&data.pose.available){
     var newline=String.fromCharCode(10);
@@ -155,7 +255,6 @@ function refresh(){
   requestJson('GET','/api/status',null,function(error,data){
     if(error){showError(error.message);return;}
     renderStatus(data);
-    if(logsVisible){refreshLogs();}
   });
 }
 function waitForServicesReady(button,startedAt){
@@ -167,13 +266,12 @@ function waitForServicesReady(button,startedAt){
       if(servicesReady(data)){
         setText('message','所有服务已加载成功，可执行相关操作');
         button.disabled=false;
-        if(logsVisible){refreshLogs();}
         return;
       }
       setText('message','正在等待所有服务加载完成...');
     }
     if(Date.now()-startedAt>90000){
-      setText('message','服务仍未全部就绪，请查看状态或打开日志排查');
+      setText('message','');
       button.disabled=false;
       return;
     }
@@ -182,7 +280,7 @@ function waitForServicesReady(button,startedAt){
 }
 function refreshLogs(){
   if(!logsVisible){return;}
-  requestJson('GET','/api/logs?target=nav&lines=120',null,function(logError,body){
+  requestJson('GET','/api/logs?target=runtime&lines=220',null,function(logError,body){
     if(logError){setText('logs',logError.message);return;}
     setText('logs',(body.lines&&body.lines.join(String.fromCharCode(10)))||'暂无日志');
   });
@@ -194,7 +292,10 @@ function toggleLogs(){
   if(logsVisible){
     setText('logs','读取中...');
     refreshLogs();
+    if(logsTimer){clearInterval(logsTimer);}
+    logsTimer=setInterval(refreshLogs,500);
   }else{
+    if(logsTimer){clearInterval(logsTimer);logsTimer=null;}
     setText('logs','');
   }
 }
@@ -253,12 +354,12 @@ function startTask(task){
     refresh();
   });
 }
-function startProgram(){
-  var button=document.getElementById('startBtn');
+function startProgram(noRobot){
+  var button=document.getElementById(noRobot?'startNoRobotBtn':'startBtn');
   button.disabled=true;
   setText('overall','启动中');
-  setText('message','正在启动导航主程序...');
-  requestJson('POST','/api/start',{},function(error,body){
+  setText('message',noRobot?'正在启动无机器人模式...':'正在启动导航主程序...');
+  requestJson('POST',noRobot?'/api/start-no-robot':'/api/start',{},function(error,body){
     if(error){setText('message',error.message);button.disabled=false;refresh();return;}
     setText('message',body.message+'，正在等待所有服务加载完成...');
     waitForServicesReady(button,Date.now());
@@ -296,6 +397,23 @@ setInterval(refresh,2000);
 </html>"""
 
 
+def clear_current_runtime_log(path: Path, reason: str) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"[INFO] 已清空当前运行日志：reason={reason}\n", encoding="utf-8")
+        logger.info("已清空当前运行日志：path=%s, reason=%s", path, reason)
+    except OSError as exc:
+        logger.warning("清空当前运行日志失败：path=%s, reason=%s, error_type=%s, error=%s", path, reason, type(exc).__name__, exc)
+
+
+def _restart_service_container_bg(container_name: str, service_key: str, docker_path: Path) -> None:
+    # 后台执行容器重启：docker restart 的优雅停止较慢，放后台避免阻塞 HTTP 请求与前端。
+    try:
+        restart_service_container(container_name, docker_path=docker_path)
+    except CommandError as exc:
+        logger.error("后台重启服务容器失败：service=%s, container=%s, error_type=%s, error=%s", service_key, container_name, type(exc).__name__, exc)
+
+
 def create_app(config: ConsoleConfig | None = None) -> FastAPI:
     config = config or ConsoleConfig.from_env()
     app = FastAPI(title="RabbitBot Control Console")
@@ -307,17 +425,46 @@ def create_app(config: ConsoleConfig | None = None) -> FastAPI:
     @app.get("/api/status")
     def status() -> dict:
         nav_log = latest_file(config.nav_log_dir, "nav_bridge_*.log")
-        pose = parse_latest_pose(nav_log) if nav_log else parse_latest_pose(Path("/missing-nav-log"))
+        nav_lines, nav_source = runtime_nav_log_lines(nav_log, config.nav_container_name)
+        pose = parse_latest_pose_from_lines(nav_lines, source_label=nav_source or "导航日志")
         workflow = get_latest_workflow_status(config.workflow_control_dir)
+        no_robot_mode = read_loop_no_robot_mode(config.map_env_file)
         current_map_path = read_map_path(config.map_env_file, config.map_path)
+        map_visible_on_orin = Path(current_map_path).exists()
+        port_ready = is_port_open("127.0.0.1", config.nav_port)
+        if no_robot_mode:
+            nav_bridge = {"ready": True, "message": "无机器人模式：已跳过导航桥接", "source": "runtime_env"}
+        else:
+            nav_bridge = detect_nav_bridge_status_from_lines(nav_lines, port_ready, nav_source)
+        nav_bridge["port"] = config.nav_port
+        nav_bridge["map_exists"] = map_visible_on_orin
+        nav_bridge["map_visible_on_orin"] = map_visible_on_orin
+        if not map_visible_on_orin and not no_robot_mode:
+            nav_bridge["message"] = f"{nav_bridge['message']}；地图在 Orin 本地不可见：{current_map_path}（若定位已成功，说明机器人侧地图可用）"
         return {
             "ok": True,
             "map_path": current_map_path,
             "main_loop": detect_main_loop_running(),
-            "nav_bridge": {"ready": is_port_open("127.0.0.1", config.nav_port), "port": config.nav_port},
+            "nav_bridge": nav_bridge,
             "workflow": workflow.to_dict(),
             "pose": pose.to_dict(),
+            "nav_log_source": nav_source,
+            "no_robot_mode": no_robot_mode,
+            "services": [item.to_dict() for item in get_runtime_service_statuses()],
         }
+
+    @app.post("/api/service/restart")
+    def service_restart(payload: ServiceRestartRequest, background_tasks: BackgroundTasks) -> dict:
+        key = (payload.key or "").strip().lower()
+        container = resolve_service_container(key)
+        if container is None:
+            raise HTTPException(status_code=400, detail=f"未知服务：{payload.key}")
+        # 先打“启动中”标记并立即返回，docker restart 放后台执行：
+        # 避免 docker restart 的优雅停止(最多 ~20s)阻塞 HTTP，使前端点击后能立刻看到该服务转为“启动中”。
+        mark_container_restarted(container)
+        background_tasks.add_task(_restart_service_container_bg, container, key, config.docker_path)
+        logger.info("已触发服务容器重启(后台执行)：service=%s, container=%s", key, container)
+        return {"ok": True, "service": key, "container": container, "message": f"已触发重启容器 {container}（约需十几秒，期间显示启动中）"}
 
 
     @app.post("/api/task")
@@ -339,10 +486,27 @@ def create_app(config: ConsoleConfig | None = None) -> FastAPI:
     @app.post("/api/start")
     def start() -> dict:
         try:
+            clear_current_runtime_log(config.current_runtime_log, "start")
             return start_loop_service(
                 config.loop_service_name,
                 systemctl_path=config.systemctl_path,
                 sudo_path=config.sudo_path,
+                map_env_file=config.map_env_file,
+                no_robot_mode=False,
+            )
+        except CommandError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/start-no-robot")
+    def start_no_robot() -> dict:
+        try:
+            clear_current_runtime_log(config.current_runtime_log, "start-no-robot")
+            return start_loop_service(
+                config.loop_service_name,
+                systemctl_path=config.systemctl_path,
+                sudo_path=config.sudo_path,
+                map_env_file=config.map_env_file,
+                no_robot_mode=True,
             )
         except CommandError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -350,12 +514,17 @@ def create_app(config: ConsoleConfig | None = None) -> FastAPI:
     @app.post("/api/restart")
     def restart(payload: RestartRequest) -> dict:
         try:
+            clear_current_runtime_log(config.current_runtime_log, "restart")
+            # 沿用重启前的运行模式：无机器人模式则仍以无机器人模式重启主循环，避免一键重启把模式覆盖成真机。
+            current_no_robot_mode = read_loop_no_robot_mode(config.map_env_file)
+            logger.info("一键重启主循环：沿用当前运行模式 no_robot_mode=%s", current_no_robot_mode)
             return restart_loop_service(
                 config.loop_service_name,
                 systemctl_path=config.systemctl_path,
                 sudo_path=config.sudo_path,
                 map_path=payload.map_path,
                 map_env_file=config.map_env_file,
+                no_robot_mode=current_no_robot_mode,
             )
         except CommandError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -367,6 +536,8 @@ def create_app(config: ConsoleConfig | None = None) -> FastAPI:
                 config.loop_service_name,
                 systemctl_path=config.systemctl_path,
                 sudo_path=config.sudo_path,
+                docker_path=config.docker_path,
+                runtime_container_name=config.runtime_container_name,
             )
         except CommandError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -392,16 +563,43 @@ def create_app(config: ConsoleConfig | None = None) -> FastAPI:
         bounded_lines = max(1, min(lines, 400))
         if target == "nav":
             path = latest_file(config.nav_log_dir, "nav_bridge_*.log")
-        elif target == "workflow":
-            path = latest_file(config.workflow_log_dir, "rabbitbot_workflow_*.log")
-        else:
-            raise HTTPException(status_code=400, detail="不支持的日志目标")
-        return {
-            "ok": True,
-            "target": target,
-            "path": str(path) if path else None,
-            "lines": get_tail_lines(path, bounded_lines) if path else [],
-        }
+            return {
+                "ok": True,
+                "target": target,
+                "source": "file" if path else "none",
+                "path": str(path) if path else None,
+                "lines": get_tail_lines(path, bounded_lines) if path else [],
+            }
+        if target == "workflow":
+            workflow = get_latest_workflow_status(config.workflow_control_dir)
+            path = workflow_log_for_status(config.workflow_log_dir, workflow)
+            return {
+                "ok": True,
+                "target": target,
+                "source": "file" if path else "none",
+                "path": str(path) if path else None,
+                "lines": get_tail_lines(path, bounded_lines) if path else [],
+            }
+        if target == "runtime":
+            workflow = get_latest_workflow_status(config.workflow_control_dir)
+            path = workflow_log_for_status(config.workflow_log_dir, workflow)
+            if path:
+                return {
+                    "ok": True,
+                    "target": target,
+                    "source": "workflow",
+                    "path": str(path),
+                    "lines": get_tail_lines(path, bounded_lines),
+                }
+            current_path = config.current_runtime_log
+            return {
+                "ok": True,
+                "target": target,
+                "source": "current" if current_path.exists() else "none",
+                "path": str(current_path) if current_path.exists() else None,
+                "lines": get_tail_lines(current_path, bounded_lines) if current_path.exists() else [],
+            }
+        raise HTTPException(status_code=400, detail="不支持的日志目标")
 
     return app
 

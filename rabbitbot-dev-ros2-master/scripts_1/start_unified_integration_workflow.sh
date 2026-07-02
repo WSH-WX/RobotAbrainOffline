@@ -3,8 +3,8 @@
 #
 # 运行模型：
 #   1. 统一容器只作为基础服务底座，容器内入口固定 AUTO_START_WORKFLOW=0。
-#   2. 本脚本等待 Neo4j、TTS、Memory Agent、Robot Agent 就绪；VLM/Embedding/STT 默认跳过。
-#   3. workflow 通过 docker exec 在当前终端前台启动，联调/非联调模式由本次执行传入。
+#   2. 本脚本等待 Neo4j、TTS、Memory Agent、Robot Agent 和 Embedding 就绪；VLM/STT 默认跳过。
+#   3. workflow 通过 docker exec 在当前终端前台启动，有机器人/无机器人模式由本次执行传入。
 #
 # 常用环境变量：
 #   START_AFTER_CREATE=0            只创建容器，不启动服务和 workflow
@@ -13,13 +13,13 @@
 #   RABBITBOT_WORKFLOW_VERBOSE=1    显示 workflow 详细日志
 #   RABBITBOT_UNIFIED_ATTACH_STDIN=1 将终端输入传给 workflow
 #   RABBITBOT_UNIFIED_START_VLM=1 显式启动 VLM
-#   RABBITBOT_UNIFIED_START_EMBEDDING=1 显式启动 Embedding
+#   RABBITBOT_UNIFIED_START_EMBEDDING=0 显式跳过 Embedding（默认启动）
 #   RABBITBOT_UNIFIED_START_STT=1 显式启动 STT（默认不启动，当前 workflow 不再需要）
 #
 # workflow 运行环境变量速查：
 # - RABBITBOT_STRICT_DOCX_SCRIPT：是否启用严格 DOCX 剧本模式，默认启用。
 # - RABBITBOT_SCRIPTED_TOUR：是否启用脚本化导览推进，默认启用。
-# - RABBITBOT_WORKFLOW_NON_INTEGRATION：是否使用非联调手动确认导航模式。
+# - RABBITBOT_WORKFLOW_NON_INTEGRATION：是否使用无机器人手动确认导航模式（兼容旧变量名）。
 # - RABBITBOT_WORKFLOW_VERBOSE：是否打印调试级 workflow 过程日志。
 # - RABBITBOT_WORKFLOW_PROFILE：是否写入 workflow profile JSONL，默认启用。
 # - RABBITBOT_WORKFLOW_PROFILE_LOG：显式指定 workflow profile JSONL 路径。
@@ -49,11 +49,41 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RABBITBOT_REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 DEFAULT_PROJECT_ROOT="$(cd "${RABBITBOT_REPO_DIR}/.." && pwd)"
-IMAGE_NAME="${IMAGE_NAME:-rabbitbot-unified-runtime:20260518}"
-CONTAINER_NAME="${CONTAINER_NAME:-rabbitbot-unified-runtime}"
+
+# 加载 portable 运行模式配置（若存在），以便在 portable 模式下注入自包含镜像的重型依赖卷。
+# 关键开关保留调用方优先级：显式传入 RABBITBOT_RUNTIME_MODE=legacy / RABBITBOT_UNIFIED_START_ROBOT_AGENT=1
+# 时不被 env 文件覆盖，便于现场临时回退 legacy 行为。
+_CALLER_RUNTIME_MODE="${RABBITBOT_RUNTIME_MODE:-}"
+_CALLER_START_ROBOT_AGENT="${RABBITBOT_UNIFIED_START_ROBOT_AGENT:-}"
+PORTABLE_ENV_FILE="${RABBITBOT_PORTABLE_ENV_FILE:-${RABBITBOT_REPO_DIR}/runtime/portable.env}"
+if [ -f "${PORTABLE_ENV_FILE}" ]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "${PORTABLE_ENV_FILE}"
+    set +a
+elif [ -f "${PORTABLE_ENV_FILE}.example" ]; then
+    # 本机 portable.env 不进入 Git；不存在时回退读取随仓库迁移的模板，保证只读校验类场景可用。
+    echo "[WARN] 未找到本机配置 ${PORTABLE_ENV_FILE}，回退读取模板 ${PORTABLE_ENV_FILE}.example；正式部署请先执行 deploy/bootstrap_host.sh 生成本机 portable.env。"
+    set -a
+    # shellcheck disable=SC1090
+    source "${PORTABLE_ENV_FILE}.example"
+    set +a
+fi
+if [ -n "${_CALLER_RUNTIME_MODE}" ]; then
+    RABBITBOT_RUNTIME_MODE="${_CALLER_RUNTIME_MODE}"
+fi
+RABBITBOT_RUNTIME_MODE="${RABBITBOT_RUNTIME_MODE:-legacy}"
+
+if [ "${RABBITBOT_RUNTIME_MODE}" = "portable" ]; then
+    IMAGE_NAME="${IMAGE_NAME:-${RABBITBOT_PORTABLE_CORE_IMAGE:-ghcr.io/aaronai/rabbitbot-core-portable:20260611}}"
+    CONTAINER_NAME="${CONTAINER_NAME:-${RABBITBOT_PORTABLE_CORE_CONTAINER_NAME:-rabbitbot-unified-runtime}}"
+else
+    IMAGE_NAME="${IMAGE_NAME:-rabbitbot-unified-runtime:20260518}"
+    CONTAINER_NAME="${CONTAINER_NAME:-rabbitbot-unified-runtime}"
+fi
 PROJECT_ROOT="${PROJECT_ROOT:-${DEFAULT_PROJECT_ROOT}}"
 CONTAINER_PROJECT_ROOT="${CONTAINER_PROJECT_ROOT:-/workspace/projects}"
-MODELS_DIR="${MODELS_DIR:-${PROJECT_ROOT}/models}"
+MODELS_DIR="${MODELS_DIR:-${RABBITBOT_MODELS_CACHE_DIR:-${PROJECT_ROOT}/models}}"
 CONTAINER_RABBITBOT_DIR="${CONTAINER_RABBITBOT_DIR:-${CONTAINER_PROJECT_ROOT}/rabbitbot-dev-ros2-master}"
 CONTAINER_LOG_DIR="${CONTAINER_LOG_DIR:-${CONTAINER_RABBITBOT_DIR}/logs/unified_runtime}"
 RECREATE_CONTAINER="${RECREATE_CONTAINER:-0}"
@@ -68,13 +98,37 @@ STOP_EXISTING_WORKFLOW="${STOP_EXISTING_WORKFLOW:-1}"
 WAIT_DEFAULT_SECONDS="${WAIT_DEFAULT_SECONDS:-420}"
 WAIT_VLM_SECONDS="${WAIT_VLM_SECONDS:-600}"
 RABBITBOT_UNIFIED_START_VLM="${RABBITBOT_UNIFIED_START_VLM:-0}"
-RABBITBOT_UNIFIED_START_EMBEDDING="${RABBITBOT_UNIFIED_START_EMBEDDING:-0}"
+RABBITBOT_UNIFIED_START_EMBEDDING="${RABBITBOT_UNIFIED_START_EMBEDDING:-1}"
 RABBITBOT_UNIFIED_START_STT="${RABBITBOT_UNIFIED_START_STT:-0}"
 RABBITBOT_TTS_BACKEND="${RABBITBOT_TTS_BACKEND:-unitree}"
 RABBITBOT_UNITREE_TTS_INTERFACE="${RABBITBOT_UNITREE_TTS_INTERFACE:-eno1}"
 RABBITBOT_UNITREE_TTS_VOLUME="${RABBITBOT_UNITREE_TTS_VOLUME:-100}"
 RABBITBOT_UNITREE_TTS_SPEAKER_ID="${RABBITBOT_UNITREE_TTS_SPEAKER_ID:-0}"
 RABBITBOT_UNITREE_TTS_TIMEOUT="${RABBITBOT_UNITREE_TTS_TIMEOUT:-10}"
+RABBITBOT_PORTABLE_STOP_LEGACY_CONTAINERS="${RABBITBOT_PORTABLE_STOP_LEGACY_CONTAINERS:-sound_docker air_vln_container}"
+
+# portable 自包含运行模式：
+#   当 RABBITBOT_RUNTIME_MODE=portable 且 RABBITBOT_PORTABLE_INJECT_DEPS!=0 时，
+#   为 4 个宿主 gitignore 的重型依赖目录注入 named volume；这些卷在首次使用时会从自包含 core
+#   镜像 seed 出 py38/py310/vln/pyorbbecsdk，从而即使宿主源码目录缺这些子目录也能正常运行。
+#   宿主源码目录仍 bind mount 到 /workspace/projects 以提供 GitHub 源码、conf 与日志可见性。
+RABBITBOT_PORTABLE_INJECT_DEPS="${RABBITBOT_PORTABLE_INJECT_DEPS:-1}"
+
+# 28180 端口拓扑：
+#   legacy 默认 core 内启动 robot_app.py（监听 28180）。
+#   portable 默认 core 不启动 Robot Agent，28180 归属 nav bridge 的 humble_robot_agent_bridge；
+#   workflow 通过 RABBITBOT_ROBOT_AGENT_URL（默认 http://127.0.0.1:28180）访问 nav bridge。
+if [ "${RABBITBOT_RUNTIME_MODE}" = "portable" ]; then
+    RABBITBOT_UNIFIED_START_ROBOT_AGENT="${RABBITBOT_UNIFIED_START_ROBOT_AGENT:-0}"
+else
+    # legacy 模式：portable.env 中的该键不生效；仅调用方显式传入时才覆盖，否则按 legacy 默认 1。
+    if [ -n "${_CALLER_START_ROBOT_AGENT}" ]; then
+        RABBITBOT_UNIFIED_START_ROBOT_AGENT="${_CALLER_START_ROBOT_AGENT}"
+    else
+        RABBITBOT_UNIFIED_START_ROBOT_AGENT=1
+    fi
+fi
+RABBITBOT_ROBOT_AGENT_URL="${RABBITBOT_ROBOT_AGENT_URL:-http://127.0.0.1:28180}"
 
 log_info() {
     echo -e "\033[32m[INFO]\033[0m $1"
@@ -99,6 +153,34 @@ require_dir() {
     fi
 }
 
+model_services_enabled() {
+    [ "${RABBITBOT_UNIFIED_START_VLM}" = "1" ] \
+        || [ "${RABBITBOT_UNIFIED_START_EMBEDDING}" = "1" ] \
+        || [ "${RABBITBOT_UNIFIED_START_STT}" = "1" ]
+}
+
+prepare_models_dir() {
+    if [ -d "${MODELS_DIR}" ]; then
+        log_info "模型目录可用：${MODELS_DIR}"
+        return 0
+    fi
+
+    if model_services_enabled; then
+        log_error "模型目录不存在：${MODELS_DIR}。当前已启用 VLM/Embedding/STT 之一，请先执行 deploy/ensure_models.sh 下载模型，或在 runtime/portable.env 设置 RABBITBOT_MODELS_CACHE_DIR / MODELS_DIR 指向已有模型目录。"
+        exit 1
+    fi
+
+    if [ "${RABBITBOT_RUNTIME_MODE}" = "portable" ]; then
+        MODELS_DIR="${RABBITBOT_EMPTY_MODELS_DIR:-${RABBITBOT_REPO_DIR}/runtime/empty_models}"
+        mkdir -p "${MODELS_DIR}"
+        log_warn "模型能力均未启用，原模型目录不存在；portable 模式改用空模型挂载点：${MODELS_DIR}"
+        return 0
+    fi
+
+    log_error "目录不存在：${MODELS_DIR}"
+    exit 1
+}
+
 container_exists() {
     docker ps -a --format '{{.Names}}' | grep -qx "$1"
 }
@@ -115,6 +197,13 @@ container_env_value() {
         | tail -n 1
 }
 
+container_mount_source() {
+    local container="$1"
+    local destination="$2"
+    docker inspect "${container}" --format '{{range .Mounts}}{{printf "%s\t%s\n" .Destination .Source}}{{end}}' 2>/dev/null \
+        | awk -F '	' -v dest="${destination}" '$1 == dest {print $2; exit}'
+}
+
 port_open() {
     local port="$1"
     timeout 2 bash -lc "</dev/tcp/127.0.0.1/${port}" >/dev/null 2>&1
@@ -124,6 +213,14 @@ http_ok() {
     local url="$1"
     local code
     code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "${url}" 2>/dev/null || true)
+    [ "${code}" = "200" ]
+}
+
+tts_exec_ok() {
+    local code
+    code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 \
+        -X POST http://127.0.0.1:28185/exec \
+        --form-string 'task={"task":"wait_speech","lang":"","text":"","timeout":1}' 2>/dev/null || true)
     [ "${code}" = "200" ]
 }
 
@@ -164,14 +261,38 @@ wait_for_base_services() {
     else
         log_info "RABBITBOT_UNIFIED_START_EMBEDDING=0，跳过等待 Embedding 服务 (8005)"
     fi
-    wait_until "TTS 服务 (28185)" "${WAIT_DEFAULT_SECONDS}" http_ok http://127.0.0.1:28185/docs
+    wait_until "TTS /exec 服务 (28185)" "${WAIT_DEFAULT_SECONDS}" tts_exec_ok
     if [ "${RABBITBOT_UNIFIED_START_STT}" = "1" ]; then
         wait_until "STT 服务 (28184)" "${WAIT_DEFAULT_SECONDS}" http_ok http://127.0.0.1:28184/docs
     else
         log_info "RABBITBOT_UNIFIED_START_STT=0，跳过等待 STT 服务 (28184)"
     fi
     wait_until "Memory Agent 服务 (28182)" "${WAIT_DEFAULT_SECONDS}" http_ok http://127.0.0.1:28182/docs
-    wait_until "Robot Agent 服务 (28180)" "${WAIT_DEFAULT_SECONDS}" port_open 28180
+    if [ "${RABBITBOT_UNIFIED_START_ROBOT_AGENT}" = "1" ]; then
+        wait_until "Robot Agent 服务 (28180)" "${WAIT_DEFAULT_SECONDS}" port_open 28180
+    else
+        log_info "RABBITBOT_UNIFIED_START_ROBOT_AGENT=0，跳过等待 core 内部 Robot Agent (28180)；portable 模式下 28180 由 nav bridge 提供，可达性在 workflow 启动前检查"
+    fi
+}
+
+check_external_robot_agent_reachable() {
+    # core 不托管 Robot Agent 时，在 workflow 启动前确认外部 28180 可达。
+    if [ "${RABBITBOT_UNIFIED_START_ROBOT_AGENT}" = "1" ]; then
+        return 0
+    fi
+    local host_port host port
+    host_port="$(printf '%s' "${RABBITBOT_ROBOT_AGENT_URL}" | sed -E 's#^[a-zA-Z]+://##; s#/.*$##')"
+    host="${host_port%%:*}"
+    port="${host_port##*:}"
+    if [ -z "${port}" ] || [ "${port}" = "${host}" ]; then
+        port=80
+    fi
+    if timeout 3 bash -lc "</dev/tcp/${host}/${port}" >/dev/null 2>&1; then
+        log_success "外部 Robot Agent 可达：${RABBITBOT_ROBOT_AGENT_URL}"
+        return 0
+    fi
+    log_error "外部 Robot Agent 不可达：${RABBITBOT_ROBOT_AGENT_URL}。portable 模式下 28180 应由 nav bridge 提供；请先通过 start_loop_entry.sh（nav 先行）启动，或单独运行 scripts_1/start_nav_bridge_portable.sh。"
+    return 1
 }
 
 ensure_compatible_container() {
@@ -193,14 +314,32 @@ ensure_compatible_container() {
     container_start_embedding="$(container_env_value "${CONTAINER_NAME}" RABBITBOT_UNIFIED_START_EMBEDDING || true)"
     local container_start_stt
     container_start_stt="$(container_env_value "${CONTAINER_NAME}" RABBITBOT_UNIFIED_START_STT || true)"
+    local container_start_robot_agent
+    container_start_robot_agent="$(container_env_value "${CONTAINER_NAME}" RABBITBOT_UNIFIED_START_ROBOT_AGENT || true)"
     local container_tts_backend
     container_tts_backend="$(container_env_value "${CONTAINER_NAME}" RABBITBOT_TTS_BACKEND || true)"
     local container_unitree_interface
     container_unitree_interface="$(container_env_value "${CONTAINER_NAME}" RABBITBOT_UNITREE_TTS_INTERFACE || true)"
     local container_unitree_volume
     container_unitree_volume="$(container_env_value "${CONTAINER_NAME}" RABBITBOT_UNITREE_TTS_VOLUME || true)"
+    local container_image
+    container_image="$(docker inspect "${CONTAINER_NAME}" --format '{{.Config.Image}}' 2>/dev/null || true)"
+    local container_project_mount
+    container_project_mount="$(container_mount_source "${CONTAINER_NAME}" "${CONTAINER_PROJECT_ROOT}" || true)"
+    local container_models_mount
+    container_models_mount="$(container_mount_source "${CONTAINER_NAME}" "/models" || true)"
+    local expected_project_mount
+    expected_project_mount="$(cd "${PROJECT_ROOT}" && pwd)"
+    local expected_models_mount
+    expected_models_mount="$(cd "${MODELS_DIR}" && pwd)"
     local incompatible_reason=""
-    if [ "${container_auto_start}" != "0" ]; then
+    if [ -n "${container_image}" ] && [ "${container_image}" != "${IMAGE_NAME}" ]; then
+        incompatible_reason="镜像变化：container=${container_image}, expected=${IMAGE_NAME}（如刚导入新的 portable core 镜像，会据此重建容器以生效）"
+    elif [ "${container_project_mount}" != "${expected_project_mount}" ]; then
+        incompatible_reason="项目挂载路径变化：container=${container_project_mount:-未设置}, expected=${expected_project_mount}"
+    elif [ "${container_models_mount}" != "${expected_models_mount}" ]; then
+        incompatible_reason="模型挂载路径变化：container=${container_models_mount:-未设置}, expected=${expected_models_mount}"
+    elif [ "${container_auto_start}" != "0" ]; then
         incompatible_reason="旧的自启动 workflow 模式"
     elif [ "${container_start_vlm:-未设置}" != "${RABBITBOT_UNIFIED_START_VLM}" ]; then
         incompatible_reason="VLM 启动配置变化：container=${container_start_vlm:-未设置}, expected=${RABBITBOT_UNIFIED_START_VLM}"
@@ -208,6 +347,9 @@ ensure_compatible_container() {
         incompatible_reason="Embedding 启动配置变化：container=${container_start_embedding:-未设置}, expected=${RABBITBOT_UNIFIED_START_EMBEDDING}"
     elif [ "${container_start_stt:-未设置}" != "${RABBITBOT_UNIFIED_START_STT}" ]; then
         incompatible_reason="STT 启动配置变化：container=${container_start_stt:-未设置}, expected=${RABBITBOT_UNIFIED_START_STT}"
+    elif [ "${container_start_robot_agent:-1}" != "${RABBITBOT_UNIFIED_START_ROBOT_AGENT}" ]; then
+        # 旧容器未设置该变量时视为 1（legacy 行为），避免 legacy 模式误判重建；portable 期望 0 时会触发重建。
+        incompatible_reason="Robot Agent 启动配置变化：container=${container_start_robot_agent:-未设置(按1)}, expected=${RABBITBOT_UNIFIED_START_ROBOT_AGENT}"
     elif [ "${container_tts_backend:-local}" != "${RABBITBOT_TTS_BACKEND}" ]; then
         incompatible_reason="TTS 后端配置变化：container=${container_tts_backend:-local}, expected=${RABBITBOT_TTS_BACKEND}"
     elif [ "${RABBITBOT_TTS_BACKEND}" = "unitree" ] && [ "${container_unitree_interface:-eno1}" != "${RABBITBOT_UNITREE_TTS_INTERFACE}" ]; then
@@ -228,6 +370,47 @@ ensure_compatible_container() {
     fi
 }
 
+portable_dep_enabled() {
+    [ "${RABBITBOT_RUNTIME_MODE}" = "portable" ] && [ "${RABBITBOT_PORTABLE_INJECT_DEPS}" != "0" ]
+}
+
+# 5 个宿主 gitignore 的重型依赖目录；portable 模式下用从 core 镜像 seed 的 named volume 顶替。
+# unitree_sdk2 由 core 内 TTS 服务构建 Unitree 本体播报桥接程序使用。
+PORTABLE_DEP_NAMES=(py38 py310 vln pyorbbecsdk-v2-py310 unitree_sdk2)
+
+portable_dep_volume() {
+    case "$1" in
+        py38) echo "rabbitbot_portable_py38" ;;
+        py310) echo "rabbitbot_portable_py310" ;;
+        vln) echo "rabbitbot_portable_vln" ;;
+        pyorbbecsdk-v2-py310) echo "rabbitbot_portable_pyorbbecsdk" ;;
+        unitree_sdk2) echo "rabbitbot_portable_unitree_sdk2" ;;
+    esac
+}
+
+portable_dep_dest() {
+    case "$1" in
+        py38) echo "${CONTAINER_RABBITBOT_DIR}/py38" ;;
+        py310) echo "${CONTAINER_RABBITBOT_DIR}/py310" ;;
+        vln) echo "${CONTAINER_PROJECT_ROOT}/vln" ;;
+        pyorbbecsdk-v2-py310) echo "${CONTAINER_PROJECT_ROOT}/pyorbbecsdk-v2-py310" ;;
+        unitree_sdk2) echo "${CONTAINER_PROJECT_ROOT}/unitree_sdk2" ;;
+    esac
+}
+
+reset_portable_dep_volumes() {
+    # 新建容器前重置依赖卷，确保从当前 core 镜像重新 seed，避免旧镜像版本残留。
+    local name vol
+    for name in "${PORTABLE_DEP_NAMES[@]}"; do
+        vol="$(portable_dep_volume "${name}")"
+        if docker volume inspect "${vol}" >/dev/null 2>&1; then
+            docker volume rm "${vol}" >/dev/null 2>&1 || log_warn "依赖卷删除失败（可能正被占用），将复用现有卷：${vol}"
+        fi
+        docker volume create "${vol}" >/dev/null
+    done
+    log_info "已重置 portable 重型依赖卷，将在容器创建时从 core 镜像重新 seed：count=${#PORTABLE_DEP_NAMES[@]}"
+}
+
 create_container_if_needed() {
     if container_exists "${CONTAINER_NAME}"; then
         log_info "复用已有统一容器：${CONTAINER_NAME}"
@@ -243,6 +426,17 @@ create_container_if_needed() {
             -v /dev/snd:/dev/snd
             --device-cgroup-rule 'c 116:* rwm'
         )
+        log_info "统一容器音频挂载包含 /dev/snd，并允许 ALSA 字符设备访问"
+    fi
+
+    dep_args=()
+    if portable_dep_enabled; then
+        reset_portable_dep_volumes
+        local dep_name
+        for dep_name in "${PORTABLE_DEP_NAMES[@]}"; do
+            dep_args+=( -v "$(portable_dep_volume "${dep_name}"):$(portable_dep_dest "${dep_name}")" )
+        done
+        log_info "portable 模式：注入 ${#PORTABLE_DEP_NAMES[@]} 个重型依赖卷（py38/py310/vln/pyorbbecsdk/unitree_sdk2），运行期不再要求宿主提供这些目录"
     fi
 
     log_info "创建统一容器基础服务底座：${CONTAINER_NAME}"
@@ -253,9 +447,10 @@ create_container_if_needed() {
         --ipc host \
         --runtime nvidia \
         "${audio_args[@]}" \
+        "${dep_args[@]}" \
         -e RABBITBOT_DIR="${CONTAINER_RABBITBOT_DIR}" \
         -e RABBITBOT_LOG_DIR="${CONTAINER_LOG_DIR}" \
-        -e RABBITBOT_TTS_ALLOW_BUILTIN="${RABBITBOT_TTS_ALLOW_BUILTIN:-0}" \
+        -e RABBITBOT_TTS_ALLOW_BUILTIN="${RABBITBOT_TTS_ALLOW_BUILTIN:-1}" \
         -e RABBITBOT_UNIFIED_TTS_DEVICE="${RABBITBOT_UNIFIED_TTS_DEVICE:-cuda}" \
         -e RABBITBOT_UNIFIED_TTS_FAST_SOUND_PRELOAD="${RABBITBOT_UNIFIED_TTS_FAST_SOUND_PRELOAD:-0}" \
         -e RABBITBOT_UNIFIED_TTS_STARTUP_SPEECH="${RABBITBOT_UNIFIED_TTS_STARTUP_SPEECH:-0}" \
@@ -269,6 +464,8 @@ create_container_if_needed() {
         -e RABBITBOT_UNIFIED_START_VLM="${RABBITBOT_UNIFIED_START_VLM}" \
         -e RABBITBOT_UNIFIED_START_EMBEDDING="${RABBITBOT_UNIFIED_START_EMBEDDING}" \
         -e RABBITBOT_UNIFIED_START_STT="${RABBITBOT_UNIFIED_START_STT}" \
+        -e RABBITBOT_UNIFIED_START_ROBOT_AGENT="${RABBITBOT_UNIFIED_START_ROBOT_AGENT}" \
+        -e RABBITBOT_ROBOT_AGENT_URL="${RABBITBOT_ROBOT_AGENT_URL}" \
         -e AUTO_START_WORKFLOW=0 \
         -e WAIT_DEFAULT_SECONDS="${WAIT_DEFAULT_SECONDS}" \
         -e WAIT_VLM_SECONDS="${WAIT_VLM_SECONDS}" \
@@ -280,6 +477,51 @@ create_container_if_needed() {
         bash "${CONTAINER_RABBITBOT_DIR}/scripts_1/unified_runtime/start_unified_container.sh" >/dev/null
 
     log_info "统一容器创建完成：${CONTAINER_NAME}"
+}
+
+stop_legacy_containers_for_portable() {
+    if [ "${RABBITBOT_RUNTIME_MODE}" != "portable" ]; then
+        return 0
+    fi
+    if [ -z "${RABBITBOT_PORTABLE_STOP_LEGACY_CONTAINERS}" ]; then
+        log_info "RABBITBOT_PORTABLE_STOP_LEGACY_CONTAINERS 为空，跳过 legacy 容器清理"
+        return 0
+    fi
+
+    local stopped=0
+    local legacy_container legacy_image
+    for legacy_container in ${RABBITBOT_PORTABLE_STOP_LEGACY_CONTAINERS}; do
+        if docker ps --format '{{.Names}}' | grep -qx "${legacy_container}"; then
+            legacy_image="$(docker inspect "${legacy_container}" --format '{{.Config.Image}}' 2>/dev/null || true)"
+            log_warn "portable 模式将停止 legacy 容器：${legacy_container}，image=${legacy_image:-unknown}"
+            docker stop "${legacy_container}" >/dev/null
+            stopped=1
+        fi
+    done
+
+    if [ "${stopped}" = "1" ]; then
+        log_info "legacy 容器清理完成：containers=${RABBITBOT_PORTABLE_STOP_LEGACY_CONTAINERS}"
+    fi
+}
+
+ensure_portable_tts_exec_owner() {
+    if [ "${RABBITBOT_RUNTIME_MODE}" != "portable" ]; then
+        return 0
+    fi
+    if tts_exec_ok; then
+        log_success "TTS /exec 已由当前 portable 服务提供"
+        return 0
+    fi
+
+    if port_open 28185; then
+        log_error "28185 端口仍被非 /exec 兼容服务占用，无法保证 portable TTS 归属。请检查：ss -ltnp | grep :28185"
+        exit 1
+    fi
+
+    if container_running "${CONTAINER_NAME}"; then
+        log_warn "统一容器已运行但 TTS /exec 未就绪，将重启 ${CONTAINER_NAME} 以重新执行容器内 TTS 启动流程"
+        docker restart "${CONTAINER_NAME}" >/dev/null
+    fi
 }
 
 start_container_if_needed() {
@@ -305,7 +547,7 @@ pkill -f "[s]cripts/start_kuavo_agno_workflow.bash" 2>/dev/null || true
 run_workflow_foreground() {
     local mode_label="联调"
     if [ "${RABBITBOT_WORKFLOW_NON_INTEGRATION}" = "1" ]; then
-        mode_label="非联调"
+        mode_label="无机器人"
     fi
 
     docker_exec_args=()
@@ -344,7 +586,7 @@ if ! docker image inspect "${IMAGE_NAME}" >/dev/null 2>&1; then
 fi
 
 require_dir "${PROJECT_ROOT}"
-require_dir "${MODELS_DIR}"
+prepare_models_dir
 
 ensure_compatible_container
 create_container_if_needed
@@ -354,6 +596,8 @@ if [ "${START_AFTER_CREATE}" != "1" ]; then
     exit 0
 fi
 
+stop_legacy_containers_for_portable
+ensure_portable_tts_exec_owner
 start_container_if_needed
 wait_for_base_services
 
@@ -362,5 +606,8 @@ if [ "${RUN_WORKFLOW_AFTER_START}" != "1" ]; then
     exit 0
 fi
 
+if ! check_external_robot_agent_reachable; then
+    exit 1
+fi
 stop_existing_workflow_if_needed
 run_workflow_foreground

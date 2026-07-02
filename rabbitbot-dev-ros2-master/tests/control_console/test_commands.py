@@ -1,6 +1,6 @@
 import pytest
 
-from rabbitbot.control_console.commands import CommandError, read_map_path, restart_loop_service, send_workflow_command, start_loop_service, start_task, stop_loop_service, write_map_path
+from rabbitbot.control_console.commands import CommandError, read_loop_no_robot_mode, read_map_path, restart_loop_service, send_workflow_command, start_loop_service, start_task, stop_loop_service, write_loop_mode, write_map_path
 
 
 def test_send_workflow_command_allows_go_and_invokes_script(tmp_path):
@@ -38,6 +38,24 @@ def test_send_workflow_command_allows_back(tmp_path):
     assert result["ok"] is True
     assert result["command"] == "back"
     assert record.read_text(encoding="utf-8").strip() == "back"
+
+
+def test_send_workflow_command_allows_arrive(tmp_path):
+    script = tmp_path / "send.sh"
+    record = tmp_path / "record.txt"
+    script.write_text(
+        "#!/usr/bin/env bash\n"
+        "echo \"$1\" > \"$2\"\n"
+        "echo \"已发送命令：$1\"\n",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+
+    result = send_workflow_command("arrive", script, extra_args=[str(record)])
+
+    assert result["ok"] is True
+    assert result["command"] == "arrive"
+    assert record.read_text(encoding="utf-8").strip() == "arrive"
 
 
 @pytest.mark.parametrize("command", ["quit", "exit", "restart", "go; rm -rf /", ""])
@@ -129,21 +147,32 @@ def test_restart_loop_service_reports_failure(tmp_path):
     assert "restart failed" in str(excinfo.value)
 
 
-def test_stop_loop_service_invokes_systemctl_stop(tmp_path):
+def test_stop_loop_service_invokes_systemctl_stop_and_docker_restart(tmp_path):
     systemctl = tmp_path / "systemctl"
-    record = tmp_path / "record.txt"
+    docker = tmp_path / "docker"
+    systemctl_record = tmp_path / "systemctl_record.txt"
+    docker_record = tmp_path / "docker_record.txt"
     systemctl.write_text(
-        f"#!/usr/bin/env bash\nprintf '%s\n' \"$@\" > {record}\n",
+        f"#!/usr/bin/env bash\nprintf '%s\n' \"$@\" > {systemctl_record}\n",
         encoding="utf-8",
     )
     systemctl.chmod(0o755)
+    docker.write_text(
+        f"#!/usr/bin/env bash\nprintf '%s\n' \"$@\" > {docker_record}\necho rabbitbot-unified-runtime\n",
+        encoding="utf-8",
+    )
+    docker.chmod(0o755)
 
-    result = stop_loop_service(systemctl_path=systemctl, sudo_path=None)
+    result = stop_loop_service(systemctl_path=systemctl, sudo_path=None, docker_path=docker)
 
     assert result["ok"] is True
     assert result["service"] == "rabbitbot-loop.service"
-    assert result["message"] == "已关闭导航主程序"
-    assert record.read_text(encoding="utf-8").splitlines() == ["stop", "rabbitbot-loop.service"]
+    assert result["container"] == "rabbitbot-unified-runtime"
+    assert result["container_restarted"] is True
+    assert "已关闭导航主程序" in result["message"]
+    assert "已重启 Docker 容器 rabbitbot-unified-runtime" in result["message"]
+    assert systemctl_record.read_text(encoding="utf-8").splitlines() == ["stop", "rabbitbot-loop.service"]
+    assert docker_record.read_text(encoding="utf-8").splitlines() == ["restart", "rabbitbot-unified-runtime"]
 
 
 def test_stop_loop_service_rejects_other_services(tmp_path):
@@ -219,6 +248,19 @@ def test_write_and_read_map_path_round_trip(tmp_path):
     assert read_map_path(env_file, "/home/unitree/default.pcd") == "/home/unitree/test11.pcd"
 
 
+def test_write_loop_mode_preserves_map_path(tmp_path):
+    env_file = tmp_path / "runtime" / "rabbitbot-loop.env"
+    write_map_path(env_file, "/home/unitree/test11.pcd")
+
+    write_loop_mode(env_file, True)
+
+    content = env_file.read_text(encoding="utf-8")
+    assert 'NAV_PCD_PATH="/home/unitree/test11.pcd"' in content
+    assert 'RABBITBOT_NAV_WORKFLOW_NO_ROBOT="1"' in content
+    assert 'RABBITBOT_WORKFLOW_NON_INTEGRATION="1"' in content
+    assert read_loop_no_robot_mode(env_file) is True
+
+
 def test_read_map_path_returns_default_when_missing(tmp_path):
     assert read_map_path(tmp_path / "missing.env", "/home/unitree/default.pcd") == "/home/unitree/default.pcd"
 
@@ -227,6 +269,23 @@ def test_read_map_path_returns_default_when_missing(tmp_path):
 def test_write_map_path_rejects_invalid_values(tmp_path, map_path):
     with pytest.raises(CommandError):
         write_map_path(tmp_path / "runtime" / "rabbitbot-loop.env", map_path)
+
+
+def test_start_loop_service_no_robot_writes_mode_and_restarts(tmp_path):
+    systemctl = tmp_path / "systemctl"
+    record = tmp_path / "record.txt"
+    env_file = tmp_path / "runtime" / "rabbitbot-loop.env"
+    systemctl.write_text(
+        f"#!/usr/bin/env bash\nprintf '%s\n' \"$@\" > {record}\n",
+        encoding="utf-8",
+    )
+    systemctl.chmod(0o755)
+
+    result = start_loop_service(systemctl_path=systemctl, sudo_path=None, map_env_file=env_file, no_robot_mode=True)
+
+    assert result["no_robot_mode"] is True
+    assert read_loop_no_robot_mode(env_file) is True
+    assert record.read_text(encoding="utf-8").splitlines() == ["restart", "rabbitbot-loop.service"]
 
 
 def test_restart_loop_service_writes_map_before_restart(tmp_path):

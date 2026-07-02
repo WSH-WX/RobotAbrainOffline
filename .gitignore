@@ -27,6 +27,19 @@ vln/
 pyorbbecsdk-v2-py310/
 dfx_inspire_service/
 
+# portable 离线镜像导出产物与 core 构建暂存上下文（体积大，不进入 Git）
+outputs/
+.portable_core_ctx/
+
+# runtime 目录：Git 只跟踪可迁移模板，本机运行态文件（env、venv、本机覆盖）不进入 Git。
+# 实际运行用的 runtime/portable.env 由 deploy/bootstrap_host.sh 从 portable.env.example 生成。
+rabbitbot-dev-ros2-master/runtime/*
+rabbitbot-dev-ros2-master/runtime/control_console_venv/
+rabbitbot-dev-ros2-master/runtime/*.env
+rabbitbot-dev-ros2-master/runtime/*.local
+!rabbitbot-dev-ros2-master/runtime/.gitkeep
+!rabbitbot-dev-ros2-master/runtime/portable.env.example
+
 # 备份和临时产物
 rabbitbot-dev-ros2-master/py310.backup_*/
 *.tmp

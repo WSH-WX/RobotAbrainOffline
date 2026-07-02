@@ -120,6 +120,10 @@ def _strict_docx_script_enabled():
     return _env_enabled("RABBITBOT_STRICT_DOCX_SCRIPT", "1")
 
 
+def _docx_guide_qa_interrupt_enabled():
+    return _env_enabled("RABBITBOT_DOCX_GUIDE_QA_INTERRUPT", "1")
+
+
 def _workflow_log(message, verbose=False):
     if verbose and not _workflow_verbose_enabled():
         return
@@ -129,7 +133,7 @@ def _workflow_log(message, verbose=False):
 # workflow 运行环境变量速查：
 # - RABBITBOT_STRICT_DOCX_SCRIPT：是否启用严格 DOCX 剧本模式，默认启用。
 # - RABBITBOT_SCRIPTED_TOUR：是否启用脚本化导览推进，默认启用。
-# - RABBITBOT_WORKFLOW_NON_INTEGRATION：是否使用非联调手动确认导航模式。
+# - RABBITBOT_WORKFLOW_NON_INTEGRATION：是否使用无机器人手动确认导航模式（兼容旧变量名）。
 # - RABBITBOT_WORKFLOW_VERBOSE：是否打印调试级 workflow 过程日志。
 # - RABBITBOT_WORKFLOW_PROFILE：是否写入 workflow profile JSONL，默认启用。
 # - RABBITBOT_WORKFLOW_PROFILE_LOG：显式指定 workflow profile JSONL 路径。
@@ -1000,7 +1004,29 @@ def _wait_manual_navigation_success(location_name):
     if not _workflow_non_integration_enabled():
         return False
 
-    prompt = f"[非联调模式] 请在确认到达“{location_name}”后按任意键，workflow 将视为导航成功..."
+    arrival_file = os.getenv("RABBITBOT_WORKFLOW_MANUAL_ARRIVAL_FILE", "").strip()
+    if arrival_file:
+        path = Path(arrival_file)
+        start_ts = time.time()
+        _workflow_log(f"[无机器人模式] 等待到达确认：location={location_name}, file={path}")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if path.exists():
+                path.unlink()
+        except OSError as exc:
+            _workflow_log(f"[无机器人模式] 清理旧到达确认文件失败：location={location_name}, file={path}, error_type={type(exc).__name__}, error={exc}")
+        while True:
+            if path.exists():
+                try:
+                    path.unlink()
+                except OSError as exc:
+                    _workflow_log(f"[无机器人模式] 删除到达确认文件失败：location={location_name}, file={path}, error_type={type(exc).__name__}, error={exc}")
+                elapsed = time.time() - start_ts
+                _workflow_log(f"[无机器人模式] 已确认到达：location={location_name}, elapsed={elapsed:.3f}s")
+                return True
+            time.sleep(0.2)
+
+    prompt = f"[无机器人模式] 请在确认到达“{location_name}”后按任意键，workflow 将视为导航成功..."
     print(prompt, flush=True)
     try:
         import sys
@@ -1016,7 +1042,7 @@ def _wait_manual_navigation_success(location_name):
             termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
         print()
     except Exception:
-        input(f"[非联调模式] 请在确认到达“{location_name}”后按回车继续...")
+        input(f"[无机器人模式] 请在确认到达“{location_name}”后按回车继续...")
     return True
 
 
@@ -1255,7 +1281,7 @@ def _finish_docx_script_elapsed_timer(ctx, reason="script_finished"):
     )
 
 
-async def guide_opening_speech(ctx: Any):
+async def guide_opening_speech(ctx: Any, answer_interrupt=None):
     """Run the speech-only opening guide flow before the main workflow."""
 
     def set_opening_pending_text(text):
@@ -1269,7 +1295,7 @@ async def guide_opening_speech(ctx: Any):
     def say(text, interruptible=True):
         if _strict_docx_script_enabled():
             _start_docx_script_elapsed_timer(ctx, reason="opening_speech")
-        if _strict_docx_script_enabled() and interruptible:
+        if _strict_docx_script_enabled() and interruptible and not _docx_guide_qa_interrupt_enabled():
             tts_sound(ctx.tts_agent, text, "zh")
             tts_wait(ctx.tts_agent)
             return False
@@ -1322,19 +1348,52 @@ async def guide_opening_speech(ctx: Any):
     leader_calling = _docx_guide_leader_calling()
     raw_name_text = leader_calling
 
-    def speak_handshake_opening():
-        if say(_docx_opening_text("handshake_greeting", {"leader_calling": leader_calling})):
-            return True
-        return say(_docx_opening_text("handshake_welcome", {"leader_calling": leader_calling}))
+    async def _answer_opening_interrupt():
+        # 开场白被打断：取出打断提问，复用 chat 回答后继续(resume)剩余开场白。
+        global pending_user_text
+        question = (pending_user_text or "").strip()
+        pending_user_text = ""
+        if not question:
+            return
+        if answer_interrupt is None:
+            print(f"开场白被打断但未配置回答回调，跳过回答继续开场白: {question}")
+            return
+        print(f"开场白被打断，先回答用户提问后继续开场白: {question}")
+        try:
+            await answer_interrupt(question)
+        except Exception as exc:
+            print(f"开场打断提问回答失败，继续开场白: error_type={type(exc).__name__}, error={exc}")
 
-    if await _do_arm_during_speech(ctx.robot, "shake_hand", speak_handshake_opening):
-        return {"leader_calling": leader_calling, "raw_name_text": raw_name_text, "raw_visit_text": pending_user_text, "first_visit": True, "start_entity_name": None}
-    if await _do_arm_during_speech(ctx.robot, "face_wave", lambda: say(_docx_opening_text("group_welcome", {"leader_calling": leader_calling}))):
-        return {"leader_calling": leader_calling, "raw_name_text": raw_name_text, "raw_visit_text": pending_user_text, "first_visit": True, "start_entity_name": None}
+    async def _play_opening_line(speech_thunk, action=None):
+        # 播放一句开场白；被打断则回答提问后重播本句(动作不重复)，确保完整播完再继续下一句。
+        current_action = action
+        while True:
+            if current_action:
+                interrupted = await _do_arm_during_speech(ctx.robot, current_action, speech_thunk)
+            else:
+                interrupted = speech_thunk()
+            if not interrupted:
+                return
+            await _answer_opening_interrupt()
+            current_action = None
+
+    # 开场白逐句播报：握手问候、欢迎、群体欢迎、跟随介绍；任一句被打断都回答后继续，不再吞词。
+    await _play_opening_line(
+        lambda: say(_docx_opening_text("handshake_greeting", {"leader_calling": leader_calling})),
+        action="shake_hand",
+    )
+    await _play_opening_line(
+        lambda: say(_docx_opening_text("handshake_welcome", {"leader_calling": leader_calling})),
+    )
+    await _play_opening_line(
+        lambda: say(_docx_opening_text("group_welcome", {"leader_calling": leader_calling})),
+        action="face_wave",
+    )
     raw_visit_text = ""
     first_visit = True
-    if say(_docx_opening_text("follow_intro", {"leader_calling": leader_calling})):
-        return {"leader_calling": leader_calling, "raw_name_text": raw_name_text, "raw_visit_text": raw_visit_text, "first_visit": first_visit, "start_entity_name": None}
+    await _play_opening_line(
+        lambda: say(_docx_opening_text("follow_intro", {"leader_calling": leader_calling})),
+    )
 
     start_entity_name = "点位1"
     start_description = ""
@@ -1597,6 +1656,7 @@ def create_main_workflow(ctx: Any) -> Workflow:
 
     SCRIPTED_TOUR_STEP_DONE = "<SCRIPTED_TOUR_STEP_DONE>"
     SCRIPTED_TOUR_FINISHED = "<SCRIPTED_TOUR_FINISHED>"
+    SCRIPTED_TOUR_RETURN_TO_START = "<SCRIPTED_TOUR_RETURN_TO_START>"
     SCRIPTED_TOUR_ORDER = [
         "起始板块",
         "多功能展示区",
@@ -1632,6 +1692,85 @@ def create_main_workflow(ctx: Any) -> Workflow:
     def scripted_tour_enabled():
         value = os.getenv("RABBITBOT_SCRIPTED_TOUR", "1").strip().lower()
         return value not in {"0", "false", "no", "off", "skip"}
+
+    def guide_start_by_voice_enabled():
+        return scripted_tour_enabled() and _env_enabled("RABBITBOT_GUIDE_START_BY_VOICE", "0")
+
+    def guide_started():
+        return not guide_start_by_voice_enabled() or bool(getattr(ctx, "scripted_tour_started", False))
+
+    def normalize_guide_start_text(text):
+        return re.sub(r"[\s，。！？?、,.!；;：:\"'“”‘’（）()\[\]【】]+", "", text or "").lower()
+
+    def guide_start_commands():
+        raw_value = os.getenv("RABBITBOT_GUIDE_START_COMMANDS", "开始导览,开始讲解,开始参观,开始流程,启动导览")
+        commands = [normalize_guide_start_text(item) for item in raw_value.split(",") if normalize_guide_start_text(item)]
+        return commands or ["开始导览"]
+
+    def is_guide_start_command(text):
+        normalized_text = normalize_guide_start_text(text)
+        if not normalized_text:
+            return False
+        return any(command in normalized_text for command in guide_start_commands())
+
+    def guide_return_commands():
+        raw_value = os.getenv("RABBITBOT_GUIDE_RETURN_COMMANDS", "返回起点,返航,回到起点,回起点,返回原点")
+        commands = [normalize_guide_start_text(item) for item in raw_value.split(",") if normalize_guide_start_text(item)]
+        return commands or ["返回起点"]
+
+    def is_guide_return_command(text):
+        normalized_text = normalize_guide_start_text(text)
+        if not normalized_text:
+            return False
+        return any(command in normalized_text for command in guide_return_commands())
+
+    def guide_tour_completed_for_return():
+        return bool(
+            guide_started()
+            and (
+                getattr(ctx, "guide_tour_completed_wait_return", False)
+                or getattr(ctx, "docx_script_done", False)
+                or getattr(ctx, "scripted_tour_done", False)
+            )
+        )
+
+    def write_return_request_file(trigger_text):
+        request_file = os.getenv("RABBITBOT_WORKFLOW_RETURN_REQUEST_FILE", "").strip()
+        trigger_len = len((trigger_text or "").strip())
+        if not request_file:
+            _workflow_log(f"收到返回起点口令但缺少返航请求文件配置: trigger_len={trigger_len}")
+            return False
+        request_path = Path(request_file)
+        try:
+            request_path.parent.mkdir(parents=True, exist_ok=True)
+            request_path.write_text(
+                f"return_to_start\n"
+                f"pid={os.getpid()}\n"
+                f"time={datetime.now().isoformat()}\n"
+                f"trigger_len={trigger_len}\n",
+                encoding="utf-8",
+            )
+            _workflow_log(f"已写入返航请求文件: path={request_path}, trigger_len={trigger_len}")
+            return True
+        except OSError as exc:
+            _workflow_log(f"返航请求文件写入失败: path={request_path}, error_type={type(exc).__name__}, error={exc}")
+            return False
+
+    async def start_scripted_tour_by_voice(trigger_text):
+        if getattr(ctx, "scripted_tour_started", False):
+            return
+        ctx.scripted_tour_started = True
+        ctx.pre_guide_qa_mode = False
+        trigger_len = len((trigger_text or "").strip())
+        opening_enabled = os.getenv("RABBITBOT_ENABLE_GUIDE_OPENING", "1")
+        _workflow_log(f"语音口令启动导览: trigger_len={trigger_len}, opening_enabled={opening_enabled}")
+        if opening_enabled == "1":
+            await guide_opening_speech(ctx, answer_interrupt=lambda q: chat_execute(q, ChatSessionInfo.sess_idx))
+        else:
+            tts_sound(ctx.tts_agent, f"{before_text}好的，开始导览。", "zh")
+            tts_wait(ctx.tts_agent)
+        ctx.scripted_tour_opening_done = True
+        _workflow_log("语音口令导览开场完成，准备按所选剧本推进")
 
     def init_scripted_tour_state():
         if hasattr(ctx, "scripted_tour_index"):
@@ -2029,7 +2168,7 @@ def create_main_workflow(ctx: Any) -> Workflow:
                             ctx.robot,
                             before_text,
                             ignored_interrupt_texts=DOCX_SCRIPT_CONTINUE_TEXTS,
-                            ignore_unlisted_interrupts=True,
+                            ignore_unlisted_interrupts=not _docx_guide_qa_interrupt_enabled(),
                         )
                     finally:
                         _profile_end(span_token, scene=scene, segment=segment_index, text=formatted_text)
@@ -2062,6 +2201,34 @@ def create_main_workflow(ctx: Any) -> Workflow:
 
             segment_index += 1
             ctx.docx_script_segment_index = segment_index
+        return None
+
+    async def wait_navigation_with_stt_interrupt(navi_tools, scene, step_index=None):
+        if not _env_enabled("RABBITBOT_GUIDE_NAV_STT_INTERRUPT", "1"):
+            while await is_navigating(navi_tools):
+                await asyncio.sleep(0.5)
+            return None
+        listen_timeout = int(os.getenv("RABBITBOT_GUIDE_NAV_STT_TIMEOUT_SECONDS", "3600"))
+        _workflow_log(f"导航期间启动 STT 监听: scene={scene}, step_index={step_index}, timeout={listen_timeout}s")
+        while await is_navigating(navi_tools):
+            span_token = _profile_start("audio_input", source="guide_navigation", scene=scene, step_index=step_index, timeout=listen_timeout)
+            try:
+                out_text = await audio_input_execute_timeout_navi(stt_agent, listen_timeout, navi_tools)
+            finally:
+                _profile_end(span_token, source="guide_navigation", scene=scene, step_index=step_index, timeout=listen_timeout)
+            if _is_empty_stt_text(out_text) or out_text == "<NAVI_REACH>":
+                _workflow_log(f"导航期间 STT 监听结束: scene={scene}, result={out_text}", verbose=True)
+                return None
+            if is_docx_script_continue_text(out_text):
+                _workflow_log(f"导航期间忽略剧本继续确认词并继续等待导航: scene={scene}, text={out_text}")
+                continue
+            _workflow_log(f"导航期间收到用户提问，暂停导览流程: scene={scene}, step_index={step_index}, text_len={len(out_text)}")
+            try:
+                tts_stop(tts_agent)
+            except Exception as exc:
+                _workflow_log(f"导航期间停止 TTS 失败: scene={scene}, error_type={type(exc).__name__}, error={exc}")
+            return out_text.strip()
+        _workflow_log(f"导航期间 STT 监听结束: scene={scene}, result=navigation_not_active", verbose=True)
         return None
 
     async def navigate_docx_script_step(step, step_index):
@@ -2100,7 +2267,7 @@ def create_main_workflow(ctx: Any) -> Workflow:
                 ctx.robot,
                 before_text,
                 ignored_interrupt_texts=DOCX_SCRIPT_CONTINUE_TEXTS,
-                ignore_unlisted_interrupts=True,
+                ignore_unlisted_interrupts=not _docx_guide_qa_interrupt_enabled(),
             )
             _profile_end(guide_span, scene=step.get("scene", entity_name), segment="guide", text=formatted_guide_text)
             if not _is_empty_stt_text(interrupt_text):
@@ -2128,8 +2295,10 @@ def create_main_workflow(ctx: Any) -> Workflow:
                 if speech_result:
                     _profile_end(span_token, step_index=step_index, scene=scene, entity=entity_name, status="interrupt")
                     return speech_result
-                while await is_navigating(navi_tools):
-                    await asyncio.sleep(0.5)
+                nav_interrupt_text = await wait_navigation_with_stt_interrupt(navi_tools, scene, step_index)
+                if not _is_empty_stt_text(nav_interrupt_text):
+                    _profile_end(span_token, step_index=step_index, scene=scene, entity=entity_name, status="interrupt")
+                    return ("interrupt", nav_interrupt_text)
                 navi_status = await navi_tools.go_to_status()
                 await navi_tools.reset_go_to_status()
 
@@ -2140,6 +2309,8 @@ def create_main_workflow(ctx: Any) -> Workflow:
         return navi_status
 
     async def run_docx_scripted_tour_next_step():
+        if not guide_started():
+            return None, None
         if pending_user_text:
             return None, None
 
@@ -2221,7 +2392,7 @@ def create_main_workflow(ctx: Any) -> Workflow:
                             ctx.robot,
                             before_text,
                             ignored_interrupt_texts=DOCX_SCRIPT_CONTINUE_TEXTS,
-                            ignore_unlisted_interrupts=True,
+                            ignore_unlisted_interrupts=not _docx_guide_qa_interrupt_enabled(),
                         )
                     finally:
                         _profile_end(span_token, scene=scene, segment=segment_index, text=formatted_text)
@@ -2286,6 +2457,8 @@ def create_main_workflow(ctx: Any) -> Workflow:
     async def run_scripted_tour_next_step():
         if not scripted_tour_enabled():
             return None, None
+        if not guide_started():
+            return None, None
         if pending_user_text:
             return None, None
         if _strict_docx_script_enabled():
@@ -2341,8 +2514,9 @@ def create_main_workflow(ctx: Any) -> Workflow:
                         x, y, ox, oy, oz, ow, navi_query,
                         waypoints=location_points if len(location_points) > 1 else None,
                     )
-                    while await is_navigating(navi_tools):
-                        await asyncio.sleep(0.5)
+                    nav_interrupt_text = await wait_navigation_with_stt_interrupt(navi_tools, entity_name, index)
+                    if not _is_empty_stt_text(nav_interrupt_text):
+                        return "interrupt", nav_interrupt_text
                     navi_status = await navi_tools.go_to_status()
                     await navi_tools.reset_go_to_status()
                 _workflow_log(f"剧本导览导航完成: entity={entity_name}, status={navi_status}")
@@ -2384,6 +2558,23 @@ def create_main_workflow(ctx: Any) -> Workflow:
         _workflow_log(f"剧本导览步骤完成: entity={entity_name}, next_index={ctx.scripted_tour_index}")
         return "done", SCRIPTED_TOUR_STEP_DONE
 
+    async def listen_user_input_for_workflow(source, prompt_on_timeout=True):
+        audio_span = _profile_start("audio_input", source=source, timeout=30)
+        try:
+            out_text = audio_input_execute_timeout(stt_agent, timeout=30, text="")
+        finally:
+            _profile_end(audio_span, source=source, timeout=30)
+        while out_text == "<REC_TIMEOUT>" or out_text == "<REC_DUPLICATE>":
+            if prompt_on_timeout:
+                prompt_text = os.getenv("RABBITBOT_PRE_GUIDE_QA_PROMPT", "你好，请问你需要我做什么吗？听到开始导览后，我会开始讲解。")
+                tts_sound(tts_agent, f"{before_text}{prompt_text}", "zh")
+            audio_span = _profile_start("audio_input", source=f"{source}_retry", timeout=30)
+            try:
+                out_text = audio_input_execute_timeout(stt_agent, timeout=30, text="")
+            finally:
+                _profile_end(audio_span, source=f"{source}_retry", timeout=30)
+        return out_text
+
     async def audio_input_executor(step_input):
         original_task = step_input.message or ''
         previous_steps = step_input.get_all_previous_content()
@@ -2409,31 +2600,54 @@ def create_main_workflow(ctx: Any) -> Workflow:
             out_text = pending_text
             print(f"使用打断输入作为下一轮用户输入: {out_text}")
         else:
-            script_kind, script_text = await run_scripted_tour_next_step()
-            if script_kind == "done":
-                WorkflowTimePoints.PLAN_START = time.time()
-                _profile_end(loop_span, step="audio_input_step", result="script_done")
-                if script_text == SCRIPTED_TOUR_FINISHED:
-                    _profile_summary_print(reason="docx_finished")
-                return StepOutput(content=f"{script_text}")
-            if script_kind == "interrupt":
-                out_text = script_text
-                print(f"使用剧本导览打断输入作为用户输入: {out_text}")
+            if guide_start_by_voice_enabled() and not guide_started():
+                ctx.pre_guide_qa_mode = True
+                out_text = await listen_user_input_for_workflow("pre_guide_qa")
+                if is_guide_start_command(out_text):
+                    await start_scripted_tour_by_voice(out_text)
+                    WorkflowTimePoints.PLAN_START = time.time()
+                    _profile_end(loop_span, step="audio_input_step", result="guide_started_by_voice")
+                    return StepOutput(content=f"{SCRIPTED_TOUR_STEP_DONE}")
             else:
-                time.sleep(1)
-                #out_text = audio_input_execute(stt_agent, "speech_to_text", timeout=300)
-                audio_span = _profile_start("audio_input", source="main_loop", timeout=30)
-                try:
-                    out_text = audio_input_execute_timeout(stt_agent, timeout=30, text="")
-                finally:
-                    _profile_end(audio_span, source="main_loop", timeout=30)
-                while out_text == "<REC_TIMEOUT>" or out_text == "<REC_DUPLICATE>":
-                    tts_sound(tts_agent, f"{before_text}你好，请问你需要我做什么吗？", "zh")
-                    audio_span = _profile_start("audio_input", source="main_loop_retry", timeout=30)
-                    try:
-                        out_text = audio_input_execute_timeout(stt_agent, timeout=30, text="")
-                    finally:
-                        _profile_end(audio_span, source="main_loop_retry", timeout=30)
+                script_kind, script_text = await run_scripted_tour_next_step()
+                if script_kind == "done":
+                    WorkflowTimePoints.PLAN_START = time.time()
+                    if script_text == SCRIPTED_TOUR_FINISHED and guide_start_by_voice_enabled():
+                        ctx.guide_tour_completed_wait_return = True
+                        _profile_summary_print(reason="docx_finished_wait_return")
+                        _workflow_log("导览已完成，保持 QA 状态等待返回起点口令")
+                        _profile_end(loop_span, step="audio_input_step", result="script_done_wait_return")
+                        return StepOutput(content=f"{SCRIPTED_TOUR_STEP_DONE}")
+                    _profile_end(loop_span, step="audio_input_step", result="script_done")
+                    if script_text == SCRIPTED_TOUR_FINISHED:
+                        _profile_summary_print(reason="docx_finished")
+                    return StepOutput(content=f"{script_text}")
+                if script_kind == "interrupt":
+                    out_text = script_text
+                    print(f"使用剧本导览打断输入作为用户输入: {out_text}")
+                else:
+                    time.sleep(1)
+                    #out_text = audio_input_execute(stt_agent, "speech_to_text", timeout=300)
+                    out_text = await listen_user_input_for_workflow("main_loop")
+        if guide_started() and is_guide_start_command(out_text):
+            _workflow_log(f"忽略重复开始导览口令: text_len={len(out_text or '')}")
+            WorkflowTimePoints.PLAN_START = time.time()
+            _profile_end(loop_span, step="audio_input_step", result="duplicate_guide_start_ignored")
+            return StepOutput(content=f"{SCRIPTED_TOUR_STEP_DONE}")
+        if guide_started() and is_guide_return_command(out_text):
+            if guide_tour_completed_for_return():
+                if write_return_request_file(out_text):
+                    WorkflowTimePoints.PLAN_START = time.time()
+                    _profile_end(loop_span, step="audio_input_step", result="return_to_start_requested")
+                    return StepOutput(content=f"{SCRIPTED_TOUR_RETURN_TO_START}")
+                WorkflowTimePoints.PLAN_START = time.time()
+                _profile_end(loop_span, step="audio_input_step", result="return_request_file_error")
+                return StepOutput(content=f"{SCRIPTED_TOUR_STEP_DONE}")
+            _workflow_log(f"导览尚未完成，忽略返回起点口令: text_len={len(out_text or '')}")
+            WorkflowTimePoints.PLAN_START = time.time()
+            _profile_end(loop_span, step="audio_input_step", result="return_to_start_ignored_before_finished")
+            return StepOutput(content=f"{SCRIPTED_TOUR_STEP_DONE}")
+
         chat_queue.put(out_text, "用户")
 
         #tts_sound(tts_agent, f"{before_text}我听到了，但是可能要思考一会。请稍等片刻", "zh")
@@ -2465,7 +2679,7 @@ def create_main_workflow(ctx: Any) -> Workflow:
         text = text_lst[2].replace("\n", "")
 
         _workflow_log(f"in_text: {text}", verbose=True)
-        if text in {SCRIPTED_TOUR_STEP_DONE, SCRIPTED_TOUR_FINISHED}:
+        if text in {SCRIPTED_TOUR_STEP_DONE, SCRIPTED_TOUR_FINISHED, SCRIPTED_TOUR_RETURN_TO_START}:
             _workflow_log(f"plan_executor: scripted tour control token {text}, skip planner", verbose=True)
             return StepOutput(content=text)
         if getattr(ctx, "post_docx_chat_mode", False):
@@ -3842,9 +4056,18 @@ def create_main_workflow(ctx: Any) -> Workflow:
         original_task = step_input.message or ''
         previous_steps = step_input.get_all_previous_content()
 
+        if guide_start_by_voice_enabled() and not guide_started():
+            result = StepOutput(content=CompletionCheckModel(task_completed=False))
+            _profile_end(completion_span, skipped=True, reason="pre_guide_qa")
+            return result
         if getattr(ctx, "post_docx_chat_mode", False):
             result = StepOutput(content=CompletionCheckModel(task_completed=False))
             _profile_end(completion_span, skipped=True)
+            return result
+        if SCRIPTED_TOUR_RETURN_TO_START in previous_steps:
+            result = StepOutput(content=CompletionCheckModel(task_completed=True))
+            _profile_summary_print(reason="return_to_start_requested")
+            _profile_end(completion_span, skipped=True, task_completed=True, reason="return_to_start_requested")
             return result
         if SCRIPTED_TOUR_FINISHED in previous_steps:
             result = StepOutput(content=CompletionCheckModel(task_completed=True))
