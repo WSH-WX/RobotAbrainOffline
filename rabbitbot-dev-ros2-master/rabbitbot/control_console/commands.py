@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 import logging
+import os
 import subprocess
+import time
 
 
 logger = logging.getLogger(__name__)
@@ -15,6 +17,15 @@ RUNTIME_CONTAINER_NAME = "rabbitbot-unified-runtime"
 MAP_ENV_KEY = "NAV_PCD_PATH"
 NO_ROBOT_ENV_KEY = "RABBITBOT_NAV_WORKFLOW_NO_ROBOT"
 WORKFLOW_MANUAL_ENV_KEY = "RABBITBOT_WORKFLOW_NON_INTEGRATION"
+
+COMPOSE_PROJECT_CONTAINER_ENVS = [
+    ("RABBITBOT_NEO4J_CONTAINER_NAME", "neo4j"),
+    ("RABBITBOT_VLM_CONTAINER_NAME", "rabbitbot-vlm"),
+    ("RABBITBOT_AUDIO_CONTAINER_NAME", "rabbitbot-audio"),
+    ("RABBITBOT_MEMORY_CONTAINER_NAME", "rabbitbot-memory"),
+    ("RABBITBOT_WORKFLOW_CONTAINER_NAME", "rabbitbot-workflow"),
+    ("RABBITBOT_NAV_BRIDGE_CONTAINER_NAME", "rabbitbot-navbridge"),
+]
 
 
 class CommandError(RuntimeError):
@@ -198,6 +209,91 @@ def _restart_runtime_container(container_name: str, docker_path: Path) -> str:
     return output
 
 
+def _dedupe_non_empty(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        name = value.strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        result.append(name)
+    return result
+
+
+def _effective_base_runtime() -> str:
+    base_runtime = os.environ.get("RABBITBOT_BASE_RUNTIME", "").strip().lower()
+    if base_runtime:
+        return base_runtime
+    runtime_mode = os.environ.get("RABBITBOT_RUNTIME_MODE", "").strip().lower()
+    nav_runtime = os.environ.get("RABBITBOT_NAV_RUNTIME", "").strip().lower()
+    if runtime_mode == "portable" and nav_runtime == "compose":
+        return "compose"
+    return "compose"
+
+
+def resolve_project_service_containers(runtime_container_name: str = RUNTIME_CONTAINER_NAME) -> list[str]:
+    if _effective_base_runtime() == "compose":
+        return _dedupe_non_empty([os.environ.get(key, default) for key, default in COMPOSE_PROJECT_CONTAINER_ENVS])
+    return _dedupe_non_empty([runtime_container_name])
+
+
+def _list_docker_container_names(docker_path: Path) -> set[str]:
+    args = [str(docker_path), "ps", "-a", "--format", "{{.Names}}"]
+    logger.debug("准备枚举 Docker 容器：docker=%s", docker_path)
+    result = subprocess.run(args, check=False, text=True, capture_output=True, timeout=10)
+    output = (result.stdout or result.stderr or "").strip()
+    if result.returncode != 0:
+        logger.error("枚举 Docker 容器失败：returncode=%s, output=%s", result.returncode, output)
+        raise CommandError(output or f"枚举 Docker 容器失败，退出码：{result.returncode}")
+    names = {line.strip() for line in result.stdout.splitlines() if line.strip()}
+    logger.debug("Docker 容器枚举完成：count=%s", len(names))
+    return names
+
+
+def _restart_project_service_containers(container_names: list[str], docker_path: Path, timeout: float = 180.0) -> dict:
+    if not docker_path.exists():
+        raise CommandError(f"docker 不存在：{docker_path}")
+    requested = _dedupe_non_empty(container_names)
+    if not requested:
+        raise CommandError("项目服务容器列表为空")
+    existing = _list_docker_container_names(docker_path)
+    selected = [name for name in requested if name in existing]
+    missing = [name for name in requested if name not in existing]
+    logger.info(
+        "准备重启项目服务相关 Docker 容器：requested=%s, selected=%s, missing=%s, docker=%s, timeout=%s",
+        requested,
+        selected,
+        missing,
+        docker_path,
+        timeout,
+    )
+    if not selected:
+        raise CommandError(f"未找到需要重启的项目服务 Docker 容器：{', '.join(requested)}")
+
+    args = [str(docker_path), "restart", "-t", "20", *selected]
+    start_time = time.perf_counter()
+    try:
+        result = subprocess.run(args, check=False, text=True, capture_output=True, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        elapsed = time.perf_counter() - start_time
+        logger.error("重启项目服务相关 Docker 容器超时：selected=%s, timeout=%s, elapsed=%.2fs", selected, timeout, elapsed)
+        raise CommandError(f"重启项目服务容器超时（{timeout:.0f}s）：{', '.join(selected)}") from exc
+    elapsed = time.perf_counter() - start_time
+    output = (result.stdout or result.stderr or "").strip()
+    if result.returncode != 0:
+        logger.error(
+            "重启项目服务相关 Docker 容器失败：selected=%s, returncode=%s, elapsed=%.2fs, output=%s",
+            selected,
+            result.returncode,
+            elapsed,
+            output,
+        )
+        raise CommandError(output or f"重启项目服务容器失败，退出码：{result.returncode}")
+    logger.info("重启项目服务相关 Docker 容器完成：selected=%s, missing=%s, elapsed=%.2fs", selected, missing, elapsed)
+    return {"containers": selected, "missing": missing, "output": output}
+
+
 def restart_service_container(container_name: str, docker_path: Path = Path("/usr/bin/docker"), timeout: float = 90.0) -> str:
     # 重启单个服务所在容器（解耦栈下即重启该容器内对应服务；nvidia 在 docker 组，免 sudo）。
     if not container_name.strip():
@@ -324,13 +420,21 @@ def stop_loop_service(
     if service_name != LOOP_SERVICE_NAME:
         raise CommandError(f"不支持关闭的服务：{service_name}")
     service_output = _run_loop_service_action("stop", service_name, systemctl_path, sudo_path, "关闭")
-    container_output = _restart_runtime_container(runtime_container_name, docker_path)
-    message_parts = [service_output or "已关闭导航主程序", f"已重启 Docker 容器 {runtime_container_name}"]
+    container_names = resolve_project_service_containers(runtime_container_name)
+    restart_result = _restart_project_service_containers(container_names, docker_path)
+    restarted_containers = restart_result["containers"]
+    if len(restarted_containers) == 1:
+        restart_message = f"已重启项目服务容器 {restarted_containers[0]}"
+    else:
+        restart_message = f"已重启项目服务相关容器：{', '.join(restarted_containers)}"
+    message_parts = [service_output or "已关闭导航主程序", restart_message]
     return {
         "ok": True,
         "service": service_name,
-        "container": runtime_container_name,
+        "container": restarted_containers[0],
+        "containers": restarted_containers,
+        "missing_containers": restart_result["missing"],
         "container_restarted": True,
         "message": "；".join(message_parts),
-        "docker_output": container_output,
+        "docker_output": restart_result["output"],
     }

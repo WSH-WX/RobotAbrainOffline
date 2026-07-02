@@ -404,7 +404,7 @@ def resolve_service_container(key: str) -> str | None:
         return None
     if group == "neo4j":
         return os.environ.get("RABBITBOT_NEO4J_CONTAINER_NAME", "neo4j")
-    base_runtime = os.environ.get("RABBITBOT_BASE_RUNTIME", "unified").strip().lower()
+    base_runtime = os.environ.get("RABBITBOT_BASE_RUNTIME", "compose").strip().lower()
     if base_runtime == "compose":
         compose_container = {
             "audio": os.environ.get("RABBITBOT_AUDIO_CONTAINER_NAME", "rabbitbot-audio"),

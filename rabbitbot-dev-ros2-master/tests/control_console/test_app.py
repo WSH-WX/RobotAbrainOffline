@@ -31,7 +31,16 @@ def make_config(tmp_path):
     command_script.chmod(0o755)
     systemctl_path.write_text(f"#!/usr/bin/env bash\nprintf '%s\n' \"$@\" > {systemctl_record}\n", encoding="utf-8")
     systemctl_path.chmod(0o755)
-    docker_path.write_text(f"#!/usr/bin/env bash\nprintf '%s\n' \"$@\" > {docker_record}\necho rabbitbot-unified-runtime\n", encoding="utf-8")
+    docker_path.write_text(
+        "#!/usr/bin/env bash\n"
+        "if [ \"$1\" = ps ]; then\n"
+        "  printf '%s\\n' neo4j rabbitbot-vlm rabbitbot-audio rabbitbot-memory rabbitbot-workflow rabbitbot-navbridge\n"
+        "  exit 0\n"
+        "fi\n"
+        f"printf '%s\n' \"$@\" > {docker_record}\n"
+        "printf '%s\\n' rabbitbot-vlm rabbitbot-audio rabbitbot-memory rabbitbot-workflow rabbitbot-navbridge neo4j\n",
+        encoding="utf-8",
+    )
     docker_path.chmod(0o755)
     return ConsoleConfig(
         project_root=project_root,
@@ -212,14 +221,14 @@ def test_stop_stops_loop_service_without_login(tmp_path):
 
     assert response.status_code == 200
     assert response.json()["service"] == "rabbitbot-loop.service"
-    assert response.json()["container"] == "rabbitbot-unified-runtime"
+    assert response.json()["containers"] == ["neo4j", "rabbitbot-vlm", "rabbitbot-audio", "rabbitbot-memory", "rabbitbot-workflow", "rabbitbot-navbridge"]
     assert response.json()["container_restarted"] is True
     assert "已关闭导航主程序" in response.json()["message"]
-    assert "已重启 Docker 容器 rabbitbot-unified-runtime" in response.json()["message"]
+    assert "已重启项目服务相关容器" in response.json()["message"]
     record = config.project_root / "systemctl_args.txt"
     assert record.read_text(encoding="utf-8").splitlines() == ["stop", "rabbitbot-loop.service"]
     docker_record = config.project_root / "docker_args.txt"
-    assert docker_record.read_text(encoding="utf-8").splitlines() == ["restart", "rabbitbot-unified-runtime"]
+    assert docker_record.read_text(encoding="utf-8").splitlines() == ["restart", "-t", "20", "neo4j", "rabbitbot-vlm", "rabbitbot-audio", "rabbitbot-memory", "rabbitbot-workflow", "rabbitbot-navbridge"]
 
 
 def test_dialogue_loads_current_config(tmp_path):

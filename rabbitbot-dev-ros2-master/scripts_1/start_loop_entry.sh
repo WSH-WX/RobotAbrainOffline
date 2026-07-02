@@ -30,6 +30,7 @@ fi
 
 if [ "${RUNTIME_MODE}" = "portable" ]; then
     export RABBITBOT_NAV_RUNTIME="${RABBITBOT_NAV_RUNTIME:-compose}"
+    export RABBITBOT_BASE_RUNTIME="${RABBITBOT_BASE_RUNTIME:-compose}"
     export NAV_INTERFACE="${NAV_INTERFACE:-${RABBITBOT_DDS_INTERFACE:-eno1}}"
     export NAV_PCD_PATH="${NAV_PCD_PATH:-${RABBITBOT_NAV_MAP_PATH:-/home/unitree/test9.pcd}}"
     export IMAGE_NAME="${IMAGE_NAME:-${RABBITBOT_PORTABLE_CORE_IMAGE:-ghcr.io/aaronai/rabbitbot-core-portable:20260611}}"

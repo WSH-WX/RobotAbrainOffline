@@ -1,5 +1,57 @@
 # 交接报告
 
+## 2026-07-02 控制台关闭程序适配多容器
+
+### 背景和目标
+
+前端点击“关闭程序”后仍显示“已关闭导航主程序；已重启 Docker 容器 rabbitbot-unified-runtime”。现场已经要求后续运行方式统一走多容器 compose 解耦栈，因此需要核实关闭逻辑是否仍只重启旧 unified 容器，并将行为和字幕改为项目服务相关多容器。
+
+### 当前状态，包括已完成内容和未完成内容
+
+已完成：
+
+- 已确认旧逻辑在 `rabbitbot/control_console/commands.py` 的 `stop_loop_service()` 中只调用一次 `docker restart rabbitbot-unified-runtime`，前端字幕确实来自该返回消息。
+- 已将控制台默认基础服务运行方式从 `unified` 改为 `compose`，`ConsoleConfig` 默认 runtime 容器改为 `rabbitbot-workflow`，nav 日志容器默认改为 `rabbitbot-navbridge`。
+- 已将服务状态映射默认改为 compose：TTS/STT -> `rabbitbot-audio`，VLM/Embedding -> `rabbitbot-vlm`，Memory -> `rabbitbot-memory`，Neo4j -> `neo4j`。
+- 已让 “关闭程序” 停止 `rabbitbot-loop.service` 后，枚举并重启项目服务相关容器：`neo4j`、`rabbitbot-vlm`、`rabbitbot-audio`、`rabbitbot-memory`、`rabbitbot-workflow`、`rabbitbot-navbridge`；返回字幕改为“已重启项目服务相关容器：...”。
+- 已保留显式 `RABBITBOT_BASE_RUNTIME=unified` 的兼容分支，但不再作为默认行为。
+- 已在 `scripts_1/start_loop_entry.sh` 的 portable 模式中显式导出 `RABBITBOT_BASE_RUNTIME=compose`，避免主循环仍落回旧 unified 基础服务。
+- 已补齐 `runtime/portable.env.example` 中的 `RABBITBOT_DECOUPLED_COMPOSE_FILE` 配置项，并同步更新本机运行态 `runtime/portable.env`，使控制台服务重启后能读取 `RABBITBOT_BASE_RUNTIME=compose` 和解耦 compose 文件路径。
+- 已更新控制台测试断言：默认关闭路径期望多容器重启；显式 unified 配置只作为兼容测试。
+
+未完成：
+
+- 现场 Python 环境没有安装 `pytest`，因此未运行完整 `pytest -q tests/control_console`。
+- 已在确认 `rabbitbot-loop.service` 为 inactive 后停止旧 `rabbitbot-unified-runtime`，并拉起解耦基础容器 `neo4j`、`rabbitbot-vlm`、`rabbitbot-audio`、`rabbitbot-memory`、`rabbitbot-workflow`；当前五个容器均已启动，其中 `neo4j`、`rabbitbot-vlm`、`rabbitbot-audio`、`rabbitbot-memory` 健康检查通过。
+
+### 已验证的事实
+
+- 只读核实时，旧实现确实只重启 `rabbitbot-unified-runtime`。
+- 当前 `docker ps -a` 显示 `rabbitbot-unified-runtime` 已退出，解耦基础容器 `neo4j`、`rabbitbot-vlm`、`rabbitbot-audio`、`rabbitbot-memory`、`rabbitbot-workflow` 已启动；`runtime/portable.env` 已补齐 `RABBITBOT_BASE_RUNTIME=compose` 和 `RABBITBOT_DECOUPLED_COMPOSE_FILE=/mnt/disk1/gt/air_robot_gt_projects/rabbitbot-dev-ros2-master/docker/portable/docker-compose.decoupled.yaml`。
+- 已通过 `python3 -m py_compile` 检查控制台代码和相关测试文件语法。
+- 已通过 `bash -n scripts_1/start_loop_entry.sh` 检查主循环入口语法。
+- 已用直接调用核心函数的手动验证确认：默认环境下 `stop_loop_service()` 会选择多容器列表并执行 `docker restart -t 20 ...`；显式 `RABBITBOT_BASE_RUNTIME=unified` 时才重启 `rabbitbot-unified-runtime`。
+- 已验证控制台 `/api/status` 显示服务容器映射为多容器：Neo4j -> `neo4j`，TTS/STT -> `rabbitbot-audio`，Memory -> `rabbitbot-memory`，VLM/Embedding -> `rabbitbot-vlm`；8000/8005/28182/28184/28185/7687 端口均在线。
+
+### 阻塞问题
+
+- 远端环境缺少 pytest：`runtime/control_console_venv/bin/python -m pytest --version` 和 `python3 -m pytest --version` 均返回 `No module named pytest`。
+
+### 建议的下一步
+
+- 重启 `rabbitbot-control-console.service` 让控制台加载本轮代码和更新后的 `runtime/portable.env`。
+- 下次点击“开始程序”后，应确认现有解耦栈容器被复用或按需恢复；如果是真机模式，还应看到 `rabbitbot-navbridge` 被启动。
+- 再次点击“关闭程序”时，前端字幕应显示“已重启项目服务相关容器：...”，不应再固定显示 `rabbitbot-unified-runtime`。
+
+### 注意事项
+
+- 本轮切换运行态时 new-orin 本地缺少 `neo4j:5.26-community`，Docker 已在线拉取该镜像；如后续部署到离线机器，需要确保 portable 镜像包包含 Neo4j。
+- 当前无机器人模式未启动 `rabbitbot-navbridge`；真机模式启动后该容器存在时，“关闭程序”会把它纳入项目服务相关容器重启列表。
+
+### 其它对后续接手者有用的信息
+
+本轮新增/调整日志点：关闭程序路径新增 Docker 容器枚举、待重启容器列表、缺失容器列表、重启耗时、失败原因和超时日志；这些日志用于排查前端“关闭程序”到底选中了哪些项目容器、哪些容器缺失、Docker 重启是否失败或超时。
+
 ## 背景和目标
 
 本轮目标是在六月六日 DOCX/PDF 剧本已对齐、过渡点和新地图坐标已更新的基础上，将导览台词从 `workflow.py` 抽离到独立 JSON 文件，便于现场直接修改文案；同时将默认称呼配置为台词文件中的 `variables.leader_calling` 键。项目主机 `AGX-orin-FX`，路径 `/mnt/ssd/navgation/projects/rabbitbot-dev-ros2-master`，分支 `June6_workflow`。

@@ -38,7 +38,7 @@ class ConsoleConfig:
         dialogue_file = Path(dialogue_file_value) if dialogue_file_value else None
         # 基础服务运行方式：compose 解耦栈下 workflow 跑在 rabbitbot-workflow 容器、nav 由 rabbitbot-navbridge 提供；
         # unified 单容器(旧)下沿用原容器名。据此决定“关闭程序”重启哪个运行容器、nav 日志读哪个容器。
-        base_runtime = os.environ.get("RABBITBOT_BASE_RUNTIME", "unified").strip().lower()
+        base_runtime = os.environ.get("RABBITBOT_BASE_RUNTIME", "compose").strip().lower()
         if base_runtime == "compose":
             default_runtime_container = os.environ.get("RABBITBOT_WORKFLOW_CONTAINER_NAME", "rabbitbot-workflow")
             default_nav_container = os.environ.get("RABBITBOT_NAV_BRIDGE_CONTAINER_NAME", "rabbitbot-navbridge")

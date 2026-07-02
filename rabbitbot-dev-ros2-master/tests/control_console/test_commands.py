@@ -147,7 +147,7 @@ def test_restart_loop_service_reports_failure(tmp_path):
     assert "restart failed" in str(excinfo.value)
 
 
-def test_stop_loop_service_invokes_systemctl_stop_and_docker_restart(tmp_path):
+def test_stop_loop_service_restarts_project_containers_by_default(tmp_path):
     systemctl = tmp_path / "systemctl"
     docker = tmp_path / "docker"
     systemctl_record = tmp_path / "systemctl_record.txt"
@@ -158,7 +158,13 @@ def test_stop_loop_service_invokes_systemctl_stop_and_docker_restart(tmp_path):
     )
     systemctl.chmod(0o755)
     docker.write_text(
-        f"#!/usr/bin/env bash\nprintf '%s\n' \"$@\" > {docker_record}\necho rabbitbot-unified-runtime\n",
+        "#!/usr/bin/env bash\n"
+        "if [ \"$1\" = ps ]; then\n"
+        "  printf '%s\\n' neo4j rabbitbot-vlm rabbitbot-audio rabbitbot-memory rabbitbot-workflow rabbitbot-navbridge\n"
+        "  exit 0\n"
+        "fi\n"
+        f"printf '%s\n' \"$@\" > {docker_record}\n"
+        "printf '%s\\n' rabbitbot-vlm rabbitbot-audio rabbitbot-memory rabbitbot-workflow rabbitbot-navbridge neo4j\n",
         encoding="utf-8",
     )
     docker.chmod(0o755)
@@ -167,12 +173,40 @@ def test_stop_loop_service_invokes_systemctl_stop_and_docker_restart(tmp_path):
 
     assert result["ok"] is True
     assert result["service"] == "rabbitbot-loop.service"
-    assert result["container"] == "rabbitbot-unified-runtime"
+    assert result["containers"] == ["neo4j", "rabbitbot-vlm", "rabbitbot-audio", "rabbitbot-memory", "rabbitbot-workflow", "rabbitbot-navbridge"]
     assert result["container_restarted"] is True
     assert "已关闭导航主程序" in result["message"]
-    assert "已重启 Docker 容器 rabbitbot-unified-runtime" in result["message"]
+    assert "已重启项目服务相关容器" in result["message"]
     assert systemctl_record.read_text(encoding="utf-8").splitlines() == ["stop", "rabbitbot-loop.service"]
-    assert docker_record.read_text(encoding="utf-8").splitlines() == ["restart", "rabbitbot-unified-runtime"]
+    assert docker_record.read_text(encoding="utf-8").splitlines() == ["restart", "-t", "20", "neo4j", "rabbitbot-vlm", "rabbitbot-audio", "rabbitbot-memory", "rabbitbot-workflow", "rabbitbot-navbridge"]
+
+
+def test_stop_loop_service_can_use_explicit_unified_runtime(tmp_path, monkeypatch):
+    # 旧 unified 容器路径只在显式配置时保留兼容，不再作为默认行为。
+    monkeypatch.setenv("RABBITBOT_BASE_RUNTIME", "unified")
+    systemctl = tmp_path / "systemctl"
+    docker = tmp_path / "docker"
+    systemctl_record = tmp_path / "systemctl_record.txt"
+    docker_record = tmp_path / "docker_record.txt"
+    systemctl.write_text(
+        f"#!/usr/bin/env bash\nprintf '%s\n' \"$@\" > {systemctl_record}\n",
+        encoding="utf-8",
+    )
+    systemctl.chmod(0o755)
+    docker.write_text(
+        "#!/usr/bin/env bash\n"
+        "if [ \"$1\" = ps ]; then printf '%s\\n' rabbitbot-unified-runtime; exit 0; fi\n"
+        f"printf '%s\n' \"$@\" > {docker_record}\n"
+        "echo rabbitbot-unified-runtime\n",
+        encoding="utf-8",
+    )
+    docker.chmod(0o755)
+
+    result = stop_loop_service(systemctl_path=systemctl, sudo_path=None, docker_path=docker)
+
+    assert result["containers"] == ["rabbitbot-unified-runtime"]
+    assert "已重启项目服务容器 rabbitbot-unified-runtime" in result["message"]
+    assert docker_record.read_text(encoding="utf-8").splitlines() == ["restart", "-t", "20", "rabbitbot-unified-runtime"]
 
 
 def test_stop_loop_service_rejects_other_services(tmp_path):
