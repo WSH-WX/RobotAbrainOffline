@@ -29,6 +29,16 @@ RabbitBot 自主运行包，部署在 ShuHao-orin。Git 根 `/mnt/disk1/gt/air_r
 
 ## 当前状态
 
+本轮更新（2026-07-02，控制台服务状态宽限期修复与音频设备排查）：
+- 背景：Aaron 反馈前端"服务状态"面板有时与实际不一致，典型场景是 Orin 整机重启后先手动启动控制台。
+- 根因（读代码确认）：`status.py::get_runtime_service_statuses` 的"启动中"黄色态此前只有两条触发路径——①主循环(`rabbitbot-loop.service`)进程刚启动 180s 内；②有人点了前端"重启"按钮、记录过 `_recent_container_restarts`。但 `docker-compose.decoupled.yaml` 全部 6 个容器都是 `restart: unless-stopped`，Orin 重启后 docker 会自行拉起容器（不经过 loop），而控制台没有 `After=docker.service` 依赖、且默认不开机自启，手动启动后立刻对外提供 `/api/status`——此时两条触发路径都不满足，未就绪的服务会被误判为"离线"而非"启动中"。
+- 已完成：`rabbitbot/control_console/status.py` 增加第三条触发信号——控制台进程自身的启动时间戳 `_console_process_start_epoch`（模块加载时记录），同一 180s 宽限期内同样让未就绪服务显示"启动中"；`get_runtime_service_statuses` 的 DEBUG 日志同步增加 `console_uptime` 字段便于排查。
+- 已验证：直接 `docker restart rabbitbot-audio`（绕开控制台重启按钮，模拟容器被 docker 自动重启的场景）复现问题——从发起重启到 TTS/STT 端口全部就绪约 45 秒（14:33:16→14:34:01），期间 `/api/status` 全程返回 `state=offline`，从未出现 `starting`，与代码分析完全吻合。**修复代码已上传，但控制台进程仍是旧代码在跑（重启需交互式 sudo，本工具无法执行），须 Aaron 手动 `sudo systemctl restart rabbitbot-control-console.service` 后才会生效**；生效后可重复同一 `docker restart rabbitbot-audio` 测试，预期该窗口显示"启动中"而非"离线"。
+- 顺带排查（Aaron 要求，现场新接入 REDMI 音箱与 DJI Mic Mini）：
+  - **DJI Mic Mini（STT 输入）：确认正常**。`scripts/start_stt_funasr_app.bash` 启动前用 `sounddevice` 扫描设备并按名称关键字匹配，本次实测正确识别为 `hw:2,0`、导出 `INPUT_DEVICE_INDEX=24`，STT 日志 (`rabbitbot_stt.log`) 确认 `in_device_id: 24`。
+  - **REDMI Speaker（TTS 输出）：确认不可达，两层原因**。①`docker-compose.decoupled.yaml` 里 `RABBITBOT_TTS_BACKEND` 默认写死为 `unitree`（`${RABBITBOT_TTS_BACKEND:-unitree}`），这个默认值先于 `scripts/start_tts_app.bash` 内部更智能的 `auto`（健康检查失败会自动回退本地设备）默认值生效，导致自动回退逻辑从未被触发；无机器人模式下调用 `/exec text_to_speech` 直接返回 `{"error":"Unitree G1 TTS 请求失败: returncode=127"}`。②即使回退到本地播放分支，REDMI 是通过蓝牙 A2DP 连接（`bluetoothctl`/`pactl` 可见 `bluez_sink.50_92_6A_86_78_D1.a2dp_sink`），只存在于宿主 PulseAudio/BlueZ 会话；`rabbitbot-audio` 容器只挂载了 `/dev/snd`（原始 ALSA），没有 Pulse/BlueZ 桥接，容器内 `sounddevice.query_devices()` 枚举不到 REDMI，本地设备扫描逻辑（`scan_once()`）最多只能落到 HDMI 或 Tegra APE 内置设备。实测：调用 `/exec text_to_speech` 前后 `pactl list short sinks` 中 REDMI 对应 sink 状态始终是 `SUSPENDED`，未收到任何音频。
+  - **待 Aaron 决策**：REDMI 若要长期作为无机器人模式测试音箱，需要额外工作（把宿主 PulseAudio/BlueZ 桥接进容器，播放路径切到 `paplay`/pactl 感知的输出），工作量不小；若只是临时测试，可先把 `runtime/portable.env` 的 `RABBITBOT_TTS_BACKEND` 显式设为 `auto`，至少让现有健康检查回退逻辑生效、消除 `returncode=127` 报错（回退后会落到 HDMI/内置设备而非 REDMI，仍然没有声音，但行为更可预期）。本轮未改动任何 TTS 后端配置。
+
 本轮更新（2026-07-02，模型按需自动下载）：
 - 背景和目标：此前 `rabbitbot-control-console.service` 启动后，前端点“开始程序(无机器人模式)”会默认拉起 VLM/Embedding/STT，但 `deploy/ensure_models.sh` 又因 `RABBITBOT_ENABLE_VLM=0`、`RABBITBOT_ENABLE_STT=0` 在无参数时跳过下载，导致“运行时需要模型、下载脚本认为不需要模型”的配置错位。本轮目标是让 VLM/Embedding/STT 服务启动前自动检查并下载自身所需模型到项目根 `models/`。
 - 已完成：`deploy/ensure_models.sh` 增加 `RABBITBOT_ENABLE_EMBEDDING` 支持、目标去重、关键文件完整性检查、半下载目录补齐下载、下载锁等待与耗时/阶段日志；VLM/Embedding 检查 `config.json`，SenseVoice 检查 `config.yaml`/`model.pt`/`am.mvn`，不再只凭目录非空判断模型存在。
@@ -68,7 +78,8 @@ RabbitBot 自主运行包，部署在 ShuHao-orin。Git 根 `/mnt/disk1/gt/air_r
 - 会前已完成：DJI Mic Mini 右声道 STT 输入修复（双声道按 RMS 选道、`STT_INPUT_GAIN=8.0`、新增 `get_last_rms` 诊断接口）。
 
 未完成 / 待办：
-- **控制台改动（`config.py` 容器名/日志路径、`status.py`/`app.py` 服务状态“启动中”态与去除聚合提示）需重启 `rabbitbot-control-console.service`（sudo）才生效，尚未重启。**
+- **控制台改动（`config.py` 容器名/日志路径、`status.py`/`app.py` 服务状态“启动中”态与去除聚合提示、本轮新增的控制台自身启动宽限期修复）需重启 `rabbitbot-control-console.service`（sudo）才生效，尚未重启。**
+- REDMI 蓝牙音箱当前无法接收 TTS 音频（详见上方本轮更新），待 Aaron 决定处理方向后再动代码。
 - 机器人离线：真机导航/返航、nav 核心 Pose/Ready 未端到端验证。
 - 导览数据为空：`combined_data.json` 缺失 + Neo4j 展点 0 节点 → `navi_execute` 里 `ctx.memory.query()` 语义检索本轮已可回退到 markdown（`memory/` 目录下需要有对应展点文档才能命中，目前该目录只有 `README.md`，**尚未补充真实展点/业务 markdown 内容**），否则仍命中“异常结点”。
 - 已知未修 bug（本轮未动，仍是不同代码路径）：`workflow.py::navi_check_execute` 的 `random.sample(ctx.entity_lst, num_entity)` 在 `ctx.entity_lst`（`context.py` 启动时 `get_group_names("展点")` 的结果，只读 Neo4j）为空时崩溃（“Sample larger than population”），挡住导览导航候选提示路径；`get_group_names`/`get_group_summary` 本轮未接入 markdown，需要的话应在这两个接口上做类似 `query_combined` 的合并。
@@ -81,6 +92,8 @@ RabbitBot 自主运行包，部署在 ShuHao-orin。Git 根 `/mnt/disk1/gt/air_r
 - STT 端口 28184，注入口令用 `/exec` 的 `inject_text_async`（与“对麦克风说话”同路径，被 `get_text_async` 消费）。
 - 目标机 `rabbitbot-memory` 容器实际运行 Python 解释器是相对路径 `py310/bin/python`（cwd=`/workspace/projects/rabbitbot-dev-ros2-master`），内含 `graphiti-core 0.11.6`/`neo4j 6.0.2`，但**无 pytest 且 pip index（`pypi.jetson-ai-lab.dev`/`pypi.tuna.tsinghua.edu.cn`）在此机器上不可达，无法临时安装**；控制台测试此前能跑 76 passed 应是在另一个具备 pytest 的环境（如开发机或 `control_console_venv`，但该 venv 目前也未装 pytest），非本机 py310。后续如需在本机跑 pytest 套件，需先确认可用的 pytest 环境或离线 wheel 来源。
 - markdown 记忆目录（`/mnt/disk1/gt/air_robot_gt_projects/memory`）已挂载进 `rabbitbot-vlm/audio/memory/workflow` 四个容器（原有 bind mount `/mnt/disk1/gt/air_robot_gt_projects:/workspace/projects`，无需新增挂载）；`/query` 端到端验证：临时写入 `memory/_verify_tmp.md`（含"斑马展台"内容，Neo4j 中不存在该节点），`curl /query` 正确返回 `group_id: markdown` 的匹配结果，验证后已删除该临时文件。
+- `rabbitbot-audio` 容器内 STT 麦克风自动探测得到 DJI Mic Mini（PortAudio index 24，对应 `hw:2,0`；索引会随容器/设备重新枚举变化，以自动探测结果为准，不要硬编码）；REDMI 蓝牙音箱只存在于宿主 PulseAudio（`bluez_sink.50_92_6A_86_78_D1.a2dp_sink`），容器当前访问不到，`sounddevice` 设备列表里看不到它。
+- 当前 `RABBITBOT_TTS_BACKEND` 实际生效值是 `unitree`（来自 compose 默认值，不是 `start_tts_app.bash` 脚本自身更智能的 `auto` 默认值），无机器人模式下调用会直接报错 `returncode=127`，不会自动回退本地播放。
 
 ## 阻塞问题
 
@@ -93,6 +106,8 @@ RabbitBot 自主运行包，部署在 ShuHao-orin。Git 根 `/mnt/disk1/gt/air_r
 2. 在 `memory/` 目录下补充真实展点/业务 markdown 文档（参考 `memory/README.md` 的格式约定），让本轮新增的 markdown 检索真正发挥作用；或用 importer 把展点导入 Neo4j。
 3. 修 `navi_check_execute` 的 `random.sample` 空列表崩溃（`ctx.entity_lst` 为空时的兜底分支），可考虑让 `get_group_names`/`get_group_summary` 也合并 markdown 来源（对齐本轮 `query_combined` 的思路）。
 4. 机器人上线后：验证 `rabbitbot-navbridge` 输出 Pose/Ready、loop 进入真机导览与返航。
+5. Aaron 决定 REDMI 蓝牙音箱的处理方向（桥接 PulseAudio/BlueZ 进容器 / 暂时把 `RABBITBOT_TTS_BACKEND` 设为 `auto` 消除报错 / 维持现状待真机上线后不再需要本地音箱）。
+6. 控制台重启生效后，重跑一次 `docker restart rabbitbot-audio` 回归验证服务状态宽限期修复（预期离线窗口显示"启动中"而非"离线"）。
 
 ## 注意事项
 
@@ -107,14 +122,20 @@ RabbitBot 自主运行包，部署在 ShuHao-orin。Git 根 `/mnt/disk1/gt/air_r
 
 - 解耦栈：`docker/portable/docker-compose.decoupled.yaml`、`scripts_1/unified_runtime/start_role_container.sh`、`start_unified_container.sh`。
 - 编排：`scripts_1/start_loop_entry.sh`、`scripts_1/start_nav_bridge_workflow_loop.sh`。
-- 控制台：`rabbitbot/control_console/{app,commands,config,status,dialogue}.py`。
+- 控制台：`rabbitbot/control_console/{app,commands,config,status,dialogue}.py`；服务状态判定见 `status.py::get_runtime_service_statuses`（在线/启动中/离线三条宽限期信号：主循环启动、容器重启按钮、控制台自身启动）。
 - 业务：`rabbitbot/agno_agents/{workflow,prompts}.py`、`rabbitbot/provider.py`、`stt_app_funasr.py`、`tts_app.py`、`rabbitbot/audio/run_tts_espnet.py`、`rabbitbot/tools/{sound_agno,logging}.py`。
+- 音频设备自动探测：`scripts/start_stt_funasr_app.bash`（STT 输入设备扫描/`INPUT_DEVICE_INDEX`）、`scripts/start_tts_app.bash`（TTS 后端自动选择/输出设备扫描/`OUTPUT_DEVICE_INDEX`，含 unitree↔local 健康检查回退逻辑）。
 - 记忆（本轮新增/改动）：`memory/`（项目根目录，markdown 文档存放处，含 `README.md`）、`rabbitbot/memory/markdown_memory.py`（新增）、`rabbitbot/memory/agent_memory.py::query_combined`、`memory_app.py`（`/query`、新增 `/memory_status`）、`tests/memory/test_markdown_memory.py`（新增）。
 - 端口：Neo4j 7687 / VLM 8000 / Embedding 8005 / Memory 28182(`/memory_status` 可查记忆状态) / STT 28184 / TTS 28185 / Robot Agent·nav 28180 / 控制台 8080。
 
 ## 最近历史摘要（提交）
 
-- 部署链路适配容器解耦：README + portable.env.example + start_portable_stack.sh + export/import + check 改用 compose 解耦栈（本轮提交）
+- 控制台服务状态"启动中"宽限期补充控制台自身启动信号，覆盖 Orin 整机重启场景（本轮提交）
+- `3e135c6` 修复关闭程序的多容器重启逻辑
+- `df752a1` 修复模型服务启动前的按需下载
+- `15509e9` 合并阶段功能更新到 master
+- `81f6cfa` 记忆系统支持 markdown 文档与 Neo4j 知识图谱双来源检索
+- `573e753` 部署链路适配容器解耦：README + portable.env.example + start_portable_stack.sh + export/import + check 改用 compose 解耦栈
 - `97ef15a` 修复“重启后前端短暂闪回在线”：前端加本地强制启动中窗口 `pendingRestartUntil`，不被在途轮询响应覆盖
 - `02e5dcd` 修复服务重启按钮反馈延迟：先标记+后台异步重启+立即返回，新增强制启动中窗口与前端乐观更新
 - `73982f0` 控制台服务状态面板每服务加“重启”按钮（重启对应容器/服务，TTS/STT 等同容器提示一并重启）
@@ -132,4 +153,4 @@ RabbitBot 自主运行包，部署在 ShuHao-orin。Git 根 `/mnt/disk1/gt/air_r
 - `64c4cdd` 解耦统一容器为五个独立容器(docker-compose)
 - 更早：`6cd1543` get_inst_chat 精简提示词；`74ed6bf` 无机器人跳过手臂动作；`080a224` 控制台按钮顺序；`e67ee72` DJI 右声道 STT 修复；以及 TTS 声卡回退、Embedding/VLM 默认启用、当前运行日志面板、返航、portable core/nav 镜像、systemd/sudoers 治理（均已压缩，详见 git log）。
 
-生成时间：2026-07-02（本轮更新：模型按需自动下载与 portable 默认模型能力启用）
+生成时间：2026-07-02（本轮更新：控制台服务状态宽限期修复、音频设备排查）

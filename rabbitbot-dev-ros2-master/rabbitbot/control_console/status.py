@@ -396,6 +396,18 @@ SERVICE_CONTAINER_GROUP = {
 # 控制台为单进程 FastAPI，模块级字典即可；多 worker 部署下不共享(可接受)。
 _recent_container_restarts: dict[str, float] = {}
 
+# 控制台进程自身的启动时间戳：用于在控制台刚启动/重启后的宽限期内，把尚未就绪的服务视为
+# “启动中”而非“离线”。覆盖主循环(rabbitbot-loop.service)未运行、基础服务容器由 docker
+# compose 的 `restart: unless-stopped` 策略自行拉起、模型仍在加载的场景——典型例子是 Orin
+# 整机重启后先手动启动控制台：此时 get_main_loop_start_epoch() 探测不到主循环进程、
+# _recent_container_restarts 也是空的，此前会被直接误判为“离线”。
+_console_process_start_epoch = time.time()
+logger.info(
+    "控制台服务状态模块已加载：进程启动时间戳=%.0f, 启动宽限期=%.0fs",
+    _console_process_start_epoch,
+    SERVICE_STARTUP_GRACE_SECONDS,
+)
+
 
 def resolve_service_container(key: str) -> str | None:
     # 把服务 key 解析为其所在容器名：compose 解耦栈下各角色独立容器；unified(旧)下 rabbitbot 服务同在统一容器。
@@ -491,11 +503,15 @@ def get_runtime_service_statuses() -> list[ServiceStatus]:
         ("vlm", "VLM", 8000, True),
         ("embedding", "Embedding", 8005, True),
     ]
-    # 主循环刚启动后的一段时间内，未就绪的服务视为“启动中”而非“离线”，便于前端用黄色提示。
+    # 主循环刚启动后的一段时间内，未就绪的服务视为“启动中”而非“离线”，便于前端用黄色提示；
+    # 控制台进程自身刚启动/重启后的同一宽限期内同样生效，覆盖主循环未运行时的整机重启场景
+    # （见 _console_process_start_epoch 定义处说明）。
     loop_start_epoch = get_main_loop_start_epoch()
     now = time.time()
+    console_uptime = now - _console_process_start_epoch
     startup_window_active = (
-        loop_start_epoch is not None and 0 <= (now - loop_start_epoch) < SERVICE_STARTUP_GRACE_SECONDS
+        (loop_start_epoch is not None and 0 <= (now - loop_start_epoch) < SERVICE_STARTUP_GRACE_SECONDS)
+        or console_uptime < SERVICE_STARTUP_GRACE_SECONDS
     )
     # 惰性清理过期的容器重启标记，避免无限增长。
     for stale in [c for c, ts in _recent_container_restarts.items() if now - ts >= SERVICE_STARTUP_GRACE_SECONDS]:
@@ -537,12 +553,14 @@ def get_runtime_service_statuses() -> list[ServiceStatus]:
     online_count = sum(1 for item in statuses if item.online)
     starting_count = sum(1 for item in statuses if item.state == "starting")
     logger.debug(
-        "控制台服务状态探测完成：online=%s, starting=%s, total=%s, startup_window=%s, loop_start_epoch=%s",
+        "控制台服务状态探测完成：online=%s, starting=%s, total=%s, startup_window=%s, "
+        "loop_start_epoch=%s, console_uptime=%.1fs",
         online_count,
         starting_count,
         len(statuses),
         startup_window_active,
         loop_start_epoch,
+        console_uptime,
     )
     return statuses
 
