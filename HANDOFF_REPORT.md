@@ -29,6 +29,14 @@ RabbitBot 自主运行包，部署在 ShuHao-orin。Git 根 `/mnt/disk1/gt/air_r
 
 ## 当前状态
 
+本轮更新（2026-07-02，抽出 workflow 纯逻辑模块）：
+- 背景：继续主链路稳定性重构，本轮只做一个小提交，聚焦 `rabbitbot-dev-ros2-master` 内不依赖 agno/模型/机器人/FastAPI 的 workflow 纯逻辑边界。
+- 已完成：新增 `rabbitbot.guide.controls`，集中处理剧本继续词、开始导览词、返航词的归一化与匹配；`workflow.py` 内原控制词函数保留，改为薄包装调用。
+- 已完成：新增 `rabbitbot.guide.dialogue`，集中处理 DOCX dialogue 路径选择、JSON 加载与结构校验、变量格式化、opening 文案、点位实体规范化、location 坐标提取、剧本步骤解析；`workflow.py` 原 `_docx_*` 和 `_extract_location_points` 函数名保留并转调新模块。
+- 新增日志点：dialogue 文件缺失、JSON 解析失败、顶层字段类型非法、缺少 `leader_calling`、占位符缺变量、点位字段缺失/类型非法、控制词匹配均记录路径、字段、错误类型或文本长度/匹配结果；不记录完整用户原文。
+- 已验证：`PYTHONPYCACHEPREFIX=/tmp/rabbitbot_refactor_pycache python3 -m py_compile rabbitbot/guide/*.py rabbitbot/agno_agents/workflow.py tests/guide/*.py` 通过；`python3 -m unittest discover tests/guide -v` 通过（13 tests）；上一轮客户端测试 `python3 -m unittest tests.clients.test_audio_clients tests.clients.test_runtime_config -v` 通过（9 tests）。
+- 未完成：`create_main_workflow()` 内依赖 agno、TTS/STT、导航、机器人动作的执行逻辑仍未拆分；后续可在本轮纯逻辑测试基础上继续拆 DOCX 状态机或启动脚本健康检查。
+
 本轮更新（2026-07-02，启动重构分支并抽出音频客户端边界）：
 - 背景：Aaron 要求将项目重构到另一个分支，优先解决调试和新增功能过程中累积的主链路稳定性问题；本轮从 `master` 创建 `refactor/rabbitbot-runtime-structure-stabilization`。
 - 已完成：新增 `rabbitbot.clients.audio`，把 `STTAgent` / `TTSAgent` 的 `/exec` HTTP 调用从 `provider.py` 中抽离；`provider.py` 保留原类名导入和 `create_stt_agent` / `create_tts_agent` 工厂函数，外部调用保持兼容。
