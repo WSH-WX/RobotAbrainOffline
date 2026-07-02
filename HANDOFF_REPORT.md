@@ -29,6 +29,14 @@ RabbitBot 自主运行包，部署在 ShuHao-orin。Git 根 `/mnt/disk1/gt/air_r
 
 ## 当前状态
 
+本轮更新（2026-07-02，Kokoro TTS 模型路径切到项目 models）：
+- 背景：Kokoro 本地模型已放在项目根目录 `models/Kokoro-82M`，需要让 TTS 默认从项目目录读取，避免依赖容器内额外 `/models` 路径或在线下载。
+- 已完成：`rabbitbot/audio/run_tts_espnet.py` 新增 Kokoro 模型目录解析逻辑，默认使用 `air_robot_gt_projects/models/Kokoro-82M`；仍保留 `KOKORO_MODEL_DIR` 显式覆盖，并在项目模型不完整但旧 `RABBITBOT_MODELS_DIR` 可用时记录 WARNING 后回退。
+- 已完成：新增 INFO/启动日志，记录 Kokoro 模型目录来源、实际路径和完整性状态，便于排查路径错误、缺少 `config.json`/`kokoro-v1_0.pth`/`voices/zm_yunxi.pt` 或意外回退。
+- 已验证：`python3 -m py_compile rabbitbot-dev-ros2-master/rabbitbot/audio/run_tts_espnet.py` 通过；`docker restart -t 20 rabbitbot-audio` 后 TTS(28185) 与 STT(28184) 均恢复，`rabbitbot-audio` 为 healthy。
+- 已验证：TTS 日志显示 `KokoroTTS: 使用模型目录 source=project_models, dir=/workspace/projects/models/Kokoro-82M, ready=True`，并完成预热与 STT 启动提示语合成。
+- 注意：工作区仍保留此前已有的 `docker/portable/docker-compose.decoupled.yaml` 未提交改动（TTS 后端默认 auto），本轮提交未纳入该文件。
+
 本轮更新（2026-07-02，控制台服务状态宽限期修复与音频设备排查）：
 - 背景：Aaron 反馈前端"服务状态"面板有时与实际不一致，典型场景是 Orin 整机重启后先手动启动控制台。
 - 根因（读代码确认）：`status.py::get_runtime_service_statuses` 的"启动中"黄色态此前只有两条触发路径——①主循环(`rabbitbot-loop.service`)进程刚启动 180s 内；②有人点了前端"重启"按钮、记录过 `_recent_container_restarts`。但 `docker-compose.decoupled.yaml` 全部 6 个容器都是 `restart: unless-stopped`，Orin 重启后 docker 会自行拉起容器（不经过 loop），而控制台没有 `After=docker.service` 依赖、且默认不开机自启，手动启动后立刻对外提供 `/api/status`——此时两条触发路径都不满足，未就绪的服务会被误判为"离线"而非"启动中"。

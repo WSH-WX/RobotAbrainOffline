@@ -32,6 +32,52 @@ def _tts_trace(stage, tts_index=None, text=None, **fields):
     file_logger.debug(log_text)
 
 
+def _default_project_models_dir():
+    """返回 air_robot_gt_projects 项目根下的 models 目录。"""
+    project_root = os.environ.get("RABBITBOT_PROJECTS_DIR")
+    if not project_root:
+        rabbitbot_dir = os.environ.get("RABBITBOT_DIR")
+        if rabbitbot_dir:
+            project_root = os.path.abspath(os.path.join(rabbitbot_dir, ".."))
+        else:
+            project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+    return os.path.join(project_root, "models")
+
+
+def _path_has_complete_kokoro_model(model_dir):
+    return all(
+        os.path.exists(path)
+        for path in (
+            os.path.join(model_dir, "config.json"),
+            os.path.join(model_dir, "kokoro-v1_0.pth"),
+            os.path.join(model_dir, "voices", "zm_yunxi.pt"),
+        )
+    )
+
+
+def _resolve_kokoro_model_dir():
+    explicit_model_dir = os.environ.get("KOKORO_MODEL_DIR")
+    if explicit_model_dir:
+        return explicit_model_dir, "KOKORO_MODEL_DIR"
+
+    project_model_dir = os.path.join(_default_project_models_dir(), "Kokoro-82M")
+    if _path_has_complete_kokoro_model(project_model_dir):
+        return project_model_dir, "project_models"
+
+    legacy_models_dir = os.environ.get("RABBITBOT_MODELS_DIR")
+    if legacy_models_dir:
+        legacy_model_dir = os.path.join(legacy_models_dir, "Kokoro-82M")
+        if _path_has_complete_kokoro_model(legacy_model_dir):
+            file_logger.warning(
+                "项目目录 Kokoro 模型不完整，回退使用 RABBITBOT_MODELS_DIR：project_dir=%s, fallback_dir=%s",
+                project_model_dir,
+                legacy_model_dir,
+            )
+            return legacy_model_dir, "RABBITBOT_MODELS_DIR"
+
+    return project_model_dir, "project_models_missing"
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Language selection")
     parser.add_argument("--lang", type=str, default="zh")
@@ -145,20 +191,21 @@ class EspnetTTS(object):
                                     }
                 self.orig_sr = self.text2speech[self.lang].fs
             elif self.tts_engine_type == "kokoro":
-                # 模型根目录优先用 RABBITBOT_MODELS_DIR(容器内挂载为 /models)，回退到相对源码的 models 目录。
-                default_models_dir = os.environ.get(
-                    "RABBITBOT_MODELS_DIR",
-                    os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "models")),
-                )
-                # 默认本地 Kokoro 模型目录：<models>/Kokoro-82M（与实际部署一致，不含多余 kokoro/ 子层）；可由 KOKORO_MODEL_DIR 覆盖。
-                kokoro_model_dir = os.environ.get(
-                    "KOKORO_MODEL_DIR",
-                    os.path.join(default_models_dir, "Kokoro-82M"),
-                )
+                # 默认使用 air_robot_gt_projects 项目根目录下的 models/Kokoro-82M，避免依赖额外的 /models 挂载路径。
+                # 如需临时诊断或兼容旧部署，可通过 KOKORO_MODEL_DIR 显式覆盖。
+                kokoro_model_dir, kokoro_model_source = _resolve_kokoro_model_dir()
                 kokoro_config_path = os.path.join(kokoro_model_dir, "config.json")
                 kokoro_model_path = os.path.join(kokoro_model_dir, "kokoro-v1_0.pth")
                 kokoro_voice_path = os.path.join(kokoro_model_dir, "voices", "zm_yunxi.pt")
-                if all(os.path.exists(p) for p in [kokoro_config_path, kokoro_model_path, kokoro_voice_path]):
+                local_kokoro_ready = _path_has_complete_kokoro_model(kokoro_model_dir)
+                file_logger.info(
+                    "KokoroTTS 模型目录解析完成：source=%s, dir=%s, ready=%s",
+                    kokoro_model_source,
+                    kokoro_model_dir,
+                    local_kokoro_ready,
+                )
+                print(f"KokoroTTS: 使用模型目录 source={kokoro_model_source}, dir={kokoro_model_dir}, ready={local_kokoro_ready}")
+                if local_kokoro_ready:
                     kokoro_model = KModel(
                         repo_id="hexgrad/Kokoro-82M",
                         config=kokoro_config_path,
