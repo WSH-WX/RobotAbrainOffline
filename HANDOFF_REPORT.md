@@ -29,6 +29,14 @@ RabbitBot 自主运行包，部署在 ShuHao-orin。Git 根 `/mnt/disk1/gt/air_r
 
 ## 当前状态
 
+本轮更新（2026-07-02，TTS 本地输出优先选择非 HDA 外接设备）：
+- 背景：Aaron 询问 local 模式是否优先选择设备名非 `NVIDIA Jetson AGX Orin HDA` 的输出；原逻辑在未设置 `TTS_DEVICE_NAME` 时会优先非内置设备，但 `auto` 回退默认设置 `TTS_DEVICE_NAME=BT67` 后，BT67 不存在时会直接进入内置声卡回退，可能跳过其它外接输出。
+- 已完成：`scripts/start_tts_app.bash` 的 sounddevice 扫描逻辑改为三档优先级：显式 `TTS_DEVICE_NAME` 匹配 > 非内置且非 HDA 的外接输出 > 允许内置声卡时的内置回退。
+- 已完成：新增设备选择诊断字段 `orin_hda`、`matched` 和最终 `reason`，启动日志会显示 `preferred_name`、`non_hda_external` 或 `builtin_fallback`，便于排查为什么选中某个输出设备。
+- 已验证：`bash -n rabbitbot-dev-ros2-master/scripts/start_tts_app.bash` 通过；容器内模拟选择当前会选 `REDMI Speaker 2-4550: USB Audio (hw:3,0)`，reason=`non_hda_external`。
+- 已验证：重启 `rabbitbot-audio` 后 TTS/STT 均恢复，容器 healthy；TTS 日志显示 `使用输出音频设备 REDMI Speaker 2-4550: USB Audio (hw:3,0)，index=25，reason=non_hda_external`。
+- 注意：如果 REDMI 只停留在 Bluetooth 设备列表、没有出现在容器 `sounddevice.query_devices()` 中，本逻辑仍无法选中它；需要先让宿主/容器音频层暴露出可用输出设备。
+
 本轮更新（2026-07-02，Kokoro TTS 模型路径切到项目 models）：
 - 背景：Kokoro 本地模型已放在项目根目录 `models/Kokoro-82M`，需要让 TTS 默认从项目目录读取，避免依赖容器内额外 `/models` 路径或在线下载。
 - 已完成：`rabbitbot/audio/run_tts_espnet.py` 新增 Kokoro 模型目录解析逻辑，默认使用 `air_robot_gt_projects/models/Kokoro-82M`；仍保留 `KOKORO_MODEL_DIR` 显式覆盖，并在项目模型不完整但旧 `RABBITBOT_MODELS_DIR` 可用时记录 WARNING 后回退。

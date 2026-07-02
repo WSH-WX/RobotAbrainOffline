@@ -206,6 +206,11 @@ builtin_keywords = (
     "admaif",
     "tegrasnd",
 )
+hda_keywords = (
+    "nvidia jetson agx orin hda",
+    " hda",
+    "hdmi",
+)
 
 
 def log(message):
@@ -215,6 +220,11 @@ def log(message):
 def is_builtin_audio(name):
     normalized = name.lower()
     return any(keyword in normalized for keyword in builtin_keywords)
+
+
+def is_orin_hda_audio(name):
+    normalized = f" {name.lower()}"
+    return any(keyword in normalized for keyword in hda_keywords)
 
 
 def scan_once():
@@ -232,28 +242,40 @@ def scan_once():
 
         name = dev.get("name", "")
         builtin = is_builtin_audio(name)
-        if preferred_name:
-            matched = preferred_name in name.lower()
-        else:
-            matched = not builtin
-        if matched or (allow_builtin and builtin):
-            candidates.append({
-                "index": index,
-                "name": name,
-                "channels": output_channels,
-                "builtin": builtin,
-                "matched": matched,
-            })
+        orin_hda = is_orin_hda_audio(name)
+        matched = bool(preferred_name and preferred_name in name.lower())
+        candidates.append({
+            "index": index,
+            "name": name,
+            "channels": output_channels,
+            "builtin": builtin,
+            "orin_hda": orin_hda,
+            "matched": matched,
+        })
 
     preferred = [
         item for item in candidates
         if item["matched"] and (allow_builtin or not item["builtin"])
     ]
-    fallback = [
+    non_hda_outputs = [
+        item for item in candidates
+        if not item["builtin"] and not item["orin_hda"]
+    ]
+    builtin_fallback = [
         item for item in candidates
         if allow_builtin and item["builtin"]
     ]
-    selected = (preferred or fallback or [None])[0]
+    if preferred:
+        selected = preferred[0]
+        selected["reason"] = "preferred_name"
+    elif non_hda_outputs:
+        selected = non_hda_outputs[0]
+        selected["reason"] = "non_hda_external"
+    elif builtin_fallback:
+        selected = builtin_fallback[0]
+        selected["reason"] = "builtin_fallback"
+    else:
+        selected = None
     return selected, candidates
 
 
@@ -276,17 +298,17 @@ while True:
         log(
             "TTS输出设备候选稳定检测: "
             f"index={selected['index']}, name={selected['name']}, "
-            f"stable={stable_seen}/{stable_count}"
+            f"reason={selected.get('reason')}, stable={stable_seen}/{stable_count}"
         )
         if stable_seen >= stable_count:
-            print(f"{selected['index']}|{selected['name']}|{selected['channels']}")
+            print(f"{selected['index']}|{selected['name']}|{selected['channels']}|{selected.get('reason')}")
             sys.exit(0)
     else:
         stable_seen = 0
         last_key = None
         if preferred_name:
             if allow_builtin:
-                log(f"未检测到指定 TTS 输出设备: {preferred_name}，继续尝试内置声卡回退")
+                log(f"未检测到指定 TTS 输出设备: {preferred_name}，继续尝试非 HDA 外接输出和内置声卡回退")
             else:
                 log(f"未检测到指定 TTS 输出设备: {preferred_name}")
         else:
@@ -301,7 +323,8 @@ if last_candidates:
     for item in last_candidates:
         log(
             f"  index={item['index']}, name={item['name']}, "
-            f"channels={item['channels']}, builtin={item['builtin']}"
+            f"channels={item['channels']}, builtin={item['builtin']}, "
+            f"orin_hda={item['orin_hda']}, matched={item['matched']}"
         )
 else:
     log("最后一次扫描没有发现可用输出设备")
@@ -312,6 +335,7 @@ PY
     DEVICE_SCAN_STATUS=$?
     DEVICE_INDEX=$(echo "$DEVICE_INFO" | cut -d'|' -f1)
     DEVICE_FOUND_NAME=$(echo "$DEVICE_INFO" | cut -d'|' -f2)
+    DEVICE_SELECT_REASON=$(echo "$DEVICE_INFO" | cut -d'|' -f4)
 else
     DEVICE_SCAN_STATUS=2
     DEVICE_INDEX=""
@@ -320,7 +344,7 @@ fi
 
         if [ "${DEVICE_SCAN_STATUS}" -eq 0 ] && [ -n "$DEVICE_INDEX" ]; then
             export OUTPUT_DEVICE_INDEX=$DEVICE_INDEX
-            echo "使用输出音频设备 ${DEVICE_FOUND_NAME}，index=${OUTPUT_DEVICE_INDEX}"
+            echo "使用输出音频设备 ${DEVICE_FOUND_NAME}，index=${OUTPUT_DEVICE_INDEX}，reason=${DEVICE_SELECT_REASON}"
         else
             echo "未找到稳定可用的输出音频设备，拒绝启动 TTS。"
             echo "当前已默认允许内置声卡回退；如需强制外接声卡，请设置 RABBITBOT_TTS_ALLOW_BUILTIN=0。"
