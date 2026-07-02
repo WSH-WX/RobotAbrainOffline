@@ -78,7 +78,9 @@ services:
       RABBITBOT_LOG_DIR: /workspace/projects/logs/unified_runtime
       RABBITBOT_UNIFIED_START_STT: "1"
       RABBITBOT_TTS_ALLOW_BUILTIN: "1"
-      RABBITBOT_TTS_BACKEND: ${RABBITBOT_TTS_BACKEND:-unitree}
+      # 默认 auto：由 start_tts_app.bash 探测 Unitree 网卡/本体音频服务，通过则用 unitree，
+      # 失败（如机器人不在线、eno1 无载波）则自动回退本地声卡；不再写死 unitree 绕过健康检查。
+      RABBITBOT_TTS_BACKEND: ${RABBITBOT_TTS_BACKEND:-auto}
       RABBITBOT_UNIFIED_TTS_DEVICE: cuda
       RABBITBOT_UNIFIED_TTS_FAST_SOUND_PRELOAD: "0"
       RABBITBOT_UNIFIED_TTS_STARTUP_SPEECH: "0"
