@@ -29,6 +29,14 @@ RabbitBot 自主运行包，部署在 ShuHao-orin。Git 根 `/mnt/disk1/gt/air_r
 
 ## 当前状态
 
+本轮更新（2026-07-02，抽出 workflow 导航文本规则）：
+- 背景：继续主链路稳定性重构，本轮只做一个小提交，聚焦 `workflow.py` 内导航/视觉/聊天意图规则的纯函数边界，保持分类结果和模糊匹配阈值完全兼容。
+- 已完成：新增 `rabbitbot.guide.routing`，集中处理导航文本归一化、常见 ASR 误识别替换、聊天信息请求、导航动作请求、视觉请求、下一点位请求、任务规则分类和实体模糊匹配。
+- 已完成：`workflow.py` 内原 `_normalize_nav_text`、`is_chat_info_request`、`has_navigation_action`、`is_visual_request`、`is_direct_navigation_request`、`is_next_board_request`、`classify_task_by_rule`、`resolve_navigation_entity_by_fuzzy` 函数名保留，内部转调 routing 模块；未改 `plan_executor`、`navi_execute`、`navi_check_execute` 控制流。
+- 新增日志点：routing 模块在 DEBUG 级别记录文本长度、分类结果、实体候选数量、是否命中和最佳分数；不记录完整用户输入。
+- 已验证：`PYTHONPYCACHEPREFIX=/tmp/rabbitbot_refactor_pycache python3 -m py_compile rabbitbot/guide/*.py rabbitbot/agno_agents/workflow.py tests/guide/*.py` 通过；`python3 -m unittest discover tests/guide -v` 通过（20 tests）；上一轮客户端测试 `python3 -m unittest tests.clients.test_audio_clients tests.clients.test_runtime_config -v` 通过（9 tests）。
+- 未完成：运行态导航执行、导航确认、导航检查 LLM 调用仍留在 `create_main_workflow()` 内；后续可继续抽 profile 日志模块或 DOCX 状态机执行器。
+
 本轮更新（2026-07-02，抽出 workflow 纯逻辑模块）：
 - 背景：继续主链路稳定性重构，本轮只做一个小提交，聚焦 `rabbitbot-dev-ros2-master` 内不依赖 agno/模型/机器人/FastAPI 的 workflow 纯逻辑边界。
 - 已完成：新增 `rabbitbot.guide.controls`，集中处理剧本继续词、开始导览词、返航词的归一化与匹配；`workflow.py` 内原控制词函数保留，改为薄包装调用。
