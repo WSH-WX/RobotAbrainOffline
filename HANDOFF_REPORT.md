@@ -6,7 +6,7 @@
 
 RabbitBot 自主运行包，部署在 ShuHao-orin。Git 根 `/mnt/disk1/gt/air_robot_gt_projects`，主代码 `rabbitbot-dev-ros2-master`，Python 包 `rabbitbot`（>=3.10）。系统由 `rabbitbot-control-console.service`（控制台，nvidia 用户，8080）+ `rabbitbot-loop.service`（导览主循环）+ 一组容器化基础服务组成，支持 QA/导览 workflow、语音口令、返航、无机器人模式。
 
-当前分支 `feature/memory-markdown-neo4j`（从 `feature/qa-vlm-workflow` 分出），本轮目标：把 Memory Agent（`rabbitbot-memory` 容器，28182）的记忆来源从"仅 Neo4j 知识图谱"扩展为"markdown 文档 + Neo4j 知识图谱"双来源，供 VLM/LLM 生成回答前检索相关记忆；Neo4j 检索异常或为空时自动忽略该来源，不影响 markdown 结果、不中断请求。
+当前分支 `refactor/rabbitbot-runtime-structure-stabilization`，本轮目标：按 Aaron 要求启动主链路稳定性重构，先在 `rabbitbot-dev-ros2-master` 内建立可回归的低风险边界，保持外部端口、脚本入口、容器名和控制台 API 兼容；后续再逐步拆分 workflow 与启动编排。
 
 近期主线：把原来挤在单个 `rabbitbot-unified-runtime` 容器内的服务**解耦为多容器（docker-compose）**，并让导览 workflow 跑在专用容器上；配套修复前端、日志、TTS、STT、启动等问题。
 
@@ -28,6 +28,16 @@ RabbitBot 自主运行包，部署在 ShuHao-orin。Git 根 `/mnt/disk1/gt/air_r
 - 镜像未瘦身：3 个 rabbitbot 容器共用 core-portable（本机已无原始最小镜像）；容器层面已完全解耦。
 
 ## 当前状态
+
+本轮更新（2026-07-02，启动重构分支并抽出音频客户端边界）：
+- 背景：Aaron 要求将项目重构到另一个分支，优先解决调试和新增功能过程中累积的主链路稳定性问题；本轮从 `master` 创建 `refactor/rabbitbot-runtime-structure-stabilization`。
+- 已完成：新增 `rabbitbot.clients.audio`，把 `STTAgent` / `TTSAgent` 的 `/exec` HTTP 调用从 `provider.py` 中抽离；`provider.py` 保留原类名导入和 `create_stt_agent` / `create_tts_agent` 工厂函数，外部调用保持兼容。
+- 已完成：新增 `rabbitbot.runtime.config`，集中读取服务 URL 和浮点超时配置；当前接入 `RABBITBOT_STT_AGENT_URL`、`RABBITBOT_TTS_AGENT_URL` 和 `RABBITBOT_AUDIO_HTTP_TIMEOUT`，默认值保持不变。
+- 已完成：`pyproject.toml` 新增 `test` 可选依赖组（`pytest`、`fastapi`、`httpx`、`requests`），为后续控制台和客户端测试环境提供明确入口。
+- 新增日志点：音频客户端初始化记录服务地址和超时；请求失败、超时、HTTP 非 2xx、JSON 解析失败、缺少 `out_text`、`utterance_id` 非法时记录 URL、耗时、状态码、任务长度、响应长度和异常类型，避免继续依赖 `print` 或静默返回。日志不记录完整用户文本或模型输出。
+- 已验证：`PYTHONPYCACHEPREFIX=/tmp/rabbitbot_refactor_pycache python3 -m py_compile rabbitbot/clients/audio.py rabbitbot/runtime/config.py rabbitbot/provider.py tests/clients/test_audio_clients.py tests/clients/test_runtime_config.py` 通过；`python3 -m unittest tests.clients.test_audio_clients tests.clients.test_runtime_config -v` 通过（9 tests）。
+- 已验证/限制：现有 `tests/control_console` 在系统 Python 下仍因缺少 `fastapi` / `pytest` 无法运行；本轮只记录测试环境缺口并补充可选依赖组，未安装依赖。
+- 未完成：尚未拆分 `workflow.py`、`start_nav_bridge_workflow_loop.sh` 和机器人/相机层；后续应继续按小阶段提交，先补特征化测试，再拆状态机和脚本库函数。
 
 本轮更新（2026-07-02，TTS 本地输出优先选择非 HDA 外接设备）：
 - 背景：Aaron 询问 local 模式是否优先选择设备名非 `NVIDIA Jetson AGX Orin HDA` 的输出；原逻辑在未设置 `TTS_DEVICE_NAME` 时会优先非内置设备，但 `auto` 回退默认设置 `TTS_DEVICE_NAME=BT67` 后，BT67 不存在时会直接进入内置声卡回退，可能跳过其它外接输出。
