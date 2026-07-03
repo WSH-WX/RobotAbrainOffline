@@ -131,6 +131,7 @@ python3 -m unittest discover tests -v
 
 ## 近期工作
 
+2026-07-03（闲聊 RAG）：给 workflow 闲聊(C)路径加入记忆 RAG——`chat_execute` 在调用 VLM 前先 `ctx.memory.query` 检索（neo4j 图谱 + markdown 文档，与导览/找物品同一检索），命中则把参考资料拼入用户输入交给 VLM 生成回答；未命中/异常/`RABBITBOT_CHAT_RAG=0` 时行为与原来完全一致。新增两个可选 env：`RABBITBOT_CHAT_RAG`(默认1)、`RABBITBOT_CHAT_RAG_GROUP`(默认“闲聊检索”，中文名→检索全部记忆)。实时验证：注入“介绍咖啡厅”→答“咖啡厅在二楼东侧”(neo4j)、注入“有免费wifi吗”→答“全区域覆盖免费WiFi”(markdown)，均与非 RAG 的通用回答不同。背景：此前 C/V 路径不查记忆，只有 N/G(导览/找物品)查；markdown 记忆内容自由，故让闲聊也走 RAG。
 2026-07-03（内部解耦）：将导览上帝模块 `agno_agents/workflow.py`（3888 行）按关注点纯机械拆为 5 个同目录子模块（config/profiling/text/data/arm 共约 865 行迁出，主文件降至 3184 行），`workflow.py` 重导出全部 80 个符号；不改任何函数体、外部接口、docker 镜像/容器/环境。用「API 快照逐字节对比」（124 公开名 + 147 函数源码哈希零差异）+ 容器 import + 38 项 green 单测验证行为保持。
 2026-07-03：拆分 TTS/STT 音频容器；Unitree 本体 TTS 默认改用设备当前音量（空 `RABBITBOT_UNITREE_TTS_VOLUME` 即不下发 `SetVolume(100)`）；STT 默认关闭启动播报（`RABBITBOT_STT_STARTUP_SPEECH=0`）；同步 README 运行架构表为 `rabbitbot-tts`/`rabbitbot-stt`（7 容器）并把项目默认路径统一为 `/mnt/disk1/gt/air_robot_gt_projects`；均通过 `tests.audio`/`tests.clients`（18 tests OK）与 `docker compose config` 验证。
 

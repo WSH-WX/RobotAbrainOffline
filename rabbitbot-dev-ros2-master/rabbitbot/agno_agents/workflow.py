@@ -255,6 +255,8 @@ pending_user_text = ""
 # - RABBITBOT_ARM_RELEASE_WAIT_SECONDS：发送 release 后额外等待时间，单位秒。
 # - RABBITBOT_VIEW_MODE：视觉问答来源，robot 使用机器人视觉，其它值使用 mock。
 # - RABBITBOT_MOCK_IMAGE：mock 视觉问答使用的本地图片路径。
+# - RABBITBOT_CHAT_RAG：闲聊(C 路径)是否启用记忆 RAG（先检索 neo4j+markdown，命中则作为参考资料交给 VLM 生成回答），默认启用。
+# - RABBITBOT_CHAT_RAG_GROUP：闲聊 RAG 检索使用的 group_name，默认“闲聊检索”（中文名会跳过 neo4j 分组过滤，检索全部图谱节点+markdown 文档）。
 
 
 
@@ -1869,6 +1871,50 @@ def create_main_workflow(ctx: Any) -> Workflow:
         #return all('a' <= ch.lower() <= 'z' for ch in s if ch.isalpha())
         return 'a' <= s[0].lower() <= 'z'
 
+    async def retrieve_chat_rag_reference(text):
+        """闲聊 RAG：用用户问题检索记忆(neo4j 图谱 + markdown 文档)，命中则返回可作参考资料的文本，未命中返回空串。
+
+        由 RABBITBOT_CHAT_RAG 控制（默认启用）；检索走 ctx.memory.query，复用与导览/找物品一致的
+        neo4j+markdown 合并检索。命中"异常结点"(低于相似度阈值)或异常时降级为通用回答，不改变原有行为。
+        """
+        if not _env_enabled("RABBITBOT_CHAT_RAG", "1"):
+            return ""
+        query_text = (text or "").strip()
+        if not query_text or query_text in ("<REC_TIMEOUT>", "<REC_STOP>", "<REC_DUPLICATE>"):
+            return ""
+        if getattr(ctx, "memory", None) is None:
+            return ""
+        rag_group = os.getenv("RABBITBOT_CHAT_RAG_GROUP", "闲聊检索")
+        try:
+            nodes = await ctx.memory.query(query=query_text, group_name=rag_group, limit=1)
+        except Exception as exc:
+            file_logger.warning(
+                f"闲聊RAG记忆检索异常，降级为通用回答: query_len={len(query_text)}, error={exc}"
+            )
+            return ""
+        if not nodes or getattr(nodes[0], "name", "") == "异常结点":
+            file_logger.info(f"闲聊RAG未命中记忆，使用通用回答: query_len={len(query_text)}")
+            return ""
+        node = nodes[0]
+        description = (getattr(node, "attributes", None) or {}).get("description", "") or ""
+        reference_body = (description or getattr(node, "summary", "") or "").strip()
+        if not reference_body:
+            return ""
+        reference = f"{node.name}：{reference_body}"
+        file_logger.info(
+            f"闲聊RAG命中记忆: name={node.name}, reference_len={len(reference)}, query_len={len(query_text)}"
+        )
+        return reference
+
+    def build_chat_rag_input(text, reference):
+        """把检索到的参考资料与用户问题拼成 RAG 提示，交给闲聊 VLM 生成回答。"""
+        return (
+            "请参考以下资料回答用户的问题。若资料与问题相关，请依据资料自然口语化作答；"
+            "若资料与问题无关，请忽略资料，用你已知的信息回答。\n"
+            f"【参考资料】{reference}\n"
+            f"【用户问题】{text}"
+        )
+
     async def chat_execute(text, sess_idx=None, navi_tools=None):
         _workflow_log(f"chat_execute: text {text}", verbose=True)
         if is_chinese(text): lang = "zh"
@@ -1883,6 +1929,13 @@ def create_main_workflow(ctx: Any) -> Workflow:
             out_text = text
             return StepOutput(content=f"{out_text}")
 
+        # 闲聊 RAG：先检索记忆(neo4j 图谱 + markdown 文档)，命中则把参考资料一并交给 VLM 生成回答；
+        # 未命中或异常时 chat_input_text 保持为原始 text，行为与原来完全一致。
+        chat_input_text = text
+        rag_reference = await retrieve_chat_rag_reference(text)
+        if rag_reference:
+            chat_input_text = build_chat_rag_input(text, rag_reference)
+
         tts_wait(tts_agent)
 
         WorkflowTimePoints.CHAT_START = time.time()
@@ -1893,12 +1946,12 @@ def create_main_workflow(ctx: Any) -> Workflow:
             _workflow_log(f"chat_agent: session_id {str(sess_idx)}", verbose=True)
             _workflow_log(f"chat_agent: text {text}", verbose=True)
             response_stream = active_chat_agent.run(
-                text, stream=True, stream_intermediate_steps=False,
+                chat_input_text, stream=True, stream_intermediate_steps=False,
                 session_id=str(sess_idx)
             )
         else:
             response_stream = active_chat_agent.run(
-                text, stream=True, stream_intermediate_steps=False,
+                chat_input_text, stream=True, stream_intermediate_steps=False,
             )
 
         speecher_start_event = threading.Event()
