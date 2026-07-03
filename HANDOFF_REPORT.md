@@ -3,7 +3,7 @@
 生成时间：2026-07-03 10:12（Asia/Singapore，CST +0800）
 当前主机：`new-orin`
 项目路径：`/mnt/disk1/gt/air_robot_gt_projects`
-当前分支：`refactor/rabbitbot-runtime-structure-stabilization`
+当前分支：`refactor/service-internal-decoupling`（自 `refactor/rabbitbot-runtime-structure-stabilization` 派生）
 近期工作详见文末「近期工作」；更细粒度的逐轮改动请查 Git 历史。
 
 ## 项目整体描述
@@ -30,6 +30,7 @@
   - `scripts_1/`：主循环、控制台、nav bridge、解耦/统一容器入口等运行脚本。
   - `scripts/`：各服务独立启动脚本和旧工作流脚本。
   - `rabbitbot/`：Python 包（上下文、provider、grounding、控制台、音频兼容层等）。
+    - `agno_agents/`：导览编排。原 3888 行巨石 `workflow.py` 已按关注点拆为同目录子模块：`workflow_config.py`（env 开关）、`workflow_profiling.py`（插装/退出汇总）、`workflow_text.py`（语音文本解析）、`workflow_data.py`（DOCX 台词与实体/点位加载）、`workflow_arm.py`（机械臂手势）；`workflow.py` 经显式 import 重导出全部符号，对外仍只暴露 `create_main_workflow`/`guide_opening_speech`，命名空间与行为不变。
   - `tests/`：audio、clients、control_console、guide、memory、tasks、view、vln 等。
 - `models/`：本机模型缓存（Kokoro、Qwen2.5-VL、Qwen3-Embedding、SenseVoice、fsmn_vad）。
 - `custom_action_ws/`：ROS2 Humble 自定义 action 工作区。
@@ -130,6 +131,7 @@ python3 -m unittest discover tests -v
 
 ## 近期工作
 
+2026-07-03（内部解耦）：将导览上帝模块 `agno_agents/workflow.py`（3888 行）按关注点纯机械拆为 5 个同目录子模块（config/profiling/text/data/arm 共约 865 行迁出，主文件降至 3184 行），`workflow.py` 重导出全部 80 个符号；不改任何函数体、外部接口、docker 镜像/容器/环境。用「API 快照逐字节对比」（124 公开名 + 147 函数源码哈希零差异）+ 容器 import + 38 项 green 单测验证行为保持。
 2026-07-03：拆分 TTS/STT 音频容器；Unitree 本体 TTS 默认改用设备当前音量（空 `RABBITBOT_UNITREE_TTS_VOLUME` 即不下发 `SetVolume(100)`）；STT 默认关闭启动播报（`RABBITBOT_STT_STARTUP_SPEECH=0`）；同步 README 运行架构表为 `rabbitbot-tts`/`rabbitbot-stt`（7 容器）并把项目默认路径统一为 `/mnt/disk1/gt/air_robot_gt_projects`；均通过 `tests.audio`/`tests.clients`（18 tests OK）与 `docker compose config` 验证。
 
 ## 注意事项
