@@ -176,7 +176,8 @@ fi
 
 case "${RABBITBOT_TTS_BACKEND}" in
     unitree|g1|robot)
-        echo "使用 Unitree G1 本体 TTS 后端，跳过 Orin 本地输出声卡扫描。音量=${RABBITBOT_UNITREE_TTS_VOLUME:-100}"
+        unitree_volume_desc="${RABBITBOT_UNITREE_TTS_VOLUME:-设备当前音量}"
+        echo "使用 Unitree G1 本体 TTS 后端，跳过 Orin 本地输出声卡扫描。音量=${unitree_volume_desc}"
         export OUTPUT_DEVICE_INDEX=""
         ;;
     *)

@@ -87,7 +87,8 @@ services:
       RABBITBOT_UNIFIED_TTS_FAST_SOUND_PRELOAD: "0"
       RABBITBOT_UNIFIED_TTS_STARTUP_SPEECH: "0"
       RABBITBOT_UNITREE_TTS_INTERFACE: ${RABBITBOT_UNITREE_TTS_INTERFACE:-eno1}
-      RABBITBOT_UNITREE_TTS_VOLUME: "100"
+      # 默认留空：不调用 Unitree SetVolume，始终使用设备当前音量。
+      RABBITBOT_UNITREE_TTS_VOLUME: ${RABBITBOT_UNITREE_TTS_VOLUME:-}
     volumes:
       - /mnt/disk1/gt/air_robot_gt_projects:/workspace/projects
       - ${RABBITBOT_MODELS_CACHE_DIR:-/mnt/disk1/gt/air_robot_gt_projects/models}:/models

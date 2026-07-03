@@ -1,11 +1,11 @@
 # air_robot_gt_projects 项目交接报告
 
-生成时间：2026-07-03 09:35（Asia/Singapore，CST +0800）  
-当前主机：`new-orin`  
-项目路径：`/mnt/disk1/gt/air_robot_gt_projects`  
-当前分支：`refactor/rabbitbot-runtime-structure-stabilization`  
-最新提交：`234853d 2026-07-02 22:01:53 +0800 拆分 TTS/STT 音频容器架构`  
-本轮范围：按最新交接标准更新顶层 `HANDOFF_REPORT.md`，未修改运行代码。
+生成时间：2026-07-03 09:52（Asia/Singapore，CST +0800）
+当前主机：`new-orin`
+项目路径：`/mnt/disk1/gt/air_robot_gt_projects`
+当前分支：`refactor/rabbitbot-runtime-structure-stabilization`
+本轮修改前最新提交：`6fca523 更新项目交接报告`
+本轮范围：修正 Unitree TTS 默认音量策略，默认不再下发 `SetVolume(100)`，改为始终使用设备当前音量。
 
 ## 项目整体描述
 
@@ -128,6 +128,27 @@ python3 -m unittest tests.audio.test_device_probe -v
 python3 -m unittest tests.clients.test_audio_clients tests.clients.test_runtime_config -v
 python3 -m unittest discover tests -v
 ```
+
+## 本轮补充：TTS 使用设备当前音量
+
+本轮目标是解决 TTS 播放时“有时像最大音量、有时像设备音量”的不一致问题。已确认 Unitree 本体 TTS 后端此前默认把 `RABBITBOT_UNITREE_TTS_VOLUME` 补成 `100`，并在桥接命令中带 `--volume 100`，这会调用机器人侧 `SetVolume` 覆盖设备当前音量。
+
+已完成：
+
+- `rabbitbot/audio/unitree_g1_tts.py` 默认不再给 `RABBITBOT_UNITREE_TTS_VOLUME` 赋 `100`；环境变量为空时内部音量为 `-1`，桥接命令不带 `--volume`，因此不调用 `SetVolume`。
+- 保留显式覆盖能力：如现场明确设置 `RABBITBOT_UNITREE_TTS_VOLUME=55`，仍会传 `--volume 55`。
+- `docker-compose.decoupled.yaml`、`runtime/portable.env.example`、unified/portable 启动脚本都改为默认空音量，并在 INFO 日志中显示“设备当前音量”。
+- 新增 `tests/audio/test_unitree_tts_volume.py`，覆盖默认不传 `--volume` 和显式音量仍生效两个场景。
+- 已用更新后的 compose 强制重建当前 `rabbitbot-tts` 容器，旧运行态 `RABBITBOT_UNITREE_TTS_VOLUME=100` 已清除；当前容器环境为 `RABBITBOT_TTS_BACKEND=local`、`RABBITBOT_UNITREE_TTS_VOLUME=`，健康检查已恢复 `healthy`。
+
+已验证：
+
+- `python3 -m unittest tests.audio.test_device_probe tests.audio.test_unitree_tts_volume tests.clients.test_audio_clients tests.clients.test_runtime_config -v`：18 tests OK。
+- `bash -n` 覆盖 `scripts/start_tts_app.bash`、`scripts_1/unified_runtime/start_unified_container.sh`、`scripts_1/start_unified_integration_workflow.sh`，通过。
+- `PYTHONPYCACHEPREFIX=/tmp/rabbitbot_tts_volume_pycache python3 -m py_compile rabbitbot/audio/unitree_g1_tts.py tests/audio/test_unitree_tts_volume.py`，通过。
+- `docker compose -f docker-compose.decoupled.yaml config`，通过。
+
+注意：本轮没有改变 Orin 本地 ALSA/Kokoro 播放音频数据的幅度处理；本轮修复的是 Unitree 本体 TTS 默认 `SetVolume(100)` 覆盖设备音量的问题。当前运行容器仍是 `local` 后端，因此如要验证 Unitree 本体 TTS，需要显式切到 `RABBITBOT_TTS_BACKEND=unitree` 后重启/重建 TTS。
 
 ## 当前状态
 

@@ -1,5 +1,49 @@
 # 交接报告
 
+## 2026-07-03 TTS 默认使用设备当前音量
+
+### 背景和目标
+
+现场反馈 TTS 播放声音时大时小，表现像有时被设置为最大音量、有时使用设备当前音量。本轮定位到 Unitree 本体 TTS 后端默认 `RABBITBOT_UNITREE_TTS_VOLUME=100`，请求桥接程序时会携带 `--volume 100` 并调用机器人侧 `SetVolume`，因此与“永远按照设备本身音量播放”的目标冲突。
+
+### 当前状态，包括已完成内容和未完成内容
+
+已完成：
+
+- `rabbitbot/audio/unitree_g1_tts.py` 默认不再把空音量补成 100；未显式设置 `RABBITBOT_UNITREE_TTS_VOLUME` 时内部为 `-1`，不会向桥接程序传 `--volume`。
+- 保留显式覆盖：现场若明确设置 `RABBITBOT_UNITREE_TTS_VOLUME=0-100`，仍会向桥接程序传对应 `--volume`。
+- `docker/portable/docker-compose.decoupled.yaml`、`runtime/portable.env.example`、`scripts/start_tts_app.bash`、`scripts_1/start_unified_integration_workflow.sh`、`scripts_1/unified_runtime/start_unified_container.sh` 已统一默认空音量，日志显示“设备当前音量”。
+- 新增 `tests/audio/test_unitree_tts_volume.py`，覆盖默认不传 `--volume` 和显式音量仍传参。
+- 已强制重建当前 `rabbitbot-tts` 容器，清除旧运行态 `RABBITBOT_UNITREE_TTS_VOLUME=100`；重建后容器环境显示 `RABBITBOT_UNITREE_TTS_VOLUME=`，健康检查已恢复 healthy。
+
+未完成：
+
+- 本轮未切换当前运行容器到 `unitree` 后端做真实本体播报，以避免现场误播；当前容器仍为 `RABBITBOT_TTS_BACKEND=local`。
+- 本轮未改 Orin 本地 ALSA/Kokoro 合成音频幅度；若 local 后端仍有听感音量差异，需要另查生成音频峰值/RMS 或播放设备链路。
+
+### 已验证的事实
+
+- 新增单测显示默认 Unitree TTS 请求命令不包含 `--volume`，显式 `RABBITBOT_UNITREE_TTS_VOLUME=55` 时包含 `--volume 55`。
+- 相关回归 `python3 -m unittest tests.audio.test_device_probe tests.audio.test_unitree_tts_volume tests.clients.test_audio_clients tests.clients.test_runtime_config -v`：18 tests OK。
+- `bash -n` 覆盖 TTS 启动脚本和 unified/portable 入口脚本，通过。
+- `python3 -m py_compile rabbitbot/audio/unitree_g1_tts.py tests/audio/test_unitree_tts_volume.py` 通过。
+- `docker compose -f docker-compose.decoupled.yaml config` 通过。
+
+### 阻塞问题
+
+无代码层面的阻塞。运行层面如需立即验证 Unitree 本体 TTS，需要现场确认允许切换后端并重启/重建 TTS 容器。
+
+### 建议的下一步
+
+- 如现场继续使用 Unitree 本体 TTS，启动后检查日志应出现 `volume_policy=device_current`，且桥接命令不应触发 `SetVolume`。
+- 如确需临时固定音量，再显式设置 `RABBITBOT_UNITREE_TTS_VOLUME=<0-100>`；默认不要设置该变量。
+- 若 local 后端仍反馈音量忽大忽小，下一步应采集同一段文本多次生成 WAV 的峰值/RMS，并排查 ALSA/设备侧混音链路。
+
+### 注意事项
+
+- `RABBITBOT_UNITREE_TTS_VOLUME=` 为空是预期配置，表示尊重设备当前音量，不是漏配。
+- 当前 `rabbitbot-tts` 容器后端仍为 `local`；Unitree 音量策略只在 `RABBITBOT_TTS_BACKEND=unitree` 时参与播报。
+
 ## 2026-07-02 控制台关闭程序适配多容器
 
 ### 背景和目标
@@ -97,7 +141,7 @@
   - `shake_hand` 现在从开场问候“{leader_calling}您好，我叫小智。”开始时启动。
   - dialogue02 “欢迎您来到滨湖复星人形机器人产业园。”仍在同一个握手动作窗口内播报。
   - `release` 收手仍复用 `_do_arm_during_speech` 的原有流程，在 dialogue02 播报结束后执行。
-- 已将 TTS 默认启动路径切到 Unitree G1 本体音响：未显式设置 `RABBITBOT_TTS_BACKEND` 时默认使用 `unitree`，未显式设置 `RABBITBOT_UNITREE_TTS_VOLUME` 时默认音量为 `100`。
+- 已将 TTS 默认启动路径切到 Unitree G1 本体音响：未显式设置 `RABBITBOT_TTS_BACKEND` 时默认使用 `unitree`；未显式设置 `RABBITBOT_UNITREE_TTS_VOLUME` 时不再下发 `SetVolume`，使用设备当前音量。
 - 已新增 Unitree G1 本体 TTS 后端：
   - 新增 `scripts/unitree_g1_tts_bridge.cpp`，通过宇树 SDK2 `AudioClient.TtsMaker` 向 G1 发送播报文本。
   - 新增 `scripts/build_unitree_g1_tts_bridge.sh`，自动使用 `/mnt/ssd/navgation/projects/unitree_sdk2` 或 `/workspace/projects/unitree_sdk2` 构建桥接程序。
@@ -122,7 +166,7 @@
 - 已通过检查：`bash -n`、`python3 -m py_compile`、桥接程序构建和帮助输出。
 - 现有本体 TTS 日志会记录初始化、桥接程序构建、请求开始、返回码、耗时、音量、网卡、speaker id 和估算播放时长。
 - 本轮只读调用 Unitree G1 `AudioClient.GetVolume` 查询当前机器人本体音量，返回 `ret=0`、`volume=85`，查询未触发播报，也未调用 `SetVolume`。
-- 本轮已验证默认配置干运行初始化：默认后端为 `unitree`，默认网卡为 `eno1`，默认音量为 `100`；`bash -n` 和 `python3 -m py_compile` 均通过。
+- 本轮已验证默认配置干运行初始化：默认后端为 `unitree`，默认网卡为 `eno1`；默认音量策略已改为设备当前音量，不再自动设置为 100；`bash -n` 和 `python3 -m py_compile` 均通过。
 - 本轮核实机器人本体 TTS 变成女声的原因：当前 unified 容器环境为 `RABBITBOT_TTS_BACKEND=unitree`、`RABBITBOT_UNITREE_TTS_SPEAKER_ID=0`；宇树 G1 `TtsMaker(text, speaker_id)` 的 `speaker_id=0` 对应中文/自动 TTS，不是原 Orin 本地 TTS 音色选择，因此音色由 G1 内置语音服务决定。
 - 本轮现场将 TTS 运行时切回 Orin 本地外接音响：宿主机识别到 USB 音响 `BT67`，`aplay -l` 为 `card 2, device 0`；使用 `RABBITBOT_TTS_BACKEND=local RECREATE_CONTAINER=1 RUN_WORKFLOW_AFTER_START=0` 重建统一容器基础服务，TTS 日志确认选中 `BT67: USB Audio (hw:2,0)`，`OUTPUT_DEVICE_INDEX=24`，HTTP `/docs` 返回 200。
 - 本轮已通过当前 TTS 服务向 BT67 外接音响发送试播文本“测试测试”，`text_to_speech` 返回 `out_text=0`，随后 `wait_speech` 返回 `TTS finished`。
@@ -160,9 +204,9 @@
 
 ## 建议的下一步
 
-- 用如下方式启动 unified 模式验证本体播报：`RECREATE_CONTAINER=1 bash scripts_1/start_unified_integration_workflow.sh`；默认会使用 Unitree G1 本体音响、`eno1` 网卡和音量 `100`。
+- 用如下方式启动 unified 模式验证本体播报：`RECREATE_CONTAINER=1 bash scripts_1/start_unified_integration_workflow.sh`；默认会使用 Unitree G1 本体音响、`eno1` 网卡和设备当前音量。
 - 真机跑一次完整开场，重点观察 `shake_hand` 是否从“{leader_calling}您好”开始伸手，并确认收手仍发生在“欢迎您来到滨湖复星人形机器人产业园”之后。
-- 当前默认音量已改为 100；如现场觉得过响或破音，可通过 `RABBITBOT_UNITREE_TTS_VOLUME=85` 或更低值临时覆盖后重启 TTS/unified 流程。
+- 当前默认音量策略已改为设备当前音量；只有现场明确需要固定音量时，才通过 `RABBITBOT_UNITREE_TTS_VOLUME=85` 或其它 0-100 数值临时覆盖后重启 TTS/unified 流程。
 - 若必须恢复原来的男声/本地音色，需要评估两条路线：一是回退 `RABBITBOT_TTS_BACKEND=local` 使用 Orin 外接音箱；二是改用 G1 `PlayStream` 播放 Orin 本地合成的 PCM 音频。仅调整 `RABBITBOT_UNITREE_TTS_SPEAKER_ID` 预计不能切换到中文男声。
 - 如要继续使用 Orin 外接音响，需先让 Orin 重新识别 BT67，再用 `RABBITBOT_TTS_BACKEND=local RECREATE_CONTAINER=1` 重建/启动 unified；如不带 `RABBITBOT_TTS_BACKEND=local`，会按代码默认值回到机器人本体音响。
 - 真机跑点咖啡环节时，重点观察“我来给各位安排。”开播时是否同时出现 `DOCX 后台命令已启动` 和 `DOCX 后台命令结束` 日志，并确认 stdout 中咖啡车接口返回 `success=true` 和运行时 `task_id`。
@@ -189,10 +233,10 @@
 
 ## 注意事项
 
-- 默认 TTS 后端现在是 `unitree`，默认音量是 `100`；如需回退 Orin 本地外接音箱，需要显式设置 `RABBITBOT_TTS_BACKEND=local`。
+- 默认 TTS 后端现在是 `unitree`，但默认不再设置 Unitree 音量，使用设备当前音量；如需回退 Orin 本地外接音箱，需要显式设置 `RABBITBOT_TTS_BACKEND=local`。
 - 当前 TTS 运行状态需现场恢复：上一轮重启 TTS 时 BT67 从 Orin 声卡列表消失，当前 `http://127.0.0.1:28185/docs` 返回 `000`，`/proc/asound/cards` 仅剩 HDA/APE；需重新插拔或恢复 BT67 后再启动 TTS。
 - `send_delivery_task.py` 已纳入版本管理；默认模板 ID 保持现场已验证可用的 `delivery_1780402103401`，如 AIR 咖啡车任务模板变更，应优先通过脚本 `--template-id` 或 workflow 的 `RABBITBOT_COFFEE_DELIVERY_COMMAND` 覆盖后再固化。
-- 上一轮观察到的旧容器 `RABBITBOT_UNITREE_TTS_VOLUME=85` 已不再是当前运行状态；当前默认 Unitree 音量仍为 `100`，但使用 `RABBITBOT_TTS_BACKEND=local` 时 Unitree 音量配置不参与本地外接音响播放。
+- 当前默认 Unitree 音量配置为空，表示不调用 `SetVolume`、使用设备当前音量；使用 `RABBITBOT_TTS_BACKEND=local` 时 Unitree 音量配置不参与本地外接音响播放。
 - Unitree 本体 TTS 当前通过 C++ 桥接程序发命令，不依赖 Python 版宇树 SDK。
 - unified 创建容器和容器内启动 TTS 时会打印后端、Unitree 网卡和音量，方便排查是否仍沿用旧容器或旧音量。
 - unified 入口现在会在 workflow 启动时打印 workflow 进程组 PGID；按 `^C` 时应看到“收到 INT 信号，正在停止 workflow 进程组”和最终停止完成日志。如仍有残留，应优先按日志中的 PGID 排查。
