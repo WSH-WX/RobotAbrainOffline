@@ -3,7 +3,7 @@
 本目录是 RabbitBot 在 HaiSong-orin 上的自主运行项目根目录，默认路径为：
 
 ```bash
-/mnt/ssd/navgation/projects/air_robot_gt_projects
+/mnt/disk1/gt/air_robot_gt_projects
 ```
 
 当前仓库同时保留两条运行路径：
@@ -51,7 +51,7 @@ portable 路径分为「构建机生成镜像」和「全新 Orin 导入镜像�
 构建机需要本机存在 `rabbitbot-unified-runtime:20260518` 基础镜像，以及 `unitree_sdk2`、`custom_action_ws/src`、`unitree_slam_example_new/example`、`py38`、`py310`、`vln`、`pyorbbecsdk-v2-py310` 等外部构建源。
 
 ```bash
-cd /mnt/ssd/navgation/projects/air_robot_gt_projects
+cd /mnt/disk1/gt/air_robot_gt_projects
 
 # 1) 构建机自检：要求外部构建源齐全
 PORTABLE_CHECK_MODE=builder bash deploy/check_air_project.sh
@@ -132,7 +132,7 @@ bash deploy/ensure_models.sh qwen_vlm qwen_embedding
 ## 一键检查
 
 ```bash
-cd /mnt/ssd/navgation/projects/air_robot_gt_projects
+cd /mnt/disk1/gt/air_robot_gt_projects
 # 构建机模式（默认）
 PORTABLE_CHECK_MODE=builder bash deploy/check_air_project.sh
 # 全新 Orin 模式

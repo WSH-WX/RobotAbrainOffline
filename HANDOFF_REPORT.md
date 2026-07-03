@@ -5,7 +5,7 @@
 项目路径：`/mnt/disk1/gt/air_robot_gt_projects`
 当前分支：`refactor/rabbitbot-runtime-structure-stabilization`
 本轮修改前最新提交：`2eb6394 关闭 STT 默认启动播报`
-本轮范围：同步顶层 `README.md` 运行架构，把已废弃的 `rabbitbot-audio` 描述替换为当前解耦栈实际的 `rabbitbot-tts` 与 `rabbitbot-stt`。
+本轮范围：同步顶层 `README.md`——（1）运行架构表把已废弃的 `rabbitbot-audio` 替换为当前解耦栈实际的 `rabbitbot-tts` 与 `rabbitbot-stt`；（2）项目默认路径由 `/mnt/ssd/navgation/projects/air_robot_gt_projects` 更新为实际的 `/mnt/disk1/gt/air_robot_gt_projects`。
 
 ## 项目整体描述
 
@@ -196,7 +196,7 @@ python3 -m unittest discover tests -v
 - TTS/STT 互斥或门控未实现：TTS 播放期间 STT 仍可能收听到提示音或环境回声。
 - 空输入防护不足：回声过滤或超时后若得到空输入，workflow planner 仍可能进入异常路径。
 - PulseAudio/蓝牙音频还不是完整后端：当前只有探测、日志和 compose override 入口。
-- 顶层 README 运行架构表已于本轮同步为 `rabbitbot-tts`/`rabbitbot-stt`，此项不一致已消除；但 README 顶部默认路径仍写 `/mnt/ssd/navgation/projects/air_robot_gt_projects`，与当前实际 `/mnt/disk1/gt/air_robot_gt_projects` 不一致，是否统一部署文档路径仍未确认。
+- 顶层 README 运行架构表已于本轮同步为 `rabbitbot-tts`/`rabbitbot-stt`，项目默认路径也已由 `/mnt/ssd/navgation/projects/air_robot_gt_projects` 更新为实际的 `/mnt/disk1/gt/air_robot_gt_projects`；这两项不一致均已消除。遗留：README「legacy 回退路径」一节仍写 `/mnt/ssd/navgation/projects/rabbitbot-dev-ros2-master`，该 legacy 旧项目在本机不存在（`/mnt/disk1/gt/` 下亦无对应目录），其真实位置未确认，本轮未改。
 - 当前日志仍会记录完整 TTS 文本和部分 STT/任务 payload。新增设备探测日志较克制，但历史 workflow/TTS 日志治理未完成；后续日志改造应避免记录完整隐私语音文本、密钥、令牌和大体积原始输入输出。
 - 真实机器人导航、地图 `/home/unitree/test9.pcd`、DDS 网卡 `eno1`、机器人网络 `192.168.123.222/24` 的现场可用性本轮未验证。
 
@@ -216,7 +216,7 @@ python3 -m unittest discover tests -v
 1. 先治理 QA/导览主链路：实现 TTS 播放期间 STT 暂停、降权或显式门控，避免提示音回收。
 2. 给 workflow planner 前增加空输入和无效输入防护：空输入不进入 planner，记录原因并继续监听或返回可诊断状态。
 3. 把“开始导览”“返回起点”等控制词放到所有 STT 文本入口的最高优先级，包括主听音、打断监听和 pending 用户输入。
-4. （已完成）顶层 `README.md` 运行架构表已替换旧 `rabbitbot-audio` 为 `rabbitbot-tts` 与 `rabbitbot-stt`；如后续要统一部署文档路径，可一并把 README 默认路径由 `/mnt/ssd/navgation/...` 更新为 `/mnt/disk1/gt/...`（本轮未改，待确认）。
+4. （已完成）顶层 `README.md` 运行架构表已替换旧 `rabbitbot-audio` 为 `rabbitbot-tts` 与 `rabbitbot-stt`，项目默认路径也已统一为实际的 `/mnt/disk1/gt/air_robot_gt_projects`。遗留：如需处理 legacy 回退路径 `/mnt/ssd/navgation/projects/rabbitbot-dev-ros2-master`，须先确认该旧项目在本机的真实位置再更新。
 5. 做一轮轻量验证：`docker compose config`、关键 bash 语法检查、`tests.audio.test_device_probe`、`tests.clients`、控制台测试可用性。
 6. 做无机器人集成回归：启动 loop、注入 QA/开始导览、发送 `arrive`、验证状态文件和日志关键字。
 7. 最后做真机验证：nav bridge `28180`、地图加载、点位到达、返航、异常停止恢复。
@@ -240,12 +240,12 @@ python3 -m unittest discover tests -v
 - 全文 `grep rabbitbot-audio` 无残留。
 - `git diff README.md` 仅上述 4 处，无其他改动。
 
-注意：README 顶部默认路径仍为 `/mnt/ssd/navgation/projects/air_robot_gt_projects`，与当前实际 `/mnt/disk1/gt/air_robot_gt_projects` 不一致；本轮未改，是否统一部署文档路径待确认。
+补充：经用户确认，本轮同时把 README 的项目默认路径由 `/mnt/ssd/navgation/projects/air_robot_gt_projects` 统一为实际的 `/mnt/disk1/gt/air_robot_gt_projects`（共 3 处：顶部默认路径、流程 A `cd`、一键检查 `cd`）。已核实 `/mnt/disk1/gt/air_robot_gt_projects` 存在、旧路径不存在。README「legacy 回退路径」一节仍引用 `/mnt/ssd/navgation/projects/rabbitbot-dev-ros2-master`，因该 legacy 旧项目在本机及 `/mnt/disk1/gt/` 下均不存在、真实位置未确认，本轮保持原样。
 
 ## 本轮修改记录
 
-- 更新顶层 `README.md`：同步解耦栈运行架构，`rabbitbot-audio` → `rabbitbot-tts` / `rabbitbot-stt`，容器数 6 → 7。
-- 更新本 `HANDOFF_REPORT.md`：记录本轮 README 同步，并把「README 仍描述旧 rabbitbot-audio」从已知阻塞/建议下一步中标记为已消除。
+- 更新顶层 `README.md`：同步解耦栈运行架构，`rabbitbot-audio` → `rabbitbot-tts` / `rabbitbot-stt`，容器数 6 → 7；并把项目默认路径 `/mnt/ssd/navgation/projects/air_robot_gt_projects` 统一为实际的 `/mnt/disk1/gt/air_robot_gt_projects`（3 处）。
+- 更新本 `HANDOFF_REPORT.md`：记录本轮 README 同步与路径统一，并把「README 仍描述旧 rabbitbot-audio」「README 默认路径不一致」从已知阻塞/建议下一步/注意事项中标记为已消除。
 - 本轮没有修改代码、配置、运行脚本或服务状态，未启停任何容器。
 - 本轮未新增或调整日志点（仅文档）。
 - 本轮完成后提交一次中文 Git commit，范围为 `README.md` 与 `HANDOFF_REPORT.md`。
@@ -255,4 +255,4 @@ python3 -m unittest discover tests -v
 - `runtime/portable.env`、控制台 venv、模型目录、运行日志和容器卷属于本机运行态，不应直接提交到 Git。
 - 修改代码时必须优先遵守项目现有风格；涉及关键流程、文件读写、网络请求、数据库、模型训练/推理、命令行脚本、配置加载、异常处理时，应补充有诊断价值的 INFO 级别日志，并保留原始异常链。
 - 不要在报告、日志或提交信息中记录密钥、令牌、完整隐私数据或大体积原始输入输出。
-- 远端 README 默认路径仍写 `/mnt/ssd/navgation/projects/air_robot_gt_projects`，当前实际核查路径是 `/mnt/disk1/gt/air_robot_gt_projects`；是否需要统一部署文档路径未确认。
+- README 项目默认路径已由 `/mnt/ssd/navgation/projects/air_robot_gt_projects` 统一为实际的 `/mnt/disk1/gt/air_robot_gt_projects`。README「legacy 回退路径」一节的 `/mnt/ssd/navgation/projects/rabbitbot-dev-ros2-master` 因该旧项目真实位置未确认，本轮保持原样。
