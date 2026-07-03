@@ -1,5 +1,48 @@
 # 交接报告
 
+## 2026-07-03 关闭 STT 启动提示播报
+
+### 背景和目标
+
+现场刚听到“机器人语音输入模块加载完毕”非常响。复查确认这句不是用户流程台词，而是 STT 服务启动阶段固定向 TTS 发起的启动提示。当前 TTS 后端为 `local`，这句没有设置 Unitree 音量，也没有调用 `SetVolume`；但服务重启时突然播报本地合成音，现场听感会很冲。
+
+### 当前状态，包括已完成内容和未完成内容
+
+已完成：
+
+- `stt_app_funasr.py`、`stt_app.py`、`stt_app1.py` 新增 `RABBITBOT_STT_STARTUP_SPEECH` 开关，默认关闭启动提示播报。
+- `scripts/start_stt_funasr_app.bash` 启动日志改为打印 `STT 启动提示配置: enabled=...`。
+- `docker/portable/docker-compose.decoupled.yaml` 和 `runtime/portable.env.example` 默认设置 `RABBITBOT_STT_STARTUP_SPEECH=0`。
+- 已重建当前 `rabbitbot-stt` 容器，环境变量为 `RABBITBOT_STT_STARTUP_SPEECH=0`，健康检查已恢复 healthy。
+- 最新 STT 日志显示 `STT 启动提示播报已关闭：RABBITBOT_STT_STARTUP_SPEECH=0`，没有再次请求 TTS 播放该句。
+
+未完成：
+
+- 本轮未调整正常导览 TTS 的合成音频幅度；只关闭了非必要的 STT 启动提示。
+
+### 已验证的事实
+
+- 当前 `rabbitbot-tts` 环境为 `RABBITBOT_TTS_BACKEND=local`、`RABBITBOT_UNITREE_TTS_VOLUME=`。
+- 刚才听到的启动提示对应日志：STT 启动后向 TTS 发送 `text_to_speech`，TTS 走 Kokoro 本地播放，没有 `SetVolume`。
+- `bash -n scripts/start_stt_funasr_app.bash` 通过。
+- `python3 -m py_compile stt_app_funasr.py stt_app.py stt_app1.py` 通过。
+- `docker compose -f docker-compose.decoupled.yaml config` 通过。
+- 相关 unittest 回归 18 tests OK。
+
+### 阻塞问题
+
+无。
+
+### 建议的下一步
+
+- 默认保持 `RABBITBOT_STT_STARTUP_SPEECH=0`，避免服务重启时突然播报。
+- 如果仍有其它正常台词明显过响，再单独分析 Kokoro 生成波形的峰值/RMS，而不要通过启动提示开关处理。
+
+### 注意事项
+
+- 如现场需要恢复 STT 启动提示，可设置 `RABBITBOT_STT_STARTUP_SPEECH=1` 后重启 `rabbitbot-stt`。
+- STT 脚本中的 `STT_INPUT_VOLUME_PERCENT` 只影响输入麦克风音量，不影响音响播放音量。
+
 ## 2026-07-03 TTS 默认使用设备当前音量
 
 ### 背景和目标

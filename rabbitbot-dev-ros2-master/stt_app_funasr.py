@@ -44,6 +44,13 @@ LOGGER.setLevel(logging.INFO)
 LOGGER.propagate = False
 
 
+def env_enabled(name, default=False):
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _text_digest(text: str) -> str:
     return hashlib.sha256((text or "").encode("utf-8")).hexdigest()[:12]
 
@@ -432,11 +439,14 @@ else:
 
 
 # ===== TTS 提示 =====
-try:
-    tts_agent = create_tts_agent()
-    tts_sound(tts_agent, "，，机器人语音输入模块加载完毕", "zh")
-except Exception as e:
-    print(f"TTS initialization skipped: {e}")
+if env_enabled("RABBITBOT_STT_STARTUP_SPEECH", False):
+    try:
+        tts_agent = create_tts_agent()
+        tts_sound(tts_agent, "，，机器人语音输入模块加载完毕", "zh")
+    except Exception:
+        LOGGER.exception("STT 启动提示播报失败")
+else:
+    LOGGER.info("STT 启动提示播报已关闭：RABBITBOT_STT_STARTUP_SPEECH=0")
 print("Initialization completed!")
 
 

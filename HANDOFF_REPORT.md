@@ -150,6 +150,26 @@ python3 -m unittest discover tests -v
 
 注意：本轮没有改变 Orin 本地 ALSA/Kokoro 播放音频数据的幅度处理；本轮修复的是 Unitree 本体 TTS 默认 `SetVolume(100)` 覆盖设备音量的问题。当前运行容器仍是 `local` 后端，因此如要验证 Unitree 本体 TTS，需要显式切到 `RABBITBOT_TTS_BACKEND=unitree` 后重启/重建 TTS。
 
+## 本轮补充：关闭 STT 启动提示播报
+
+现场刚听到的“机器人语音输入模块加载完毕”来自 `rabbitbot-stt` 启动阶段。日志确认这次发生在重建 TTS 后 compose 重新启动 STT 时：STT 在启动完成前向 TTS `/exec` 发送该固定文本。该请求本身没有设置设备音量；当前 TTS 后端为 `local`，走 Kokoro/BT67 本地播放链路，未调用 Unitree `SetVolume`。
+
+已完成：
+
+- `stt_app_funasr.py`、`stt_app.py`、`stt_app1.py` 新增 `RABBITBOT_STT_STARTUP_SPEECH` 开关，默认 `0`，默认不再播报 STT 启动提示。
+- `scripts/start_stt_funasr_app.bash`、`docker-compose.decoupled.yaml`、`portable.env.example` 同步默认 `RABBITBOT_STT_STARTUP_SPEECH=0`，启动日志会打印该配置。
+- 已重建当前 `rabbitbot-stt` 容器并确认健康检查恢复 `healthy`；容器环境为 `RABBITBOT_STT_STARTUP_SPEECH=0`。
+- 最新 STT 日志显示 `STT 启动提示播报已关闭：RABBITBOT_STT_STARTUP_SPEECH=0`，没有再次向 TTS 请求“机器人语音输入模块加载完毕”。
+
+已验证：
+
+- `bash -n scripts/start_stt_funasr_app.bash` 通过。
+- `python3 -m py_compile stt_app_funasr.py stt_app.py stt_app1.py` 通过。
+- `docker compose -f docker-compose.decoupled.yaml config` 通过。
+- `python3 -m unittest tests.audio.test_device_probe tests.audio.test_unitree_tts_volume tests.clients.test_audio_clients tests.clients.test_runtime_config -v`：18 tests OK。
+
+注意：如果现场确实需要恢复这句启动提示，可显式设置 `RABBITBOT_STT_STARTUP_SPEECH=1` 后重启 `rabbitbot-stt`；默认保持关闭，避免服务重启时突然大声播报。
+
 ## 当前状态
 
 已确认事实：

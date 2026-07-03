@@ -55,6 +55,13 @@ in_device_id = os.environ.get("INPUT_DEVICE_INDEX")
 in_device_id = int(in_device_id) if in_device_id and in_device_id.strip() else None
 print(f"in_device_id: {in_device_id}")
 
+def env_enabled(name, default=False):
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 # 调试：列出设备
 debug_list_audio_devices()
 
@@ -191,8 +198,14 @@ class STTTimeoutWrapper(object):
 
 recorder_timeout = STTTimeoutWrapper(recorder)
 
-tts_agent = create_tts_agent()
-tts_sound(tts_agent, "，，机器人语音输入模块加载完毕", "zh")
+if env_enabled("RABBITBOT_STT_STARTUP_SPEECH", False):
+    try:
+        tts_agent = create_tts_agent()
+        tts_sound(tts_agent, "，，机器人语音输入模块加载完毕", "zh")
+    except Exception:
+        logging.exception("STT 启动提示播报失败")
+else:
+    logging.info("STT 启动提示播报已关闭：RABBITBOT_STT_STARTUP_SPEECH=0")
 #tts_sound(tts_agent, "，，夸父机器人P4-28语音输入模块加载完毕", "zh")
 #tts_sound(tts_agent, "，，已经启动高性能计算加速", "zh")
 #tts_sound(tts_agent, "，，已经启动 G P U 计算加速", "zh")
