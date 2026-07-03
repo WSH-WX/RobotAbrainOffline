@@ -1,11 +1,11 @@
 # air_robot_gt_projects 项目交接报告
 
-生成时间：2026-07-03 09:52（Asia/Singapore，CST +0800）
+生成时间：2026-07-03 10:12（Asia/Singapore，CST +0800）
 当前主机：`new-orin`
 项目路径：`/mnt/disk1/gt/air_robot_gt_projects`
 当前分支：`refactor/rabbitbot-runtime-structure-stabilization`
-本轮修改前最新提交：`6fca523 更新项目交接报告`
-本轮范围：修正 Unitree TTS 默认音量策略，默认不再下发 `SetVolume(100)`，改为始终使用设备当前音量。
+本轮修改前最新提交：`2eb6394 关闭 STT 默认启动播报`
+本轮范围：同步顶层 `README.md` 运行架构，把已废弃的 `rabbitbot-audio` 描述替换为当前解耦栈实际的 `rabbitbot-tts` 与 `rabbitbot-stt`。
 
 ## 项目整体描述
 
@@ -23,7 +23,7 @@
 
 ## 关键目录结构
 
-- `README.md`：顶层 portable/legacy 部署说明。注意：其中运行架构表仍有旧 `rabbitbot-audio` 描述，当前实际 compose 已拆成 `rabbitbot-tts` 与 `rabbitbot-stt`。
+- `README.md`：顶层 portable/legacy 部署说明。运行架构表已于本轮同步为当前解耦栈实际的 7 个容器，`rabbitbot-tts`（28185）与 `rabbitbot-stt`（28184）已替换旧 `rabbitbot-audio` 描述。
 - `HANDOFF_REPORT.md`：顶层交接报告，本文件。
 - `deploy/`：宿主初始化、镜像构建/校验/导入导出、模型准备、自检、systemd 安装、portable 基础栈启动脚本。
 - `rabbitbot-dev-ros2-master/`：RabbitBot 主项目源码、控制台、workflow、TTS/STT/VLM/Memory 应用、Docker 定义、测试。
@@ -175,7 +175,7 @@ python3 -m unittest discover tests -v
 已确认事实：
 
 - 远端路径 `/mnt/disk1/gt/air_robot_gt_projects` 是 Git 仓库，当前分支为 `refactor/rabbitbot-runtime-structure-stabilization`。
-- 本轮开始前 `git status --short` 为空；本轮只计划修改顶层 `HANDOFF_REPORT.md`。
+- 本轮开始前 `git status --short` 为空；本轮修改顶层 `README.md`（运行架构同步）与本 `HANDOFF_REPORT.md`。
 - 当前基础容器状态：`neo4j`、`rabbitbot-vlm`、`rabbitbot-tts`、`rabbitbot-stt`、`rabbitbot-memory` 均运行约 30 分钟且 healthy；`rabbitbot-workflow` 运行约 30 分钟但无健康检查标记。
 - `docker compose -f rabbitbot-dev-ros2-master/docker/portable/docker-compose.decoupled.yaml ps` 与 `docker ps` 一致显示基础服务在线。
 - 本轮只读核查时没有看到 `rabbitbot-navbridge` 运行；因此不能据此确认 `28180` 当前在线。
@@ -196,7 +196,7 @@ python3 -m unittest discover tests -v
 - TTS/STT 互斥或门控未实现：TTS 播放期间 STT 仍可能收听到提示音或环境回声。
 - 空输入防护不足：回声过滤或超时后若得到空输入，workflow planner 仍可能进入异常路径。
 - PulseAudio/蓝牙音频还不是完整后端：当前只有探测、日志和 compose override 入口。
-- 顶层 README 的运行架构表仍描述旧 `rabbitbot-audio` 容器，已与当前 compose 的 `rabbitbot-tts`/`rabbitbot-stt` 拆分不一致，后续应同步 README。
+- 顶层 README 运行架构表已于本轮同步为 `rabbitbot-tts`/`rabbitbot-stt`，此项不一致已消除；但 README 顶部默认路径仍写 `/mnt/ssd/navgation/projects/air_robot_gt_projects`，与当前实际 `/mnt/disk1/gt/air_robot_gt_projects` 不一致，是否统一部署文档路径仍未确认。
 - 当前日志仍会记录完整 TTS 文本和部分 STT/任务 payload。新增设备探测日志较克制，但历史 workflow/TTS 日志治理未完成；后续日志改造应避免记录完整隐私语音文本、密钥、令牌和大体积原始输入输出。
 - 真实机器人导航、地图 `/home/unitree/test9.pcd`、DDS 网卡 `eno1`、机器人网络 `192.168.123.222/24` 的现场可用性本轮未验证。
 
@@ -216,18 +216,39 @@ python3 -m unittest discover tests -v
 1. 先治理 QA/导览主链路：实现 TTS 播放期间 STT 暂停、降权或显式门控，避免提示音回收。
 2. 给 workflow planner 前增加空输入和无效输入防护：空输入不进入 planner，记录原因并继续监听或返回可诊断状态。
 3. 把“开始导览”“返回起点”等控制词放到所有 STT 文本入口的最高优先级，包括主听音、打断监听和 pending 用户输入。
-4. 同步更新顶层 `README.md` 的运行架构表，替换旧 `rabbitbot-audio` 为 `rabbitbot-tts` 与 `rabbitbot-stt`。
+4. （已完成）顶层 `README.md` 运行架构表已替换旧 `rabbitbot-audio` 为 `rabbitbot-tts` 与 `rabbitbot-stt`；如后续要统一部署文档路径，可一并把 README 默认路径由 `/mnt/ssd/navgation/...` 更新为 `/mnt/disk1/gt/...`（本轮未改，待确认）。
 5. 做一轮轻量验证：`docker compose config`、关键 bash 语法检查、`tests.audio.test_device_probe`、`tests.clients`、控制台测试可用性。
 6. 做无机器人集成回归：启动 loop、注入 QA/开始导览、发送 `arrive`、验证状态文件和日志关键字。
 7. 最后做真机验证：nav bridge `28180`、地图加载、点位到达、返航、异常停止恢复。
 8. 持续治理日志：保留阶段、耗时、设备、端口、状态、异常链等诊断上下文；减少完整文本 payload 和隐私原文落盘。
 
+## 本轮补充：同步 README 运行架构表
+
+上一轮已把音频容器由单一 `rabbitbot-audio` 拆成 `rabbitbot-tts`（28185）与 `rabbitbot-stt`（28184），但顶层 `README.md` 的「运行架构：解耦多容器栈」表格和相关正文仍描述旧 `rabbitbot-audio`，与 `docker-compose.decoupled.yaml` 实际定义不一致。本轮据实际 compose 校对后同步 README。
+
+已确认（依据 `docker-compose.decoupled.yaml` 与 `docker ps`）：解耦栈实际为 7 个容器——`neo4j`、`rabbitbot-vlm`(8000+8005)、`rabbitbot-tts`(28185)、`rabbitbot-stt`(28184)、`rabbitbot-memory`(28182)、`rabbitbot-navbridge`(28180)、`rabbitbot-workflow`。
+
+已完成（仅改 `README.md`）：
+
+- 运行架构表容器数由「6 个容器」改为「7 个容器」；`rabbitbot-audio` 行拆为 `rabbitbot-tts`（28185 TTS）与 `rabbitbot-stt`（28184 STT）两行。
+- 表下说明「三个 rabbitbot 容器共用 core-portable 镜像」改为「四个 rabbitbot 容器（`vlm`/`tts`/`stt`/`memory`）」。
+- 「解耦栈要求模型齐全」条与「按需准备模型」提示中的 `rabbitbot-audio 恒起 TTS+STT` 改为 `rabbitbot-tts 恒起 TTS、rabbitbot-stt 恒起 STT`。
+- 流程 B 第 6 步注释中的 `neo4j/vlm/audio/memory/workflow` 改为 `neo4j/vlm/tts/stt/memory/workflow`。
+
+已验证：
+
+- 全文 `grep rabbitbot-audio` 无残留。
+- `git diff README.md` 仅上述 4 处，无其他改动。
+
+注意：README 顶部默认路径仍为 `/mnt/ssd/navgation/projects/air_robot_gt_projects`，与当前实际 `/mnt/disk1/gt/air_robot_gt_projects` 不一致；本轮未改，是否统一部署文档路径待确认。
+
 ## 本轮修改记录
 
-- 仅更新顶层 `HANDOFF_REPORT.md`，将报告从上一轮音频拆分专项说明扩展为项目级交接文档。
-- 本轮没有修改代码、配置、运行脚本或服务状态。
-- 本轮未新增或调整日志点。
-- 本轮完成后应提交一次中文 Git commit，提交范围仅包含本文件。
+- 更新顶层 `README.md`：同步解耦栈运行架构，`rabbitbot-audio` → `rabbitbot-tts` / `rabbitbot-stt`，容器数 6 → 7。
+- 更新本 `HANDOFF_REPORT.md`：记录本轮 README 同步，并把「README 仍描述旧 rabbitbot-audio」从已知阻塞/建议下一步中标记为已消除。
+- 本轮没有修改代码、配置、运行脚本或服务状态，未启停任何容器。
+- 本轮未新增或调整日志点（仅文档）。
+- 本轮完成后提交一次中文 Git commit，范围为 `README.md` 与 `HANDOFF_REPORT.md`。
 
 ## 注意事项
 

@@ -24,21 +24,22 @@
 
 ## 运行架构：解耦多容器栈（当前默认）
 
-自最近一轮解耦起，基础服务由 `rabbitbot-dev-ros2-master/docker/portable/docker-compose.decoupled.yaml` 定义的 **6 个容器** 承载（全部 `network_mode: host`，服务间走 `127.0.0.1`，无需改写死的服务地址）：
+自最近一轮解耦起，基础服务由 `rabbitbot-dev-ros2-master/docker/portable/docker-compose.decoupled.yaml` 定义的 **7 个容器** 承载（全部 `network_mode: host`，服务间走 `127.0.0.1`，无需改写死的服务地址）：
 
 | 容器 | 镜像 | 端口 / 职责 |
 |---|---|---|
 | `neo4j` | 官方 `neo4j:5.26-community` | 7687 图数据库（记忆 / 知识图谱） |
 | `rabbitbot-vlm` | core-portable | 8000 VLM + 8005 Embedding |
-| `rabbitbot-audio` | core-portable | 28185 TTS + 28184 STT |
+| `rabbitbot-tts` | core-portable | 28185 TTS |
+| `rabbitbot-stt` | core-portable | 28184 STT |
 | `rabbitbot-memory` | core-portable | 28182 Memory Agent（依赖 neo4j + embedding） |
 | `rabbitbot-navbridge` | nav-portable | 28180 导航桥接（`humble_robot_agent_bridge`） |
 | `rabbitbot-workflow` | core-portable | 导览 workflow 专用宿主（loop 经 `docker exec` 注入） |
 
 - 由 `runtime/portable.env` 的 `RABBITBOT_BASE_RUNTIME=compose` 启用（**默认**）；设为 `unified` 回退到旧单容器 `rabbitbot-unified-runtime`。两者**互斥，勿同时启动**（host 网络端口冲突）。
-- 三个 rabbitbot 容器共用 core-portable 镜像，各只跑自己的服务子集；容器层面完全解耦，可独立重启（控制台「服务状态」面板每个服务都有「重启」按钮，重启即 `docker restart` 对应容器）。
+- 四个 rabbitbot 容器（`vlm` / `tts` / `stt` / `memory`）共用 core-portable 镜像，各只跑自己的服务子集；容器层面完全解耦，可独立重启（控制台「服务状态」面板每个服务都有「重启」按钮，重启即 `docker restart` 对应容器）。
 - `rabbitbot-loop.service` 启动时经 `ensure_decoupled_services()` 用 `docker compose up -d` 确保基础服务在线；`deploy/start_portable_stack.sh` 在部署阶段做同样的事（见流程 B 第 6 步）。
-- **解耦栈要求模型齐全**：`rabbitbot-vlm` 恒起 VLM+Embedding、`rabbitbot-audio` 恒起 TTS+STT，因此部署前需按需下载模型（见「按需准备模型」），**不适用**旧 unified 的「最小启动可不下载模型」。
+- **解耦栈要求模型齐全**：`rabbitbot-vlm` 恒起 VLM+Embedding、`rabbitbot-tts` 恒起 TTS、`rabbitbot-stt` 恒起 STT，因此部署前需按需下载模型（见「按需准备模型」），**不适用**旧 unified 的「最小启动可不下载模型」。
 - neo4j 使用官方镜像（独立于 core/nav），随 `export/import_portable_images.sh` 一并离线交付；联网环境下 `docker compose` 亦可自动 pull。
 
 ## portable 路径：两条流程
@@ -93,7 +94,7 @@ PORTABLE_CHECK_MODE=clean_orin bash deploy/check_air_project.sh
 MODE=check bash deploy/build_or_pull_images.sh
 
 # 6) 启动 portable 基础服务（按 runtime/portable.env 的 RABBITBOT_BASE_RUNTIME 分流）
-#    - 默认 compose：docker compose 拉起解耦栈 neo4j/vlm/audio/memory/workflow（不含 28180）
+#    - 默认 compose：docker compose 拉起解耦栈 neo4j/vlm/tts/stt/memory/workflow（不含 28180）
 #    - 回退 unified：启动单容器 rabbitbot-core-portable，并为 py38/py310/vln/pyorbbecsdk 注入从 core 镜像 seed 的依赖卷
 bash deploy/start_portable_stack.sh
 
@@ -103,7 +104,7 @@ bash deploy/install_air_project.sh
 
 ### 按需准备模型（两流程通用）
 
-> **解耦栈（`RABBITBOT_BASE_RUNTIME=compose`，默认）下 `rabbitbot-vlm` 恒起 VLM+Embedding、`rabbitbot-audio` 恒起 TTS+STT，必须先备齐 VLM / Embedding / STT 模型**，否则对应容器会 unhealthy、`rabbitbot-memory` 因 `depends_on` 一直等待依赖。下面「可先不下载大模型」仅适用于旧 `unified` 最小启动。
+> **解耦栈（`RABBITBOT_BASE_RUNTIME=compose`，默认）下 `rabbitbot-vlm` 恒起 VLM+Embedding、`rabbitbot-tts` 恒起 TTS、`rabbitbot-stt` 恒起 STT，必须先备齐 VLM / Embedding / STT 模型**，否则对应容器会 unhealthy、`rabbitbot-memory` 因 `depends_on` 一直等待依赖。下面「可先不下载大模型」仅适用于旧 `unified` 最小启动。
 
 旧 `unified` 模式下 `workflow` 冷启动不要求 VLM ready：
 
