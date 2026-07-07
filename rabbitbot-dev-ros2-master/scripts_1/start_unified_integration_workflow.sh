@@ -103,7 +103,7 @@ RABBITBOT_UNIFIED_START_EMBEDDING="${RABBITBOT_UNIFIED_START_EMBEDDING:-1}"
 RABBITBOT_UNIFIED_START_STT="${RABBITBOT_UNIFIED_START_STT:-0}"
 RABBITBOT_TTS_BACKEND="${RABBITBOT_TTS_BACKEND:-unitree}"
 RABBITBOT_UNITREE_TTS_INTERFACE="${RABBITBOT_UNITREE_TTS_INTERFACE:-eno1}"
-RABBITBOT_UNITREE_TTS_VOLUME="${RABBITBOT_UNITREE_TTS_VOLUME:-100}"
+RABBITBOT_UNITREE_TTS_VOLUME="${RABBITBOT_UNITREE_TTS_VOLUME:-}"
 RABBITBOT_UNITREE_TTS_SPEAKER_ID="${RABBITBOT_UNITREE_TTS_SPEAKER_ID:-0}"
 RABBITBOT_UNITREE_TTS_TIMEOUT="${RABBITBOT_UNITREE_TTS_TIMEOUT:-10}"
 RABBITBOT_PORTABLE_STOP_LEGACY_CONTAINERS="${RABBITBOT_PORTABLE_STOP_LEGACY_CONTAINERS:-sound_docker air_vln_container}"
@@ -389,8 +389,8 @@ ensure_compatible_container() {
         incompatible_reason="TTS 后端配置变化：container=${container_tts_backend:-local}, expected=${RABBITBOT_TTS_BACKEND}"
     elif [ "${RABBITBOT_TTS_BACKEND}" = "unitree" ] && [ "${container_unitree_interface:-eno1}" != "${RABBITBOT_UNITREE_TTS_INTERFACE}" ]; then
         incompatible_reason="Unitree TTS 网卡配置变化：container=${container_unitree_interface:-eno1}, expected=${RABBITBOT_UNITREE_TTS_INTERFACE}"
-    elif [ "${RABBITBOT_TTS_BACKEND}" = "unitree" ] && [ "${container_unitree_volume:-85}" != "${RABBITBOT_UNITREE_TTS_VOLUME}" ]; then
-        incompatible_reason="Unitree TTS 音量配置变化：container=${container_unitree_volume:-85}, expected=${RABBITBOT_UNITREE_TTS_VOLUME}"
+    elif [ "${RABBITBOT_TTS_BACKEND}" = "unitree" ] && [ "${container_unitree_volume:-}" != "${RABBITBOT_UNITREE_TTS_VOLUME}" ]; then
+        incompatible_reason="Unitree TTS 音量配置变化：container=${container_unitree_volume:-设备当前音量}, expected=${RABBITBOT_UNITREE_TTS_VOLUME:-设备当前音量}"
     fi
 
     if [ -n "${incompatible_reason}" ]; then
@@ -475,7 +475,8 @@ create_container_if_needed() {
     fi
 
     log_info "创建统一容器基础服务底座：${CONTAINER_NAME}"
-    log_info "TTS 默认后端：${RABBITBOT_TTS_BACKEND}，Unitree 网卡：${RABBITBOT_UNITREE_TTS_INTERFACE}，音量：${RABBITBOT_UNITREE_TTS_VOLUME}"
+    unitree_volume_desc="${RABBITBOT_UNITREE_TTS_VOLUME:-设备当前音量}"
+    log_info "TTS 默认后端：${RABBITBOT_TTS_BACKEND}，Unitree 网卡：${RABBITBOT_UNITREE_TTS_INTERFACE}，音量：${unitree_volume_desc}"
     docker create \
         --name "${CONTAINER_NAME}" \
         --network host \

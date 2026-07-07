@@ -261,12 +261,12 @@ def test_service_status_marks_online_when_port_open(monkeypatch):
 
 
 def test_resolve_service_container_compose_groups(monkeypatch):
-    # compose 栈下服务->容器映射：TTS/STT 同 rabbitbot-audio，VLM/Embedding 同 rabbitbot-vlm。
+    # compose 栈下服务->容器映射：TTS/STT 独立容器，VLM/Embedding 同 rabbitbot-vlm。
     from rabbitbot.control_console import status as status_mod
 
     monkeypatch.setenv("RABBITBOT_BASE_RUNTIME", "compose")
-    assert status_mod.resolve_service_container("tts") == "rabbitbot-audio"
-    assert status_mod.resolve_service_container("stt") == "rabbitbot-audio"
+    assert status_mod.resolve_service_container("tts") == "rabbitbot-tts"
+    assert status_mod.resolve_service_container("stt") == "rabbitbot-stt"
     assert status_mod.resolve_service_container("vlm") == "rabbitbot-vlm"
     assert status_mod.resolve_service_container("embedding") == "rabbitbot-vlm"
     assert status_mod.resolve_service_container("memory") == "rabbitbot-memory"
@@ -281,12 +281,13 @@ def test_service_status_marks_starting_after_container_restart(monkeypatch):
     monkeypatch.setenv("RABBITBOT_BASE_RUNTIME", "compose")
     monkeypatch.setattr(status_mod, "get_main_loop_start_epoch", lambda: None)
     monkeypatch.setattr(status_mod, "is_port_open", lambda host, port, timeout=0.12: False)
-    monkeypatch.setattr(status_mod, "_recent_container_restarts", {"rabbitbot-audio": time.time()})
+    monkeypatch.setattr(status_mod, "_recent_container_restarts", {"rabbitbot-tts": time.time()})
     by_key = {item.key: item for item in status_mod.get_runtime_service_statuses()}
     assert by_key["tts"].state == "starting"
-    assert by_key["stt"].state == "starting"
+    assert by_key["stt"].state == "offline"
     assert by_key["vlm"].state == "offline"
-    assert by_key["tts"].container == "rabbitbot-audio"
+    assert by_key["tts"].container == "rabbitbot-tts"
+    assert by_key["stt"].container == "rabbitbot-stt"
 
 
 def test_mark_container_restarted_records_timestamp(monkeypatch):
@@ -294,8 +295,8 @@ def test_mark_container_restarted_records_timestamp(monkeypatch):
     from rabbitbot.control_console import status as status_mod
 
     monkeypatch.setattr(status_mod, "_recent_container_restarts", {})
-    status_mod.mark_container_restarted("rabbitbot-audio")
-    assert "rabbitbot-audio" in status_mod._recent_container_restarts
+    status_mod.mark_container_restarted("rabbitbot-tts")
+    assert "rabbitbot-tts" in status_mod._recent_container_restarts
 
 
 def test_service_status_force_starting_overrides_online(monkeypatch):
@@ -305,8 +306,8 @@ def test_service_status_force_starting_overrides_online(monkeypatch):
     monkeypatch.setenv("RABBITBOT_BASE_RUNTIME", "compose")
     monkeypatch.setattr(status_mod, "get_main_loop_start_epoch", lambda: None)
     monkeypatch.setattr(status_mod, "is_port_open", lambda host, port, timeout=0.12: True)
-    monkeypatch.setattr(status_mod, "_recent_container_restarts", {"rabbitbot-audio": time.time()})
+    monkeypatch.setattr(status_mod, "_recent_container_restarts", {"rabbitbot-tts": time.time()})
     by_key = {item.key: item for item in status_mod.get_runtime_service_statuses()}
     assert by_key["tts"].state == "starting"
-    assert by_key["stt"].state == "starting"
+    assert by_key["stt"].state == "online"
     assert by_key["vlm"].state == "online"

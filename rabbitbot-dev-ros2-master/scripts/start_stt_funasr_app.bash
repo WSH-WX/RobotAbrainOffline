@@ -33,8 +33,14 @@ export STT_AUDIO_QUEUE_MAX_CHUNKS=${STT_AUDIO_QUEUE_MAX_CHUNKS:-160}
 export STT_INPUT_GAIN=${STT_INPUT_GAIN:-8.0}
 export STT_INPUT_VOLUME_PERCENT=${STT_INPUT_VOLUME_PERCENT:-80}
 export REALTIME_TTS_BASE_URL=${REALTIME_TTS_BASE_URL:-http://127.0.0.1:28185/v1}
+export RABBITBOT_STT_AUDIO_BACKEND=${RABBITBOT_STT_AUDIO_BACKEND:-alsa}
+export RABBITBOT_ENABLE_PULSE_AUDIO=${RABBITBOT_ENABLE_PULSE_AUDIO:-0}
+export PULSE_SERVER=${PULSE_SERVER:-unix:/run/user/1000/pulse/native}
+export STT_DEVICE_WAIT_SECONDS=${STT_DEVICE_WAIT_SECONDS:-10}
+export STT_DEVICE_STABLE_COUNT=${STT_DEVICE_STABLE_COUNT:-2}
 export RABBITBOT_TTS_AGENT_URL=${RABBITBOT_TTS_AGENT_URL:-${REALTIME_TTS_BASE_URL}}
-echo "STT 启动提示 TTS 地址: ${RABBITBOT_TTS_AGENT_URL}"
+export RABBITBOT_STT_STARTUP_SPEECH=${RABBITBOT_STT_STARTUP_SPEECH:-0}
+echo "STT 启动提示配置: enabled=${RABBITBOT_STT_STARTUP_SPEECH}, tts_url=${RABBITBOT_TTS_AGENT_URL}"
 
 # STT_DEVICE_NAME 只在明确指定时作为最高优先级；默认自动选择外接麦克风。
 DEVICE_NAME="${STT_DEVICE_NAME:-}"
@@ -42,72 +48,17 @@ DEVICE_NAME="${STT_DEVICE_NAME:-}"
 # 查找输入设备。必须在激活虚拟环境后执行，否则默认 python 可能没有 sounddevice。
 echo "查找输入设备，指定名称: ${DEVICE_NAME:-未指定}"
 echo "STT 输入设备自动选择策略: 显式指定名称 > 外接麦克风类设备 > 其它外接输入设备 > Orin 内置音频设备"
-DEVICE_INFO=$(python - <<'PYDEV'
-import os
-import sys
+echo "音频兼容层配置: stt_audio_backend=${RABBITBOT_STT_AUDIO_BACKEND}, pulse_enabled=${RABBITBOT_ENABLE_PULSE_AUDIO}, pulse_server=${PULSE_SERVER}, wait_seconds=${STT_DEVICE_WAIT_SECONDS}, stable_count=${STT_DEVICE_STABLE_COUNT}"
+DEVICE_INFO=$(python -m rabbitbot.audio.device_probe stt 2>/tmp/rabbitbot_stt_device_probe.err || true)
+DEVICE_INDEX=$(echo "${DEVICE_INFO}" | cut -d'|' -f1)
+DEVICE_FOUND_NAME=$(echo "${DEVICE_INFO}" | cut -d'|' -f2)
+DEVICE_SELECT_REASON=$(echo "${DEVICE_INFO}" | cut -d'|' -f3)
+DEVICE_KIND=$(echo "${DEVICE_INFO}" | cut -d'|' -f4)
+DEVICE_AVAILABLE=$(echo "${DEVICE_INFO}" | cut -d'|' -f5)
 
-preferred_name = os.environ.get("STT_DEVICE_NAME", "").strip().lower()
-builtin_keywords = (
-    "orin",
-    "jetson",
-    "tegra",
-    "nvidia",
-    "hda",
-    "ape",
-    "admaif",
-    "tegrasnd",
-)
-
-def is_builtin_audio(name):
-    normalized = name.lower()
-    return any(keyword in normalized for keyword in builtin_keywords)
-
-try:
-    import sounddevice as sd
-except Exception as exc:
-    print(f"sounddevice 不可用，无法按名称查找输入设备: {exc}", file=sys.stderr)
-    sys.exit(0)
-
-preferred = None
-mic_external = None
-external = None
-builtin = None
-mic_keywords = ("mic", "microphone", "dji", "wireless", "rx")
-output_like_keywords = ("bt67", "speaker", "monitor", "output")
-
-for idx, dev in enumerate(sd.query_devices()):
-    input_channels = int(dev.get("max_input_channels", 0))
-    if input_channels <= 0:
-        continue
-
-    name = dev.get("name", "")
-    normalized_name = name.lower()
-    device_info = f"{idx}|{name}|{input_channels}"
-    print(
-        f"输入设备候选: index={idx}, name={name}, channels={input_channels}",
-        file=sys.stderr,
-    )
-    if preferred_name and preferred_name in normalized_name and preferred is None:
-        preferred = device_info
-    elif not is_builtin_audio(name):
-        if any(keyword in normalized_name for keyword in mic_keywords) and mic_external is None:
-            mic_external = device_info
-        elif not any(keyword in normalized_name for keyword in output_like_keywords) and external is None:
-            external = device_info
-    elif builtin is None:
-        builtin = device_info
-
-selected = preferred or mic_external or external or builtin
-if selected is not None:
-    print(selected)
-PYDEV
-)
-
-if [ -n "${DEVICE_INFO}" ]; then
-    DEVICE_INDEX=$(echo "${DEVICE_INFO}" | cut -d'|' -f1)
-    DEVICE_FOUND_NAME=$(echo "${DEVICE_INFO}" | cut -d'|' -f2)
+if [ "${DEVICE_AVAILABLE}" = "1" ] && [ -n "${DEVICE_INDEX}" ]; then
     export INPUT_DEVICE_INDEX="${DEVICE_INDEX}"
-    echo "使用输入音频设备 ${DEVICE_FOUND_NAME}，index=${INPUT_DEVICE_INDEX}"
+    echo "使用输入音频设备 ${DEVICE_FOUND_NAME}，index=${INPUT_DEVICE_INDEX}，kind=${DEVICE_KIND}，reason=${DEVICE_SELECT_REASON}"
     DEVICE_CARD=$(echo "${DEVICE_FOUND_NAME}" | sed -n 's/.*(hw:\([0-9][0-9]*\),[0-9][0-9]*).*/\1/p')
     if [ -n "${DEVICE_CARD}" ] && command -v amixer >/dev/null 2>&1; then
         if amixer -c "${DEVICE_CARD}" sset Mic "${STT_INPUT_VOLUME_PERCENT}%" >/dev/null 2>&1; then
@@ -121,7 +72,7 @@ if [ -n "${DEVICE_INFO}" ]; then
 elif [ -n "${INPUT_DEVICE_INDEX}" ]; then
     echo "未自动找到输入设备，使用已设置的 INPUT_DEVICE_INDEX=${INPUT_DEVICE_INDEX}"
 else
-    echo "未找到可用输入设备，将以无输入设备模式启动"
+    echo "未找到可用输入设备，将以无输入设备模式启动；探测日志: /tmp/rabbitbot_stt_device_probe.err"
     unset INPUT_DEVICE_INDEX
 fi
 

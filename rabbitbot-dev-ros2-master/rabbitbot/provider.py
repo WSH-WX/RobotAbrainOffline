@@ -14,6 +14,8 @@ import cv2
 import numpy as np
 from openai import OpenAI
 from requests.exceptions import Timeout, RequestException
+from rabbitbot.clients.audio import STTAgent, TTSAgent
+from rabbitbot.runtime.config import env_url
 
 #from qwen_agent.agents import FnCallAgent
 #from qwen_agent.llm import BaseChatModel
@@ -939,72 +941,11 @@ def create_robot_agent(host_url: str = None):
     return RobotAgent(host_url)
 
 
-class STTAgent:
-
-    def __init__(self, host_url):
-        self.host_url = host_url
-        self.last_utterance_id = 0
-
-    def run(self, input_dict_str: str) -> str:
-        data = {"task": input_dict_str}
-        try:
-            start_time = time.time()
-            resp = requests.post(urljoin(self.host_url, 'exec'), data=data, timeout=10)
-            duration = time.time() - start_time
-            #print(f"STTAgent: post_duration {duration:.3f}")
-            try:
-                resp_dict = json.loads(resp.text)
-                out_text = resp_dict['out_text']
-                utterance_id = resp_dict.get('utterance_id')
-                if utterance_id is not None:
-                    try:
-                        self.last_utterance_id = int(utterance_id)
-                    except (TypeError, ValueError):
-                        logger.warning(f"Can't parse utterance_id from {utterance_id}")
-                #print(f"Recv: out_text {out_text}")
-            except:
-                logger.warning(f"Can't parse node from {resp.text}")
-                out_text = ""
-        except Timeout as e:
-            print('STTAgent: Timeout')
-            out_text = ""
-        return out_text
-
-
 def create_stt_agent(host_url: str = None):
-    host_url = host_url or os.getenv('RABBITBOT_STT_AGENT_URL', 'http://127.0.0.1:8001')
+    host_url = host_url or env_url('RABBITBOT_STT_AGENT_URL', 'http://127.0.0.1:8001')
     return STTAgent(host_url)
 
 
-class TTSAgent:
-
-    def __init__(self, host_url):
-        print(f"TTSAgent: host_url {host_url}")
-        self.host_url = host_url
-
-    def run(self, input_dict_str: str) -> str:
-        data = {"task": input_dict_str}
-        try:
-            start_time = time.time()
-            resp = requests.post(urljoin(self.host_url, 'exec'), data=data, timeout=10)
-            duration = time.time() - start_time
-            #print(f"TTSAgent: post_duration {duration:.3f}")
-            try:
-                resp_dict = json.loads(resp.text)
-                out_text = resp_dict['out_text']
-                #print(f"Recv: out_text {out_text}")
-            except:
-                logger.warning(f"Can't parse node from {resp.text}")
-                out_text = ""
-        except Timeout:
-            print('TTSAgent: Timeout')
-            out_text = ""
-        except RequestException as e:
-            print(f'TTSAgent: request failed: {e}')
-            out_text = ""
-        return out_text
-
-
 def create_tts_agent(host_url: str = None):
-    host_url = host_url or os.getenv('RABBITBOT_TTS_AGENT_URL', 'http://127.0.0.1:8001')
+    host_url = host_url or env_url('RABBITBOT_TTS_AGENT_URL', 'http://127.0.0.1:8001')
     return TTSAgent(host_url)

@@ -21,6 +21,14 @@ dependencies = [
 ]
 dynamic = ["version"]
 
+[project.optional-dependencies]
+test = [
+    "pytest",
+    "fastapi",
+    "httpx",
+    "requests",
+]
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["rabbitbot*"]

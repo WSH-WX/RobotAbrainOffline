@@ -32,7 +32,8 @@ class UnitreeG1TTS:
         self.speaker_id = int(os.getenv("RABBITBOT_UNITREE_TTS_SPEAKER_ID", "0"))
         self.timeout = float(os.getenv("RABBITBOT_UNITREE_TTS_TIMEOUT", "10"))
         self.command_timeout = float(os.getenv("RABBITBOT_UNITREE_TTS_COMMAND_TIMEOUT", str(self.timeout + 5.0)))
-        volume_text = os.getenv("RABBITBOT_UNITREE_TTS_VOLUME", "100").strip()
+        # 默认不向 Unitree TTS 下发 SetVolume，始终尊重设备当前音量；仅显式设置环境变量时才覆盖。
+        volume_text = os.getenv("RABBITBOT_UNITREE_TTS_VOLUME", "").strip()
         self.volume = int(volume_text) if volume_text else -1
         self.set_volume_each_request = _env_enabled("RABBITBOT_UNITREE_TTS_SET_VOLUME_EACH_REQUEST", False)
         self.volume_applied = False
@@ -51,6 +52,7 @@ class UnitreeG1TTS:
             network=self.network_interface,
             speaker=self.speaker_id,
             volume=self.volume,
+            volume_policy="explicit" if self.volume >= 0 else "device_current",
             set_volume_each_request=self.set_volume_each_request,
             timeout=self.timeout,
             binary=self.binary_path,
@@ -143,6 +145,7 @@ class UnitreeG1TTS:
             network=self.network_interface,
             speaker=self.speaker_id,
             volume=self.volume,
+            volume_policy="explicit" if self.volume >= 0 else "device_current",
             estimated_duration=f"{duration:.3f}s",
         )
         used_volume = False

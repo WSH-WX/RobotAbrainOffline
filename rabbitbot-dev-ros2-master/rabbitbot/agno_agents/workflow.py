@@ -73,16 +73,133 @@ from agno.exceptions import StopAgentRun
 import numpy as np
 import cv2
 from rabbitbot.provider import create_general_vlm_openai
+from rabbitbot.guide.controls import (
+    DEFAULT_CONTINUE_TEXTS,
+    build_control_commands,
+    is_continue_text,
+    matches_control_command,
+    normalize_control_text,
+)
+from rabbitbot.guide.routing import (
+    classify_task_by_rule as guide_classify_task_by_rule,
+    has_any as guide_has_any,
+    has_navigation_action as guide_has_navigation_action,
+    is_chat_info_request as guide_is_chat_info_request,
+    is_direct_navigation_request as guide_is_direct_navigation_request,
+    is_next_board_request as guide_is_next_board_request,
+    is_visual_request as guide_is_visual_request,
+    normalize_nav_text as guide_normalize_nav_text,
+    resolve_navigation_entity_by_fuzzy as guide_resolve_navigation_entity_by_fuzzy,
+)
+from rabbitbot.guide.dialogue import (
+    dialogue_index as guide_dialogue_index,
+    dialogue_path as guide_dialogue_path,
+    extract_location_points as guide_extract_location_points,
+    format_guide_text as guide_format_text,
+    guide_leader_calling as guide_dialogue_leader_calling,
+    guide_map_file as guide_dialogue_map_file,
+    guide_variables as guide_dialogue_variables,
+    load_dialogue as guide_load_dialogue,
+    load_script_steps as guide_load_script_steps,
+    normalize_point_entity as guide_normalize_point_entity,
+    opening_text as guide_opening_text,
+    point_entities as guide_point_entities,
+)
+
+# ==== 关注点模块拆分：以下符号已迁出到同目录子模块，此处重导出以保持原命名空间不变 ====
+from .workflow_config import (
+    _env_enabled,
+    _workflow_verbose_enabled,
+    _workflow_non_integration_enabled,
+    _strict_docx_script_enabled,
+    _docx_guide_qa_interrupt_enabled,
+    _workflow_log,
+    _workflow_profile_enabled,
+    _workflow_profile_path,
+    _workflow_profile_summary_enabled,
+    _should_speak_with_action,
+    _env_float,
+)
+from .workflow_profiling import (
+    WorkflowTimePoints,
+    _profile_lock,
+    _profile_span_id,
+    _profile_summary_lock,
+    _profile_summary,
+    _workflow_timestamp,
+    _format_log_fields,
+    _workflow_action_log,
+    _profile_json_safe,
+    _profile_write,
+    _profile_next_span_id,
+    _profile_start,
+    _profile_end,
+    _profile_instant,
+    _profile_summary_reset,
+    _profile_summary_start_if_needed,
+    _profile_summary_label,
+    _profile_summary_record,
+    _profile_summary_line,
+    _profile_summary_print,
+    _profile_summary_print_at_exit,
+)
+from .workflow_text import (
+    COMMON_SURNAMES,
+    _find_common_surname,
+    _extract_leader_calling,
+    _parse_first_visit_answer,
+    _is_empty_stt_text,
+)
+from .workflow_data import (
+    DOCX_GUIDE_DIALOGUE_DIR,
+    DOCX_GUIDE_DIALOGUE_DEFAULT_INDEX,
+    _DOCX_GUIDE_DIALOGUE_CACHE,
+    _docx_guide_dialogue_index,
+    _docx_guide_dialogue_path,
+    _load_docx_guide_dialogue,
+    _docx_guide_variables,
+    _docx_guide_leader_calling,
+    _docx_guide_map_file,
+    _normalize_docx_point_entity,
+    _docx_guide_point_entities,
+    _format_docx_guide_text,
+    _docx_opening_text,
+    _load_docx_script_steps,
+    DOCX_SCRIPT_POINTS,
+    _load_docx_point_entity,
+    _ensure_start_position,
+    _wait_manual_navigation_success,
+    _load_combined_data,
+    _load_json_entity_order,
+    _load_json_entity,
+    _extract_first_location_point,
+    _extract_location_points,
+    _prefer_json_entity_location,
+    JSON_ENTITY_ORDER,
+)
+from .workflow_arm import (
+    ARM_ACTIONS_NEED_RELEASE_BEFORE_SPEECH,
+    ARM_ACTIONS_NEED_RELEASE_AFTER_SPEECH,
+    ARM_RELEASE_ACTION,
+    ARM_BEFORE_RELEASE_DELAYS,
+    ARM_BEFORE_RELEASE_DELAY_ENV,
+    HAND_GESTURE_COMMANDS,
+    _get_hand_gesture_command,
+    _publish_hand_gesture_for_arm_action,
+    _format_arm_action_success,
+    _log_arm_action_latency,
+    _do_arm_async_timed,
+    _send_release_arm,
+    _send_release_arm_sync,
+    _do_arm_before_speech,
+    _do_arm_sync,
+    _do_arm_during_speech,
+    _release_arm_after_concurrent_speech,
+    _release_arm_after_speech,
+)
+# ==== 关注点模块重导出结束 ====
 
 
-class WorkflowTimePoints:
-    PLAN_START = -1
-    PLAN_END = -1
-    NAVI_CHECK_START = -1
-    NAVI_CHECK_END = -1
-    CHAT_START = -1
-    CHAT_FIRST_TEXT_START = -1
-    CHAT_END = -1
 
 
 workflow_configs = {
@@ -97,37 +214,18 @@ last_chat_text = ""
 chat_queue = ChatQueue(10)
 before_text = ""
 pending_user_text = ""
-_profile_lock = threading.Lock()
-_profile_span_id = 0
-_profile_summary_lock = threading.RLock()
-_profile_summary = {}
 
 
-def _env_enabled(name, default="0"):
-    value = os.getenv(name, default).strip().lower()
-    return value in {"1", "true", "yes", "on"}
 
 
-def _workflow_verbose_enabled():
-    return _env_enabled("RABBITBOT_WORKFLOW_VERBOSE", "0")
 
 
-def _workflow_non_integration_enabled():
-    return _env_enabled("RABBITBOT_WORKFLOW_NON_INTEGRATION", "0")
 
 
-def _strict_docx_script_enabled():
-    return _env_enabled("RABBITBOT_STRICT_DOCX_SCRIPT", "1")
 
 
-def _docx_guide_qa_interrupt_enabled():
-    return _env_enabled("RABBITBOT_DOCX_GUIDE_QA_INTERRUPT", "1")
 
 
-def _workflow_log(message, verbose=False):
-    if verbose and not _workflow_verbose_enabled():
-        return
-    print(message)
 
 
 # workflow 运行环境变量速查：
@@ -157,1101 +255,135 @@ def _workflow_log(message, verbose=False):
 # - RABBITBOT_ARM_RELEASE_WAIT_SECONDS：发送 release 后额外等待时间，单位秒。
 # - RABBITBOT_VIEW_MODE：视觉问答来源，robot 使用机器人视觉，其它值使用 mock。
 # - RABBITBOT_MOCK_IMAGE：mock 视觉问答使用的本地图片路径。
-DOCX_GUIDE_DIALOGUE_DIR = Path(__file__).resolve().parents[2] / "conf"
-DOCX_GUIDE_DIALOGUE_DEFAULT_INDEX = "0"
-_DOCX_GUIDE_DIALOGUE_CACHE = {"path": None, "data": None}
+# - RABBITBOT_CHAT_RAG：闲聊(C 路径)是否启用记忆 RAG（先检索 neo4j+markdown，命中则作为参考资料交给 VLM 生成回答），默认启用。
+# - RABBITBOT_CHAT_RAG_GROUP：闲聊 RAG 检索使用的 group_name，默认“闲聊检索”（中文名会跳过 neo4j 分组过滤，检索全部图谱节点+markdown 文档）。
 
 
-def _docx_guide_dialogue_index():
-    raw_dialogue_index = os.getenv("RABBITBOT_DIALOGUE_INDEX", "").strip()
-    raw_legacy_index = os.getenv("RABBITBOT_DOCX_GUIDE_DIALOGUE_INDEX", "").strip()
-    raw_index = raw_dialogue_index or raw_legacy_index or DOCX_GUIDE_DIALOGUE_DEFAULT_INDEX
-    if not re.fullmatch(r"[0-9]+", raw_index):
-        _workflow_log(
-            "DOCX 导览台词序号非法: "
-            f"RABBITBOT_DIALOGUE_INDEX={raw_dialogue_index!r}, "
-            f"RABBITBOT_DOCX_GUIDE_DIALOGUE_INDEX={raw_legacy_index!r}, "
-            f"effective={raw_index!r}"
-        )
-        raise ValueError(f"DOCX 导览台词序号必须是数字: {raw_index!r}")
-    if not raw_dialogue_index and not raw_legacy_index:
-        _workflow_log(f"DOCX 导览台词序号未设置，使用默认序号: {DOCX_GUIDE_DIALOGUE_DEFAULT_INDEX}")
-    return raw_index
 
 
-def _docx_guide_dialogue_path():
-    configured_path = os.getenv("RABBITBOT_DOCX_GUIDE_DIALOGUE_FILE", "").strip()
-    if configured_path:
-        return Path(configured_path)
-    return DOCX_GUIDE_DIALOGUE_DIR / f"dialogue_{_docx_guide_dialogue_index()}.json"
 
 
-def _load_docx_guide_dialogue():
-    dialogue_path = _docx_guide_dialogue_path()
-    cache_path = _DOCX_GUIDE_DIALOGUE_CACHE.get("path")
-    if cache_path == dialogue_path and _DOCX_GUIDE_DIALOGUE_CACHE.get("data") is not None:
-        return _DOCX_GUIDE_DIALOGUE_CACHE["data"]
-
-    start_time = time.perf_counter()
-    try:
-        raw_text = dialogue_path.read_text(encoding="utf-8")
-        data = json.loads(raw_text)
-    except FileNotFoundError as exc:
-        _workflow_log(f"DOCX 导览台词文件缺失: path={dialogue_path}")
-        raise FileNotFoundError(f"DOCX 导览台词文件缺失: {dialogue_path}") from exc
-    except json.JSONDecodeError as exc:
-        _workflow_log(
-            "DOCX 导览台词文件 JSON 解析失败: "
-            f"path={dialogue_path}, line={exc.lineno}, column={exc.colno}, message={exc.msg}"
-        )
-        raise ValueError(f"DOCX 导览台词文件 JSON 解析失败: {dialogue_path}") from exc
-
-    if not isinstance(data, dict):
-        raise ValueError(f"DOCX 导览台词文件根节点必须是对象: {dialogue_path}")
-    variables = data.get("variables", {})
-    opening = data.get("opening", {})
-    steps = data.get("steps", [])
-    map_file = data.get("map_file", "")
-    points = data.get("points", {})
-    if not isinstance(variables, dict):
-        raise ValueError(f"DOCX 导览台词 variables 必须是对象: {dialogue_path}")
-    if not isinstance(opening, dict):
-        raise ValueError(f"DOCX 导览台词 opening 必须是对象: {dialogue_path}")
-    if not isinstance(steps, list):
-        raise ValueError(f"DOCX 导览台词 steps 必须是数组: {dialogue_path}")
-    if map_file is not None and not isinstance(map_file, str):
-        raise ValueError(f"DOCX 导览台词 map_file 必须是字符串: {dialogue_path}")
-    if points is None:
-        points = {}
-        data["points"] = points
-    if not isinstance(points, dict):
-        raise ValueError(f"DOCX 导览台词 points 必须是对象: {dialogue_path}")
-
-    elapsed_seconds = time.perf_counter() - start_time
-    segment_count = sum(len(step.get("segments", []) or []) for step in steps if isinstance(step, dict))
-    leader_calling = str(variables.get("leader_calling") or "").strip()
-    map_file_summary = str(map_file or "").strip() or "未配置"
-    _DOCX_GUIDE_DIALOGUE_CACHE["path"] = dialogue_path
-    _DOCX_GUIDE_DIALOGUE_CACHE["data"] = data
-    configured_path = os.getenv("RABBITBOT_DOCX_GUIDE_DIALOGUE_FILE", "").strip()
-    dialogue_source = "file_env" if configured_path else f"index={_docx_guide_dialogue_index()}"
-    _workflow_log(
-        "DOCX 导览台词文件加载完成: "
-        f"source={dialogue_source}, path={dialogue_path}, map_file={map_file_summary}, "
-        f"points={len(points)}, steps={len(steps)}, segments={segment_count}, "
-        f"leader_calling={leader_calling or '未配置'}, elapsed={elapsed_seconds:.3f}s"
-    )
-    return data
 
 
-def _docx_guide_variables(extra_variables=None):
-    data = _load_docx_guide_dialogue()
-    variables = dict(data.get("variables", {}) or {})
-    if "leader_calling" not in variables or not str(variables.get("leader_calling") or "").strip():
-        raise KeyError(f"DOCX 导览台词 variables 缺少必填称呼键: key=leader_calling, path={_docx_guide_dialogue_path()}")
-    variables["leader_calling"] = str(variables["leader_calling"]).strip()
-    if extra_variables:
-        variables.update(extra_variables)
-        if "leader_calling" in variables:
-            variables["leader_calling"] = str(variables["leader_calling"]).strip()
-    return variables
 
 
-def _docx_guide_leader_calling():
-    return _docx_guide_variables()["leader_calling"]
 
 
-def _docx_guide_map_file():
-    return str(_load_docx_guide_dialogue().get("map_file") or "").strip()
 
 
 DOCX_POINT_LOCATION_REQUIRED_FIELDS = ("x", "y", "z", "ox", "oy", "oz", "ow", "mode")
 DOCX_POINT_LOCATION_FLOAT_FIELDS = ("x", "y", "z", "ox", "oy", "oz", "ow")
 
 
-def _normalize_docx_point_entity(point_key, raw_point):
-    dialogue_path = _docx_guide_dialogue_path()
-    if not isinstance(raw_point, dict):
-        raise ValueError(f"DOCX 导览台词 points 条目必须是对象: key={point_key}, path={dialogue_path}")
-    name = str(raw_point.get("name") or point_key).strip()
-    if not name:
-        raise ValueError(f"DOCX 导览台词 points 条目缺少 name: key={point_key}, path={dialogue_path}")
-    raw_location = raw_point.get("location", [])
-    if raw_location is None:
-        raw_location = []
-    if not isinstance(raw_location, list):
-        raise ValueError(f"DOCX 导览台词 points.location 必须是数组: key={point_key}, path={dialogue_path}")
-    location = []
-    for index, item in enumerate(raw_location):
-        if not isinstance(item, dict):
-            raise ValueError(f"DOCX 导览台词 points.location 条目必须是对象: key={point_key}, index={index}, path={dialogue_path}")
-        location_item = dict(item)
-        missing_fields = [field for field in DOCX_POINT_LOCATION_REQUIRED_FIELDS if field not in location_item]
-        if missing_fields:
-            raise ValueError(
-                "DOCX 导览台词 points.location 缺少坐标字段: "
-                f"key={point_key}, index={index}, missing={missing_fields}, path={dialogue_path}"
-            )
-        for field in DOCX_POINT_LOCATION_FLOAT_FIELDS:
-            try:
-                location_item[field] = float(location_item[field])
-            except (TypeError, ValueError) as exc:
-                raise ValueError(
-                    "DOCX 导览台词 points.location 坐标字段必须是数字: "
-                    f"key={point_key}, index={index}, field={field}, path={dialogue_path}"
-                ) from exc
-        try:
-            location_item["mode"] = int(location_item["mode"])
-        except (TypeError, ValueError) as exc:
-            raise ValueError(
-                "DOCX 导览台词 points.location mode 必须是整数: "
-                f"key={point_key}, index={index}, path={dialogue_path}"
-            ) from exc
-        location.append(location_item)
-    return {
-        "name": name,
-        "summary": str(raw_point.get("summary") or name),
-        "description": str(raw_point.get("description") or ""),
-        "location": location,
-    }
-
-
-def _docx_guide_point_entities():
-    raw_points = _load_docx_guide_dialogue().get("points", {}) or {}
-    entities = {}
-    for point_key, raw_point in raw_points.items():
-        key = str(point_key).strip()
-        if not key:
-            raise ValueError(f"DOCX 导览台词 points 存在空 key: path={_docx_guide_dialogue_path()}")
-        entity = _normalize_docx_point_entity(key, raw_point)
-        entities[key] = entity
-        entities.setdefault(entity["name"], entity)
-    return entities
-
-
-def _format_docx_guide_text(text, variables=None):
-    if text is None:
-        return ""
-    format_variables = _docx_guide_variables(variables)
-    try:
-        return str(text).format(**format_variables)
-    except KeyError as exc:
-        _workflow_log(
-            "DOCX 导览台词占位符缺少变量: "
-            f"missing={exc.args[0]}, available={sorted(format_variables.keys())}"
-        )
-        raise
-
-
-def _docx_opening_text(key, variables=None):
-    opening = _load_docx_guide_dialogue().get("opening", {}) or {}
-    if key not in opening:
-        dialogue_path = _docx_guide_dialogue_path()
-        raise KeyError(f"DOCX 导览台词 opening 缺少键: key={key}, path={dialogue_path}")
-    return _format_docx_guide_text(opening[key], variables)
-
-
-def _load_docx_script_steps(point_entity):
-    data = _load_docx_guide_dialogue()
-    raw_steps = data.get("steps", [])
-    if not raw_steps:
-        raise ValueError(f"DOCX 导览台词 steps 为空: {_docx_guide_dialogue_path()}")
-
-    steps = []
-    for index, raw_step in enumerate(raw_steps):
-        if not isinstance(raw_step, dict):
-            raise ValueError(f"DOCX 导览台词 step 必须是对象: index={index}")
-        step = dict(raw_step)
-        entity_key = step.pop("entity_key", None)
-        if entity_key:
-            entity = _load_docx_point_entity(str(entity_key))
-            if entity is None and entity_key in point_entity:
-                entity = _load_docx_point_entity(point_entity[entity_key])
-            if entity is None:
-                raise KeyError(f"DOCX 导览台词 step entity_key 未定义: index={index}, entity_key={entity_key}")
-            step["entity"] = entity["name"]
-        segments = step.get("segments", [])
-        if segments is None:
-            segments = []
-        if not isinstance(segments, list):
-            raise ValueError(f"DOCX 导览台词 step segments 必须是数组: index={index}, scene={step.get('scene')}")
-        step["segments"] = [dict(segment) for segment in segments]
-        steps.append(step)
-    return steps
-
-
-def _workflow_timestamp():
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-
-
-def _format_log_fields(fields):
-    return ", ".join(f"{key}={value}" for key, value in fields.items() if value is not None)
-
-
-def _workflow_action_log(stage, action_name=None, **fields):
-    field_text = _format_log_fields(fields)
-    suffix = f", {field_text}" if field_text else ""
-    print(f"[{_workflow_timestamp()}] workflow动作链路: stage={stage}, action={action_name}{suffix}")
-
-
-def _workflow_profile_enabled():
-    return _env_enabled("RABBITBOT_WORKFLOW_PROFILE", "1")
-
-
-def _workflow_profile_path():
-    explicit_path = os.getenv("RABBITBOT_WORKFLOW_PROFILE_LOG", "").strip()
-    if explicit_path:
-        return Path(explicit_path)
-    log_dir = os.getenv("RABBITBOT_LOG_DIR", "").strip()
-    if log_dir:
-        return Path(log_dir) / "workflow_profile.jsonl"
-    return Path.cwd() / "logs" / "workflow_profile.jsonl"
-
-
-def _profile_json_safe(value):
-    if isinstance(value, (str, int, float, bool)) or value is None:
-        return value
-    if isinstance(value, dict):
-        return {str(key): _profile_json_safe(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_profile_json_safe(item) for item in value]
-    return str(value)
-
-
-def _profile_write(record):
-    if not _workflow_profile_enabled():
-        return
-    record = {key: _profile_json_safe(value) for key, value in record.items()}
-    record.setdefault("ts", _workflow_timestamp())
-    profile_path = _workflow_profile_path()
-    try:
-        profile_path.parent.mkdir(parents=True, exist_ok=True)
-        with _profile_lock:
-            with profile_path.open("a", encoding="utf-8") as file:
-                file.write(json.dumps(record, ensure_ascii=False) + "\n")
-    except Exception as exc:
-        print(f"workflow profile 写入失败: path={profile_path}, error={exc}")
-
-
-def _profile_next_span_id():
-    global _profile_span_id
-    with _profile_lock:
-        _profile_span_id += 1
-        return _profile_span_id
-
-
-def _profile_start(span, **fields):
-    _profile_summary_start_if_needed()
-    span_token = {
-        "span_id": _profile_next_span_id(),
-        "span": span,
-        "start_perf": time.perf_counter(),
-    }
-    _profile_write({
-        "event": "start",
-        "span": span,
-        "span_id": span_token["span_id"],
-        **fields,
-    })
-    return span_token
-
-
-def _profile_end(span_token, **fields):
-    if not span_token:
-        return
-    elapsed_seconds = time.perf_counter() - span_token["start_perf"]
-    _profile_write({
-        "event": "end",
-        "span": span_token["span"],
-        "span_id": span_token["span_id"],
-        "elapsed": round(elapsed_seconds, 6),
-        **fields,
-    })
-    _profile_summary_record(span_token["span"], elapsed_seconds)
-
-
-def _profile_instant(name, span=None, **fields):
-    record = {
-        "event": "instant",
-        "name": name,
-        **fields,
-    }
-    if span:
-        record["span"] = span
-    _profile_write(record)
-
-
-def _workflow_profile_summary_enabled():
-    return _env_enabled("RABBITBOT_WORKFLOW_SUMMARY", "1")
-
-
-def _profile_summary_reset():
-    global _profile_summary
-    with _profile_summary_lock:
-        _profile_summary = {
-            "start_perf": None,
-            "printed": False,
-            "loop_iterations": 0,
-            "stats": {
-                "audio_input": {"count": 0, "sum": 0.0},
-                "plan_llm": {"count": 0, "sum": 0.0},
-                "chat_llm": {"count": 0, "sum": 0.0},
-                "chat_tts": {"count": 0, "sum": 0.0},
-                "action": {"count": 0, "sum": 0.0},
-                "navi_check": {"count": 0, "sum": 0.0},
-                "completion_check": {"count": 0, "sum": 0.0},
-            },
-        }
-
-
-def _profile_summary_start_if_needed():
-    if not _workflow_profile_summary_enabled():
-        return
-    with _profile_summary_lock:
-        if not _profile_summary:
-            _profile_summary_reset()
-        if _profile_summary["start_perf"] is None:
-            _profile_summary["start_perf"] = time.perf_counter()
-
-
-def _profile_summary_label(span):
-    return {
-        "audio_input": "audio_input",
-        "listen_answer": "audio_input",
-        "plan_llm": "plan_llm",
-        "chat_llm": "chat_llm",
-        "chat_tts": "chat_tts",
-        "tts_segment": "chat_tts",
-        "arm_action": "action",
-        "navi_check": "navi_check",
-        "completion_check": "completion_check",
-    }.get(span)
-
-
-def _profile_summary_record(span, elapsed_seconds):
-    if not _workflow_profile_summary_enabled():
-        return
-    _profile_summary_start_if_needed()
-    with _profile_summary_lock:
-        if span == "loop_iteration":
-            _profile_summary["loop_iterations"] += 1
-        label = _profile_summary_label(span)
-        if not label:
-            return
-        stat = _profile_summary["stats"][label]
-        stat["count"] += 1
-        stat["sum"] += float(elapsed_seconds)
-
-
-def _profile_summary_line(label):
-    stat = _profile_summary["stats"].get(label, {"count": 0, "sum": 0.0})
-    count = stat["count"]
-    avg = stat["sum"] / count if count else 0.0
-    return f"{label + ' (avg):':<22}{avg:>9.3f}s  (×{count})"
-
-
-def _profile_summary_print(reason="finished", force=False):
-    if not _workflow_profile_summary_enabled():
-        return
-    with _profile_summary_lock:
-        if not _profile_summary:
-            return
-        if _profile_summary.get("printed") and not force:
-            return
-        start_perf = _profile_summary.get("start_perf")
-        loop_total = time.perf_counter() - start_perf if start_perf is not None else 0.0
-        lines = [
-            "========== Workflow Profile Summary ==========",
-            f"loop_total:{loop_total:>20.3f}s",
-            f"loop_iterations:{_profile_summary['loop_iterations']:>9}",
-            _profile_summary_line("audio_input"),
-            _profile_summary_line("plan_llm"),
-            _profile_summary_line("chat_llm"),
-            _profile_summary_line("chat_tts"),
-            _profile_summary_line("action"),
-            _profile_summary_line("navi_check"),
-            _profile_summary_line("completion_check"),
-        ]
-        _profile_summary["printed"] = True
-
-    print("\n".join(lines))
-    _profile_write({
-        "event": "instant",
-        "name": "workflow_profile_summary_printed",
-        "reason": reason,
-        "loop_total": round(loop_total, 6),
-    })
-
-
-def _profile_summary_print_at_exit():
-    _profile_summary_print(reason="process_exit")
-
-
-_profile_summary_reset()
-atexit.register(_profile_summary_print_at_exit)
-
-
-ARM_ACTIONS_NEED_RELEASE_BEFORE_SPEECH = {"shake_hand", "face_wave", "high_wave", "hug"}
-ARM_ACTIONS_NEED_RELEASE_AFTER_SPEECH = {"right_hand_up", "hands_up"}
-ARM_RELEASE_ACTION = "release"
-ARM_BEFORE_RELEASE_DELAYS = {
-    "shake_hand": 0.0,
-}
-ARM_BEFORE_RELEASE_DELAY_ENV = {
-    "shake_hand": "RABBITBOT_HANDSHAKE_BEFORE_RELEASE_DELAY",
-}
-HAND_GESTURE_COMMANDS = {}
-
-
-def _should_speak_with_action(action_name, configured=False):
-    if not action_name:
-        return False
-    return bool(configured) or action_name != "shake_hand"
-
-
-def _get_hand_gesture_command(action_name):
-    if not action_name:
-        return ""
-    env_name = f"RABBITBOT_HAND_GESTURE_{action_name.upper()}".replace("-", "_")
-    command = os.getenv(env_name, HAND_GESTURE_COMMANDS.get(action_name, ""))
-    return command.strip()
-
-
-def _publish_hand_gesture_for_arm_action(action_name):
-    command = _get_hand_gesture_command(action_name)
-    if not command:
-        _workflow_action_log("hand_gesture_skip", action_name, reason="未配置灵巧手动作")
-        return
-
-    topic = os.getenv("RABBITBOT_HAND_GESTURE_TOPIC", "/gesture_cmd")
-    timeout = _env_float("RABBITBOT_HAND_GESTURE_PUB_TIMEOUT", 3.0)
-    message = f"{{data: '{command}'}}"
-    start_time = time.perf_counter()
-    _workflow_action_log("hand_gesture_publish_start", action_name, topic=topic, data=command, timeout=timeout)
-    try:
-        subprocess.run(
-            ["ros2", "topic", "pub", "--once", topic, "std_msgs/msg/String", message],
-            check=True,
-            timeout=timeout,
-        )
-        elapsed_seconds = time.perf_counter() - start_time
-        _workflow_action_log("hand_gesture_publish_done", action_name, topic=topic, data=command, elapsed=f"{elapsed_seconds:.3f}s")
-        print(f"已发布灵巧手动作: topic={topic}, data={command}")
-    except FileNotFoundError as exc:
-        elapsed_seconds = time.perf_counter() - start_time
-        _workflow_action_log("hand_gesture_publish_error", action_name, topic=topic, data=command, elapsed=f"{elapsed_seconds:.3f}s", error=exc)
-        print("发布灵巧手动作失败: 未找到 ros2 命令")
-    except subprocess.TimeoutExpired:
-        elapsed_seconds = time.perf_counter() - start_time
-        _workflow_action_log("hand_gesture_publish_timeout", action_name, topic=topic, data=command, elapsed=f"{elapsed_seconds:.3f}s", timeout=timeout)
-        print(f"发布灵巧手动作超时: topic={topic}, data={command}, timeout={timeout}")
-    except subprocess.CalledProcessError as exc:
-        elapsed_seconds = time.perf_counter() - start_time
-        _workflow_action_log("hand_gesture_publish_error", action_name, topic=topic, data=command, elapsed=f"{elapsed_seconds:.3f}s", returncode=exc.returncode)
-        print(f"发布灵巧手动作失败: topic={topic}, data={command}, returncode={exc.returncode}")
-
-
-
-DOCX_SCRIPT_POINTS = {
-    "点位1": {
-        "summary": "点位1",
-        "description": "DOCX 剧本起始点位。",
-        "location": [
-            {"x": 1.9105, "y": -1.6180, "z": 0.0117, "ox": -0.0029, "oy": 0.0265, "oz": -0.2046, "ow": 0.9785, "mode": 1},
-        ],
-    },
-    "1->2过渡点位": {
-        "summary": "1->2过渡点位",
-        "description": "DOCX 剧本点位1前往点位2路径上的过渡点位；该点位只导航，不播报台词。",
-        "location": [
-            {"x": 8.6465, "y": -2.5763, "z": -0.0722, "ox": 0.0547, "oy": 0.0907, "oz": 0.5347, "ow": 0.8384, "mode": 1},
-        ],
-    },
-    "点位2": {
-        "summary": "点位2",
-        "description": "DOCX 剧本问咖啡点位；点咖啡台词只允许在该最终点位播报。",
-        "location": [
-            {"x": 10.1203, "y": 0.8162, "z": -0.1335, "ox": 0.0904, "oy": 0.0373, "oz": 0.9074, "ow": 0.4087, "mode": 1},
-        ],
-    },
-    "点位3": {
-        "summary": "点位3",
-        "description": "DOCX 剧本拿取咖啡点位。",
-        "location": [
-            {"x": 11.1090, "y": 4.3229, "z": -0.1892, "ox": 0.0937, "oy": 0.0170, "oz": 0.9717, "ow": 0.2162, "mode": 1},
-        ],
-    },
-    "点位4": {
-        "summary": "点位4",
-        "description": "DOCX 剧本点位3前往点位5路径上的中转点位。",
-        "location": [
-            {"x": 13.9410, "y": -5.1633, "z": 0.0350, "ox": 0.0140, "oy": 0.0335, "oz": -0.9085, "ow": -0.4163, "mode": 1},
-        ],
-    },
-    "3->5过渡点位": {
-        "summary": "3->5过渡点位",
-        "description": "DOCX 剧本点位3前往点位5路径上的过渡点位；该点位只导航，不播报台词。",
-        "location": [
-            {"x": 5.5507, "y": 14.4097, "z": -0.1921, "ox": 0.0779, "oy": 0.0578, "oz": 0.7806, "ow": 0.6174, "mode": 1},
-        ],
-    },
-    "点位5": {
-        "summary": "点位5",
-        "description": "DOCX 剧本告别并指引小巴方向点位；告别台词只允许在该最终点位播报。",
-        "location": [
-            {"x": 4.7039, "y": 20.4749, "z": -0.2250, "ox": 0.0876, "oy": -0.0269, "oz": 0.9076, "ow": -0.4096, "mode": 1},
-        ],
-    },
-}
-
-
-def _load_docx_point_entity(name):
-    dialogue_points = _docx_guide_point_entities()
-    if name in dialogue_points:
-        entity = dict(dialogue_points[name])
-        _workflow_log(
-            "DOCX 导览点位使用台词文件配置: "
-            f"key={name}, entity={entity.get('name')}, points={len(entity.get('location', []) or [])}, "
-            f"map_file={_docx_guide_map_file() or '未配置'}"
-        )
-        return entity
-
-    point = DOCX_SCRIPT_POINTS.get(name)
-    if not point:
-        return None
-    _workflow_log(f"DOCX 导览点位使用代码兜底配置: name={name}")
-    return {
-        "name": name,
-        "summary": point.get("summary", name),
-        "description": point.get("description", ""),
-        "location": point.get("location", []),
-    }
-
-
-def _env_float(name, default):
-    raw_value = os.getenv(name, str(default))
-    try:
-        return float(raw_value)
-    except (TypeError, ValueError):
-        print(f"Invalid {name}={raw_value}, use {default}")
-        return float(default)
-
-
-def _format_arm_action_success(result):
-    if isinstance(result, dict):
-        return result.get("success", "未知")
-    if result is None:
-        return "无返回"
-    return "未知"
-
-
-def _log_arm_action_latency(action_name, elapsed_seconds, result=None, error=None, call_type="async"):
-    if error is not None:
-        _workflow_action_log(
-            "workflow_do_arm_result",
-            action_name,
-            success="异常",
-            elapsed=f"{elapsed_seconds:.3f}s",
-            mode=call_type,
-            error=error,
-        )
-        print(
-            f"手臂动作body回执耗时: action={action_name}, success=异常, "
-            f"elapsed={elapsed_seconds:.3f}s, mode={call_type}, error={error}"
-        )
-        return
-    success = _format_arm_action_success(result)
-    _workflow_action_log(
-        "workflow_do_arm_result",
-        action_name,
-        success=success,
-        elapsed=f"{elapsed_seconds:.3f}s",
-        mode=call_type,
-    )
-    print(
-        f"手臂动作body回执耗时: action={action_name}, success={success}, "
-        f"elapsed={elapsed_seconds:.3f}s, mode={call_type}"
-    )
-
-
-async def _do_arm_async_timed(robot, action_name):
-    start_time = time.perf_counter()
-    span_token = _profile_start("arm_action", action=action_name, mode="async")
-    _workflow_action_log("workflow_do_arm_async_start", action_name)
-    try:
-        result = await robot.do_arm_async(action_name)
-    except Exception as exc:
-        elapsed_seconds = time.perf_counter() - start_time
-        _log_arm_action_latency(action_name, elapsed_seconds, error=exc, call_type="async")
-        _profile_end(span_token, action=action_name, mode="async", success=False, error=exc)
-        raise
-    elapsed_seconds = time.perf_counter() - start_time
-    success = _format_arm_action_success(result)
-    _log_arm_action_latency(action_name, elapsed_seconds, result=result, call_type="async")
-    _profile_end(span_token, action=action_name, mode="async", success=success)
-    return result
-
-
-async def _send_release_arm(robot):
-    span_token = _profile_start("release_arm", action=ARM_RELEASE_ACTION)
-    _workflow_action_log("workflow_release_start", ARM_RELEASE_ACTION)
-    release_result = await _do_arm_async_timed(robot, ARM_RELEASE_ACTION)
-    if isinstance(release_result, dict) and not release_result.get("success", True):
-        print(f"收回动作回执失败: action={ARM_RELEASE_ACTION}, result={release_result}")
-    release_wait_seconds = _env_float("RABBITBOT_ARM_RELEASE_WAIT_SECONDS", 0.2)
-    if release_wait_seconds > 0:
-        _workflow_action_log("workflow_release_wait_start", ARM_RELEASE_ACTION, wait=f"{release_wait_seconds:.3f}s")
-        await asyncio.sleep(release_wait_seconds)
-        _workflow_action_log("workflow_release_wait_done", ARM_RELEASE_ACTION, wait=f"{release_wait_seconds:.3f}s")
-    success = _format_arm_action_success(release_result)
-    _profile_end(span_token, action=ARM_RELEASE_ACTION, success=success)
-
-
-def _send_release_arm_sync(robot):
-    span_token = _profile_start("release_arm", action=ARM_RELEASE_ACTION, mode="thread")
-    _workflow_action_log("workflow_release_thread_start", ARM_RELEASE_ACTION)
-    try:
-        release_result = _do_arm_sync(robot, ARM_RELEASE_ACTION)
-    except Exception as exc:
-        _workflow_action_log("workflow_release_thread_error", ARM_RELEASE_ACTION, error=exc)
-        _profile_end(span_token, action=ARM_RELEASE_ACTION, mode="thread", success=False, error=exc)
-        return
-    if isinstance(release_result, dict) and not release_result.get("success", True):
-        print(f"收回动作回执失败: action={ARM_RELEASE_ACTION}, result={release_result}")
-    release_wait_seconds = _env_float("RABBITBOT_ARM_RELEASE_WAIT_SECONDS", 0.2)
-    if release_wait_seconds > 0:
-        _workflow_action_log("workflow_release_thread_wait_start", ARM_RELEASE_ACTION, wait=f"{release_wait_seconds:.3f}s")
-        time.sleep(release_wait_seconds)
-        _workflow_action_log("workflow_release_thread_wait_done", ARM_RELEASE_ACTION, wait=f"{release_wait_seconds:.3f}s")
-    success = _format_arm_action_success(release_result)
-    _profile_end(span_token, action=ARM_RELEASE_ACTION, mode="thread", success=success)
-
-
-async def _do_arm_before_speech(robot, action_name):
-    _workflow_action_log("workflow_arm_before_speech_start", action_name)
-    _publish_hand_gesture_for_arm_action(action_name)
-    action_result = await _do_arm_async_timed(robot, action_name)
-    if isinstance(action_result, dict) and not action_result.get("success", True):
-        print(f"动作回执失败: action={action_name}, result={action_result}")
-    if action_name not in ARM_ACTIONS_NEED_RELEASE_BEFORE_SPEECH:
-        return
-
-    default_before_release_delay = ARM_BEFORE_RELEASE_DELAYS.get(
-        action_name,
-        _env_float("RABBITBOT_ARM_BEFORE_RELEASE_DELAY", 0.0),
-    )
-    before_release_delay = _env_float(
-        ARM_BEFORE_RELEASE_DELAY_ENV.get(action_name, "RABBITBOT_ARM_BEFORE_RELEASE_DELAY"),
-        default_before_release_delay,
-    )
-    if before_release_delay > 0:
-        _workflow_action_log("workflow_before_release_wait_start", action_name, wait=f"{before_release_delay:.3f}s")
-        await asyncio.sleep(before_release_delay)
-        _workflow_action_log("workflow_before_release_wait_done", action_name, wait=f"{before_release_delay:.3f}s")
-    await _send_release_arm(robot)
-
-
-def _do_arm_sync(robot, action_name):
-    do_arm = getattr(robot, "do_arm", None)
-    if callable(do_arm):
-        start_time = time.perf_counter()
-        span_token = _profile_start("arm_action", action=action_name, mode="sync")
-        _workflow_action_log("workflow_do_arm_sync_start", action_name)
-        try:
-            result = do_arm(action_name)
-        except Exception as exc:
-            elapsed_seconds = time.perf_counter() - start_time
-            _log_arm_action_latency(action_name, elapsed_seconds, error=exc, call_type="sync")
-            _profile_end(span_token, action=action_name, mode="sync", success=False, error=exc)
-            raise
-        elapsed_seconds = time.perf_counter() - start_time
-        success = _format_arm_action_success(result)
-        _log_arm_action_latency(action_name, elapsed_seconds, result=result, call_type="sync")
-        _profile_end(span_token, action=action_name, mode="sync", success=success)
-        return result
-    raise RuntimeError("robot 不支持同步 do_arm 调用")
-
-
-async def _do_arm_during_speech(robot, action_name, speech_func, wait_action_before_return=True):
-    action_thread = None
-    action_result = None
-    action_error = None
-
-    def run_action():
-        nonlocal action_result, action_error
-        try:
-            _workflow_action_log("workflow_concurrent_action_thread_start", action_name)
-            _publish_hand_gesture_for_arm_action(action_name)
-            action_result = _do_arm_sync(robot, action_name)
-            _workflow_action_log("workflow_concurrent_action_thread_done", action_name)
-        except Exception as exc:
-            action_error = exc
-
-    async def finish_action_after_speech():
-        _workflow_action_log("workflow_concurrent_action_join_start", action_name)
-        await asyncio.to_thread(action_thread.join)
-        _workflow_action_log("workflow_concurrent_action_join_done", action_name)
-        if action_error is not None:
-            print(f"动作执行异常: action={action_name}, error={action_error}")
-        else:
-            if isinstance(action_result, dict) and not action_result.get("success", True):
-                print(f"动作回执失败: action={action_name}, result={action_result}")
-
-        await _release_arm_after_concurrent_speech(robot, action_name)
-
-    def finish_action_after_speech_in_thread():
-        _workflow_action_log("workflow_concurrent_action_join_thread_start", action_name)
-        action_thread.join()
-        _workflow_action_log("workflow_concurrent_action_join_thread_done", action_name)
-        if action_error is not None:
-            print(f"动作执行异常: action={action_name}, error={action_error}")
-        else:
-            if isinstance(action_result, dict) and not action_result.get("success", True):
-                print(f"动作回执失败: action={action_name}, result={action_result}")
-
-        if action_name not in ARM_ACTIONS_NEED_RELEASE_BEFORE_SPEECH | ARM_ACTIONS_NEED_RELEASE_AFTER_SPEECH:
-            return
-        release_delay = _env_float("RABBITBOT_ARM_CONCURRENT_RELEASE_DELAY", 0.0)
-        if release_delay > 0:
-            _workflow_action_log("workflow_concurrent_release_thread_wait_start", action_name, wait=f"{release_delay:.3f}s")
-            time.sleep(release_delay)
-            _workflow_action_log("workflow_concurrent_release_thread_wait_done", action_name, wait=f"{release_delay:.3f}s")
-        _send_release_arm_sync(robot)
-
-    if action_name:
-        _workflow_action_log("workflow_concurrent_action_thread_create", action_name)
-        action_thread = threading.Thread(target=run_action, daemon=True)
-        action_thread.start()
-
-    _workflow_action_log("workflow_concurrent_speech_start", action_name)
-    speech_result = speech_func()
-    _workflow_action_log("workflow_concurrent_speech_done", action_name)
-
-    if action_thread is None:
-        return speech_result
-
-    if wait_action_before_return:
-        await finish_action_after_speech()
-    else:
-        _workflow_action_log("workflow_concurrent_action_join_thread_create", action_name)
-        threading.Thread(target=finish_action_after_speech_in_thread, daemon=True).start()
-    return speech_result
-
-
-async def _release_arm_after_concurrent_speech(robot, action_name):
-    if action_name not in ARM_ACTIONS_NEED_RELEASE_BEFORE_SPEECH | ARM_ACTIONS_NEED_RELEASE_AFTER_SPEECH:
-        return
-    release_delay = _env_float("RABBITBOT_ARM_CONCURRENT_RELEASE_DELAY", 0.0)
-    if release_delay > 0:
-        _workflow_action_log("workflow_concurrent_release_wait_start", action_name, wait=f"{release_delay:.3f}s")
-        await asyncio.sleep(release_delay)
-        _workflow_action_log("workflow_concurrent_release_wait_done", action_name, wait=f"{release_delay:.3f}s")
-    await _send_release_arm(robot)
-
-
-async def _release_arm_after_speech(robot, action_name):
-    if action_name not in ARM_ACTIONS_NEED_RELEASE_AFTER_SPEECH:
-        return
-    after_speech_delay = _env_float("RABBITBOT_ARM_AFTER_SPEECH_RELEASE_DELAY", 0.0)
-    if after_speech_delay > 0:
-        _workflow_action_log("workflow_after_speech_release_wait_start", action_name, wait=f"{after_speech_delay:.3f}s")
-        await asyncio.sleep(after_speech_delay)
-        _workflow_action_log("workflow_after_speech_release_wait_done", action_name, wait=f"{after_speech_delay:.3f}s")
-    await _send_release_arm(robot)
-
-
-async def _ensure_start_position(ctx, start_entity_name="点位1"):
-    if getattr(ctx, "start_position_confirmed", False):
-        return NavigationStatus.SUCCEEDED
-
-    start_entity = _load_docx_point_entity(start_entity_name) or _load_json_entity(start_entity_name)
-    start_points = _extract_location_points(start_entity)
-    if not start_points:
-        print(f"{start_entity_name}缺少可用导航点位: {start_entity}")
-        return NavigationStatus.ABORTED
-
-    enable_navi = os.getenv("RABBITBOT_ENABLE_NAVI", "1").strip().lower() not in {"0", "false", "no", "off"}
-    if not enable_navi:
-        ctx.start_position_confirmed = True
-        return NavigationStatus.SUCCEEDED
-
-    if _wait_manual_navigation_success(start_entity_name):
-        start_navi_status = NavigationStatus.SUCCEEDED
-    else:
-        navi_tools = NavigationToolkit(ctx)
-        navi_query = NavigationQuery()
-        x, y, ox, oy, oz, ow = start_points[0]
-        await navi_tools.go_to_async(
-            x, y, ox, oy, oz, ow, navi_query,
-            waypoints=start_points if len(start_points) > 1 else None,
-        )
-        while await is_navigating(navi_tools):
-            await asyncio.sleep(0.5)
-        start_navi_status = await navi_tools.go_to_status()
-        await navi_tools.reset_go_to_status()
-
-    if start_navi_status == NavigationStatus.SUCCEEDED:
-        ctx.start_position_confirmed = True
-        ctx.current_entity_name = start_entity_name
-        entity_order = getattr(ctx, 'json_entity_order', None) or JSON_ENTITY_ORDER or getattr(ctx, 'entity_lst', [])
-        if start_entity_name in entity_order:
-            ctx.current_entity_index = entity_order.index(start_entity_name)
-
-    return start_navi_status
-
-
-def _wait_manual_navigation_success(location_name):
-    if not _workflow_non_integration_enabled():
-        return False
-
-    arrival_file = os.getenv("RABBITBOT_WORKFLOW_MANUAL_ARRIVAL_FILE", "").strip()
-    if arrival_file:
-        path = Path(arrival_file)
-        start_ts = time.time()
-        _workflow_log(f"[无机器人模式] 等待到达确认：location={location_name}, file={path}")
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            if path.exists():
-                path.unlink()
-        except OSError as exc:
-            _workflow_log(f"[无机器人模式] 清理旧到达确认文件失败：location={location_name}, file={path}, error_type={type(exc).__name__}, error={exc}")
-        while True:
-            if path.exists():
-                try:
-                    path.unlink()
-                except OSError as exc:
-                    _workflow_log(f"[无机器人模式] 删除到达确认文件失败：location={location_name}, file={path}, error_type={type(exc).__name__}, error={exc}")
-                elapsed = time.time() - start_ts
-                _workflow_log(f"[无机器人模式] 已确认到达：location={location_name}, elapsed={elapsed:.3f}s")
-                return True
-            time.sleep(0.2)
-
-    prompt = f"[无机器人模式] 请在确认到达“{location_name}”后按任意键，workflow 将视为导航成功..."
-    print(prompt, flush=True)
-    try:
-        import sys
-        import termios
-        import tty
-
-        fd = sys.stdin.fileno()
-        old_settings = termios.tcgetattr(fd)
-        try:
-            tty.setraw(fd)
-            sys.stdin.read(1)
-        finally:
-            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-        print()
-    except Exception:
-        input(f"[无机器人模式] 请在确认到达“{location_name}”后按回车继续...")
-    return True
-
-
-def _load_combined_data():
-    data_file = Path(__file__).resolve().parents[2] / "combined_data.json"
-    try:
-        return json.loads(data_file.read_text(encoding="utf-8"))
-    except Exception as exc:
-        print(f"加载 combined_data.json 失败: {exc}")
-        return []
-
-
-def _load_json_entity_order():
-    return [item.get("name") for item in _load_combined_data() if item.get("name")]
-
-
-def _load_json_entity(name):
-    for item in _load_combined_data():
-        if item.get("name") != name:
-            continue
-        sentences = item.get("sentences") or []
-        description = "".join(sentences)
-        return {
-            "name": name,
-            "summary": sentences[0] if sentences else name,
-            "description": description,
-            "location": item.get("location") or [],
-        }
-    return None
-
-
-def _extract_first_location_point(entity):
-    points = _extract_location_points(entity)
-    return points[0] if points else None
-
-
-def _extract_location_points(entity):
-    if not entity:
-        return []
-    location = entity.get("location") if isinstance(entity, dict) else entity
-    if isinstance(location, str):
-        try:
-            location = ast.literal_eval(location)
-        except (SyntaxError, ValueError):
-            return []
-    if isinstance(location, dict):
-        location = [location]
-    if not isinstance(location, (list, tuple)) or not location:
-        return []
-
-    if len(location) >= 6 and not isinstance(location[0], (list, tuple, dict)):
-        location = [location]
-
-    points = []
-    for item in location:
-        if isinstance(item, dict):
-            point = [
-                item.get("x"),
-                item.get("y"),
-                item.get("ox"),
-                item.get("oy"),
-                item.get("oz"),
-                item.get("ow"),
-            ]
-        elif isinstance(item, (list, tuple)) and len(item) >= 6:
-            point = list(item[:6])
-        else:
-            continue
-        try:
-            points.append(tuple(float(value) for value in point))
-        except (TypeError, ValueError):
-            continue
-    return points
-
-
-def _prefer_json_entity_location(entity):
-    if not isinstance(entity, dict):
-        return entity
-    name = entity.get("name")
-    if not name:
-        return entity
-
-    json_entity = _load_json_entity(name)
-    json_points = _extract_location_points(json_entity)
-    if not json_points:
-        return entity
-
-    merged_entity = dict(entity)
-    merged_entity["location"] = json_entity["location"]
-    if not merged_entity.get("description") and json_entity.get("description"):
-        merged_entity["description"] = json_entity["description"]
-    if not merged_entity.get("summary") and json_entity.get("summary"):
-        merged_entity["summary"] = json_entity["summary"]
-
-    memory_points = _extract_location_points(entity)
-    if len(json_points) != len(memory_points):
-        print(f"使用 combined_data.json 中的完整导航点位: {name}, points={len(json_points)}")
-    return merged_entity
-
-
-JSON_ENTITY_ORDER = _load_json_entity_order()
-
-
-COMMON_SURNAMES = [
-    "欧阳", "司马", "上官", "诸葛", "东方", "夏侯", "皇甫", "尉迟", "公孙", "司徒",
-    "赵", "钱", "孙", "李", "周", "吴", "郑", "王", "冯", "陈", "褚", "卫", "蒋", "沈",
-    "韩", "杨", "朱", "秦", "尤", "许", "何", "吕", "施", "张", "孔", "曹", "严", "华",
-    "金", "魏", "陶", "姜", "戚", "谢", "邹", "喻", "柏", "水", "窦", "章", "云", "苏",
-    "潘", "葛", "奚", "范", "彭", "郎", "鲁", "韦", "昌", "马", "苗", "凤", "花", "方",
-    "俞", "任", "袁", "柳", "鲍", "史", "唐", "费", "廉", "岑", "薛", "雷", "贺", "倪",
-    "汤", "滕", "殷", "罗", "毕", "郝", "邬", "安", "常", "乐", "于", "时", "傅", "皮",
-    "卞", "齐", "康", "伍", "余", "元", "卜", "顾", "孟", "平", "黄", "和", "穆", "萧",
-    "尹", "姚", "邵", "湛", "汪", "祁", "毛", "禹", "狄", "米", "贝", "明", "臧", "计",
-    "伏", "成", "戴", "宋", "庞", "熊", "纪", "舒", "屈", "项", "祝", "董", "梁", "杜",
-    "阮", "蓝", "闵", "席", "季", "麻", "强", "贾", "路", "娄", "危", "江", "童", "颜",
-    "郭", "梅", "盛", "林", "刁", "钟", "徐", "邱", "骆", "高", "夏", "蔡", "田", "胡",
-    "凌", "霍", "虞", "万", "支", "柯", "昝", "管", "卢", "莫", "经", "房", "裘", "缪",
-    "干", "解", "应", "宗", "丁", "宣", "邓", "郁", "单", "杭", "洪", "包", "左", "石",
-    "崔", "吉", "龚", "程", "邢", "裴", "陆", "荣", "翁", "荀", "羊", "於", "惠", "甄",
-    "曲", "家", "封", "芮", "储", "靳", "汲", "邴", "糜", "松", "井", "段", "富", "巫",
-    "乌", "焦", "巴", "弓", "牧", "隗", "山", "谷", "车", "侯", "宓", "蓬", "全", "郗",
-    "班", "仰", "秋", "仲", "伊", "宫", "宁", "仇", "栾", "暴", "甘", "钭", "厉", "戎",
-    "祖", "武", "符", "刘", "詹", "龙", "叶", "幸", "司", "黎", "白", "蒲", "邰", "赖",
-    "卓", "蔺", "屠", "蒙", "池", "乔", "阴", "胥", "能", "苍", "闻", "莘", "党", "翟",
-    "谭", "贡", "劳", "逄", "姬", "申", "扶", "堵", "冉", "宰", "郦", "雍", "郤", "璩",
-    "桑", "桂", "濮", "牛", "寿", "通", "边", "扈", "燕", "冀", "郏", "浦", "尚", "农",
-    "温", "别", "庄", "晏", "柴", "瞿", "阎", "充", "慕", "连", "茹", "习", "宦", "艾",
-    "鱼", "容", "向", "古", "易", "慎", "戈", "廖", "庾", "终", "暨", "居", "衡", "步",
-    "都", "耿", "满", "弘", "匡", "国", "文", "寇", "广", "禄", "阙", "东", "殴", "利",
-    "师", "巩", "聂", "晁", "勾", "敖", "融", "冷", "訾", "辛", "阚", "那", "简", "饶",
-    "空", "曾", "毋", "沙", "乜", "养", "鞠", "须", "丰", "巢", "关", "蒯", "相", "查",
-    "后", "荆", "红", "游", "竺", "权", "逯", "盖", "益", "桓", "公",
-]
-
-
-def _find_common_surname(value):
-    for surname in COMMON_SURNAMES:
-        if value.startswith(surname):
-            return surname
-    return ""
-
-
-def _extract_leader_calling(text):
-    text = (text or "").strip()
-    normalized_text = re.sub(r"[\s，。！？?、,.!]+", "", text)
-    title_candidates = [
-        "副总经理", "总经理", "董事长", "副主任", "负责人", "主任", "书记", "部长",
-        "院长", "局长", "处长", "科长", "总监", "经理", "教授", "博士", "副总", "总",
-    ]
-
-    title = ""
-    for candidate in title_candidates:
-        if candidate in normalized_text:
-            title = candidate
-            break
-
-    surname = ""
-    for marker in ["免贵姓", "我姓", "姓", "我叫", "叫", "我是", "本人是"]:
-        index = normalized_text.find(marker)
-        if index < 0:
-            continue
-        surname = _find_common_surname(normalized_text[index + len(marker):])
-        if surname:
-            break
-
-    if not surname:
-        title_pattern = "|".join(re.escape(candidate) for candidate in title_candidates)
-        match = re.search(r"([\u4e00-\u9fff]{1,2})(?:" + title_pattern + r")", normalized_text)
-        if match:
-            surname = _find_common_surname(match.group(1))
-
-    if surname and title:
-        return f"{surname}{title}"
-    if surname:
-        return f"{surname}领导"
-    if title:
-        return f"{title}"
-    return "领导"
-
-
-def _parse_first_visit_answer(text):
-    normalized_text = re.sub(r"[\s，。！？?、,.!]+", "", text or "")
-    if normalized_text == "":
-        return "unknown"
-
-    repeat_keywords = [
-        "不是第一次", "不止一次", "以前来过", "之前来过", "已经来过", "我来过",
-        "来过很多次", "来过好多次", "来过几次", "来过多次", "来过一次", "来过",
-        "很多次", "好多次", "好几次", "几次了", "多次", "经常来", "常来",
-        "第二次", "第三次", "第四次", "第2次", "第3次", "第4次",
-        "不是", "不",
-    ]
-    first_keywords = [
-        "第一次", "首次", "头一次", "初次", "第一回来", "头回来", "刚来", "第一次来",
-        "没来过", "没有来过", "从没来过", "从来没来过", "没到过", "没去过", "是第一次",
-    ]
-    yes_words = {"是", "是的", "对", "对的", "没错", "嗯", "嗯嗯"}
-    no_words = {"不是", "不是的", "不", "不对", "没有"}
-
-    # 先判断“非第一次”，避免“不是第一次”被“第一次”误判为 first。
-    if any(keyword in normalized_text for keyword in repeat_keywords) or normalized_text in no_words:
-        return "repeat"
-    if any(keyword in normalized_text for keyword in first_keywords) or normalized_text in yes_words:
-        return "first"
-    return "unknown"
-
-
-def _is_empty_stt_text(text):
-    return text is None or text.strip() in {"", "<REC_TIMEOUT>", "<REC_STOP>", "Timeout"}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 def _start_docx_script_elapsed_timer(ctx, reason="speech_start"):
@@ -1587,20 +719,13 @@ def create_main_workflow(ctx: Any) -> Workflow:
     )
     general_vlm_openai = create_general_vlm_openai()
 
-    DOCX_SCRIPT_CONTINUE_TEXTS = {
-        "好", "好的", "好啊", "好呀", "嗯", "嗯嗯", "可以", "行", "行的",
-        "继续", "继续吧", "接着讲", "接着说", "往下讲", "往下说",
-        "收到", "知道了", "明白", "明白了", "没问题",
-    }
+    DOCX_SCRIPT_CONTINUE_TEXTS = DEFAULT_CONTINUE_TEXTS
 
     def normalize_docx_script_control_text(text):
-        return re.sub(r"[\s，。！？?、,.!；;：:\"'“”‘’（）()\[\]【】]+", "", text or "").lower()
+        return normalize_control_text(text)
 
     def is_docx_script_continue_text(text):
-        return normalize_docx_script_control_text(text) in {
-            normalize_docx_script_control_text(item)
-            for item in DOCX_SCRIPT_CONTINUE_TEXTS
-        }
+        return is_continue_text(text, DOCX_SCRIPT_CONTINUE_TEXTS)
 
     def docx_script_in_progress():
         return (
@@ -1700,29 +825,21 @@ def create_main_workflow(ctx: Any) -> Workflow:
         return not guide_start_by_voice_enabled() or bool(getattr(ctx, "scripted_tour_started", False))
 
     def normalize_guide_start_text(text):
-        return re.sub(r"[\s，。！？?、,.!；;：:\"'“”‘’（）()\[\]【】]+", "", text or "").lower()
+        return normalize_control_text(text)
 
     def guide_start_commands():
         raw_value = os.getenv("RABBITBOT_GUIDE_START_COMMANDS", "开始导览,开始讲解,开始参观,开始流程,启动导览")
-        commands = [normalize_guide_start_text(item) for item in raw_value.split(",") if normalize_guide_start_text(item)]
-        return commands or ["开始导览"]
+        return build_control_commands(raw_value, ["开始导览"])
 
     def is_guide_start_command(text):
-        normalized_text = normalize_guide_start_text(text)
-        if not normalized_text:
-            return False
-        return any(command in normalized_text for command in guide_start_commands())
+        return matches_control_command(text, guide_start_commands())
 
     def guide_return_commands():
         raw_value = os.getenv("RABBITBOT_GUIDE_RETURN_COMMANDS", "返回起点,返航,回到起点,回起点,返回原点")
-        commands = [normalize_guide_start_text(item) for item in raw_value.split(",") if normalize_guide_start_text(item)]
-        return commands or ["返回起点"]
+        return build_control_commands(raw_value, ["返回起点"])
 
     def is_guide_return_command(text):
-        normalized_text = normalize_guide_start_text(text)
-        if not normalized_text:
-            return False
-        return any(command in normalized_text for command in guide_return_commands())
+        return matches_control_command(text, guide_return_commands())
 
     def guide_tour_completed_for_return():
         return bool(
@@ -2754,6 +1871,50 @@ def create_main_workflow(ctx: Any) -> Workflow:
         #return all('a' <= ch.lower() <= 'z' for ch in s if ch.isalpha())
         return 'a' <= s[0].lower() <= 'z'
 
+    async def retrieve_chat_rag_reference(text):
+        """闲聊 RAG：用用户问题检索记忆(neo4j 图谱 + markdown 文档)，命中则返回可作参考资料的文本，未命中返回空串。
+
+        由 RABBITBOT_CHAT_RAG 控制（默认启用）；检索走 ctx.memory.query，复用与导览/找物品一致的
+        neo4j+markdown 合并检索。命中"异常结点"(低于相似度阈值)或异常时降级为通用回答，不改变原有行为。
+        """
+        if not _env_enabled("RABBITBOT_CHAT_RAG", "1"):
+            return ""
+        query_text = (text or "").strip()
+        if not query_text or query_text in ("<REC_TIMEOUT>", "<REC_STOP>", "<REC_DUPLICATE>"):
+            return ""
+        if getattr(ctx, "memory", None) is None:
+            return ""
+        rag_group = os.getenv("RABBITBOT_CHAT_RAG_GROUP", "闲聊检索")
+        try:
+            nodes = await ctx.memory.query(query=query_text, group_name=rag_group, limit=1)
+        except Exception as exc:
+            file_logger.warning(
+                f"闲聊RAG记忆检索异常，降级为通用回答: query_len={len(query_text)}, error={exc}"
+            )
+            return ""
+        if not nodes or getattr(nodes[0], "name", "") == "异常结点":
+            file_logger.info(f"闲聊RAG未命中记忆，使用通用回答: query_len={len(query_text)}")
+            return ""
+        node = nodes[0]
+        description = (getattr(node, "attributes", None) or {}).get("description", "") or ""
+        reference_body = (description or getattr(node, "summary", "") or "").strip()
+        if not reference_body:
+            return ""
+        reference = f"{node.name}：{reference_body}"
+        file_logger.info(
+            f"闲聊RAG命中记忆: name={node.name}, reference_len={len(reference)}, query_len={len(query_text)}"
+        )
+        return reference
+
+    def build_chat_rag_input(text, reference):
+        """把检索到的参考资料与用户问题拼成 RAG 提示，交给闲聊 VLM 生成回答。"""
+        return (
+            "请参考以下资料回答用户的问题。若资料与问题相关，请依据资料自然口语化作答；"
+            "若资料与问题无关，请忽略资料，用你已知的信息回答。\n"
+            f"【参考资料】{reference}\n"
+            f"【用户问题】{text}"
+        )
+
     async def chat_execute(text, sess_idx=None, navi_tools=None):
         _workflow_log(f"chat_execute: text {text}", verbose=True)
         if is_chinese(text): lang = "zh"
@@ -2768,6 +1929,13 @@ def create_main_workflow(ctx: Any) -> Workflow:
             out_text = text
             return StepOutput(content=f"{out_text}")
 
+        # 闲聊 RAG：先检索记忆(neo4j 图谱 + markdown 文档)，命中则把参考资料一并交给 VLM 生成回答；
+        # 未命中或异常时 chat_input_text 保持为原始 text，行为与原来完全一致。
+        chat_input_text = text
+        rag_reference = await retrieve_chat_rag_reference(text)
+        if rag_reference:
+            chat_input_text = build_chat_rag_input(text, rag_reference)
+
         tts_wait(tts_agent)
 
         WorkflowTimePoints.CHAT_START = time.time()
@@ -2778,12 +1946,12 @@ def create_main_workflow(ctx: Any) -> Workflow:
             _workflow_log(f"chat_agent: session_id {str(sess_idx)}", verbose=True)
             _workflow_log(f"chat_agent: text {text}", verbose=True)
             response_stream = active_chat_agent.run(
-                text, stream=True, stream_intermediate_steps=False,
+                chat_input_text, stream=True, stream_intermediate_steps=False,
                 session_id=str(sess_idx)
             )
         else:
             response_stream = active_chat_agent.run(
-                text, stream=True, stream_intermediate_steps=False,
+                chat_input_text, stream=True, stream_intermediate_steps=False,
             )
 
         speecher_start_event = threading.Event()
@@ -3190,134 +2358,31 @@ def create_main_workflow(ctx: Any) -> Workflow:
         )
 
     def _normalize_nav_text(text):
-        text = (text or "").strip()
-        replacements = {
-            "复新": "复星",
-            "负星": "复星",
-            "福星": "复星",
-            "合营": "合影",
-            "合迎": "合影",
-            "和影": "合影",
-            "合映": "合影",
-            "合应": "合影",
-            "合英": "合影",
-            "和迎": "合影",
-            "合音": "合影",
-            "资源": "智元",
-            "自原": "智元",
-            "自愿": "智元",
-            "原区": "园区",
-            "骑石": "起始",
-            "骑士": "起始",
-            "骑是": "起始",
-            "奇石": "起始",
-            "奇士": "起始",
-            "启示": "起始",
-            "其实": "起始",
-            "其是": "起始",
-            "起事": "起始",
-            "趣奇石": "去起始",
-            "趣骑士": "去起始",
-            "趣起始": "去起始",
-            "去骑石": "去起始",
-            "去骑士": "去起始",
-            "去奇石": "去起始",
-            "骑石板块": "起始板块",
-            "骑士板块": "起始板块",
-            "骑是板块": "起始板块",
-            "奇石板块": "起始板块",
-            "奇士板块": "起始板块",
-            "启示板块": "起始板块",
-            "其实板块": "起始板块",
-            "其是板块": "起始板块",
-            "起事板块": "起始板块",
-        }
-        for old, new in replacements.items():
-            text = text.replace(old, new)
-        return re.sub(r"[\s，。！？?、,.!]+", "", text)
+        return guide_normalize_nav_text(text)
 
     def _has_any(text, keywords):
-        return any(keyword in text for keyword in keywords)
+        return guide_has_any(text, keywords)
 
     def is_chat_info_request(text):
-        text = _normalize_nav_text(text)
-        chat_keywords = ["介绍", "讲讲", "说明", "了解", "是什么", "有什么", "内容", "功能", "特色", "怎么样"]
-        return _has_any(text, chat_keywords) and not has_navigation_action(text)
+        return guide_is_chat_info_request(text)
 
     def has_navigation_action(text):
-        text = _normalize_nav_text(text)
-        direct_keywords = [
-            "我要去", "我想去", "带我去", "带我们去", "带着我去", "带着我们去",
-            "去", "前往", "过去", "导航到", "走到", "参观", "逛一下",
-        ]
-        return _has_any(text, direct_keywords)
+        return guide_has_navigation_action(text)
 
     def is_visual_request(text):
-        text = _normalize_nav_text(text)
-        visual_keywords = [
-            "你看到了什么", "你看到什么", "你现在看到什么", "前面有什么",
-            "画面里有什么", "图片里有什么", "桌子上有什么", "桌上有什么",
-            "帮我看一下", "看一下前面", "看看前面", "看一下画面", "看看画面",
-            "识别一下", "视觉理解",
-        ]
-        return _has_any(text, visual_keywords)
+        return guide_is_visual_request(text)
 
     def is_direct_navigation_request(text):
-        return has_navigation_action(text)
+        return guide_is_direct_navigation_request(text)
 
     def is_next_board_request(text):
-        text = _normalize_nav_text(text)
-        next_keywords = [
-            "去下一个板块", "下一个板块", "下一板块", "下个板块",
-            "去下一个展点", "下一个展点", "下一展点",
-            "下一站", "去下一站", "继续下一个", "下一个地方",
-        ]
-        return _has_any(text, next_keywords)
+        return guide_is_next_board_request(text)
 
     def classify_task_by_rule(text):
-        if is_visual_request(text):
-            return "V"
-        if is_chat_info_request(text):
-            return "C"
-        if has_navigation_action(text):
-            return "N"
-        return None
+        return guide_classify_task_by_rule(text)
 
     def resolve_navigation_entity_by_fuzzy(text, entity_lst):
-        normalized_text = _normalize_nav_text(text)
-        if normalized_text == "":
-            return None, 0.0
-
-        remove_words = [
-            "我要去", "我想去", "带我去", "带我们去", "带着我去", "带着我们去",
-            "请", "帮我", "导航到", "走到", "前往", "过去", "去", "参观", "看看", "看一看", "看一下", "逛一下",
-        ]
-        target_text = normalized_text
-        for word in remove_words:
-            target_text = target_text.replace(word, "")
-
-        best_entity = None
-        best_score = 0.0
-        for entity_name in entity_lst:
-            normalized_entity = _normalize_nav_text(entity_name)
-            if not normalized_entity:
-                continue
-            if normalized_entity in normalized_text or normalized_entity in target_text:
-                return entity_name, 1.0
-            if target_text and target_text in normalized_entity:
-                score = max(0.85, len(target_text) / max(len(normalized_entity), 1))
-            else:
-                score = max(
-                    difflib.SequenceMatcher(None, normalized_text, normalized_entity).ratio(),
-                    difflib.SequenceMatcher(None, target_text, normalized_entity).ratio() if target_text else 0.0,
-                )
-            if score > best_score:
-                best_entity = entity_name
-                best_score = score
-
-        if best_score >= 0.62:
-            return best_entity, best_score
-        return None, best_score
+        return guide_resolve_navigation_entity_by_fuzzy(text, entity_lst)
 
     async def navi_execute(
         subtask_description,
