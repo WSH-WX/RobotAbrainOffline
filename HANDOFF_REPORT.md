@@ -2,7 +2,7 @@
 
 生成时间：2026-07-09（Asia/Singapore）
 本轮工作目录：`/Users/firmiana/Desktop/RobotAbrainOffline`
-本轮主题：将 `global_nav` 点云转二维占据地图的高度截断改为相对估计地面高度。
+本轮主题：将控制台封面图替换为宇树 G1 正面抠图。
 
 ## 项目整体描述
 
@@ -36,50 +36,31 @@
 
 ## 本轮修改摘要
 
-- `unitree_slam_example_new/global_nav/build_grid_map.py` 新增 `estimate_ground_z()`：按 0.20m XY 网格取每格最低 z，再用最低包络的 5cm 直方图众数估计地面高度。
-- `unitree_slam_example_new/global_nav/build_grid_map.cpp` 新增同等地面估计逻辑，C++ 文本地图输出路径也将 `--z-min/--z-max` 解释为相对地面的高度。
-- Python/C++ 两个入口的 `--z-min/--z-max` 已从“地图坐标系绝对 z”改为“相对估计地面高度”；实际过滤范围为 `ground_z + z_min` 到 `ground_z + z_max`。
-- Python 输出 `.npz` 额外写入 `ground_z`、`z_filter_absolute`、`z_filter_relative` 元数据；现有规划脚本只读取 `occupancy/origin/resolution`，兼容不受影响。
-- 已同步代码到 `new-orin:/mnt/disk1/gt/RobotAbrainOffline/unitree_slam_example_new/global_nav/`。
-- 已用相对地面高度 `--z-min 0.20 --z-max 1.80` 重算两份地图、路径和可视化：
-  - `/mnt/disk1/gt/RobotAbrainOffline/maps/global_map_20260708_124133_z020_z180_grid.npz`
-  - `/mnt/disk1/gt/RobotAbrainOffline/maps/global_map_20260708_124133_edited_z020_z180_grid.npz`
-  - `/mnt/disk1/gt/RobotAbrainOffline/maps/path_global_map_20260708_124133_z020_z180_start_to_goal.json`
-  - `/mnt/disk1/gt/RobotAbrainOffline/maps/path_global_map_20260708_124133_edited_z020_z180_start_to_goal.json`
-  - 对应 `*_world_view.png` 和 `*_grid_view.png` 可视化图已生成。
+- 替换 `rabbitbot-dev-ros2-master/rabbitbot/control_console/static/unitree-g1-dashboard.png`。
+- 新图为宇树 G1 正面机器人本体抠图，透明背景，保持原资源路径和 `1024x1536` 画布尺寸，避免修改控制台 HTML/CSS 引用。
+- 素材来自网络检索到的 G1 正面产品图，白底来源页为 RoboStore 的 Unitree G1 商品页；另核对过 Unitree 官方 G1 页面作为产品外观参考。
+- 本轮未修改控制台后端、前端代码、部署脚本或运行配置。
 
 ## 日志新增或调整
 
-- `build_grid_map.py` 保持 `logging` 默认 INFO 级别。
-- 转换开始时记录输入文件、输出文件、分辨率、相对高度过滤范围和膨胀半径。
-- 读取 PCD 时记录文件路径、声明点数和数据格式；不记录原始点云数据。
-- Python/C++ 都新增地面估计 INFO 日志，记录 `ground_z`、最低包络网格数量、候选数量、众数 bin。
-- Python/C++ 都新增相对高度到绝对 z 范围的换算日志，便于现场确认过滤含义。
-- 非 PCD 且缺少 `open3d` 时保留原始导入异常链，便于诊断依赖问题。
+- 本轮仅替换静态图片资源，没有新增或调整运行时日志。
 
 ## 已验证事实
 
-- 本地 `python3 -m py_compile unitree_slam_example_new/global_nav/build_grid_map.py` 通过。
-- 远端 `python3 -m py_compile unitree_slam_example_new/global_nav/build_grid_map.py` 通过。
-- `new-orin` 缺少 `open3d`，但存在 `numpy 1.26.4` 和 `Pillow 9.0.1`；本轮 PCD 读取不依赖 `open3d`。
-- 原始点云 `global_map_20260708_124133.pcd` 估计 `ground_z=-1.316023349761963`，`--z-min 0.20 --z-max 1.80` 换算为绝对 z `[-1.116023349761963, 0.48397665023803715]`；生成栅格形状 `(932, 677)`，占据单元 `105377`。
-- edited 点云 `global_map_20260708_124133_edited.pcd` 估计 `ground_z=-1.413818895816803`，`--z-min 0.20 --z-max 1.80` 换算为绝对 z `[-1.213818895816803, 0.38618110418319707]`；生成栅格形状 `(627, 400)`，占据单元 `37619`。
-- 两个新 `.npz` 均已用 `numpy.load` 读取并确认包含 `occupancy`、`origin`、`resolution`、`ground_z`、`z_filter_absolute`、`z_filter_relative`。
-- 使用起点 `(-1.0852, -0.2571)`、终点 `(-14.7038, 32.9859)`、目标 yaw `-0.16826904606068796` 重新规划成功：原始地图 `31` 个稀疏点、路径约 `67.399m`；edited 地图 `7` 个稀疏点、路径约 `37.118m`。
-- 已用 `visualize_grid_map.py` 和 `visualize_map_and_path.py` 重新生成两套可视化图；本地已打开 edited world view 快速确认路径叠加正常。
+- 本地已用 Pillow 打开新封面图，确认路径为 `rabbitbot-dev-ros2-master/rabbitbot/control_console/static/unitree-g1-dashboard.png`，尺寸 `(1024, 1536)`，模式 `RGBA`。
+- 本地已人工预览抠图效果：机器人主体居中，背景透明，适配现有控制台封面图槽位。
+- 本轮修改前本地 Git 工作区为空。
 
 ## 阻塞与风险
 
-- `maps/` 在远端 Git 状态中仍为未跟踪目录，包含输入 PCD 和输出地图；本轮不提交这些地图产物，避免把现场大文件纳入代码提交。
-- 非 PCD 点云仍需要 `open3d`；`new-orin` 当前未安装该依赖。
-- C++ 版未完成实际编译验证：`new-orin` 缺少 PCL 开发包，`cmake ..` 仍失败于找不到 `PCLConfig.cmake`/`pcl-config.cmake`。
-- 地面估计使用最低包络众数，适合当前室内近似平地地图；多楼层、坡面或大面积台阶场景需要进一步加局部地面估计或人工指定地面高度。
+- 新图来自第三方商品页的白底产品图，并非项目自有拍摄素材；如现场有版权或品牌素材要求，应替换为授权图片。
+- 透明抠图由本地脚本基于白底阈值生成，边缘在深色背景下已做收紧处理，但不是专业人工精修。
 
 ## 下一步
 
-1. 如需启用 C++ 转换入口，先在 `new-orin` 安装或配置 PCL 开发包，再运行 `cmake .. && make -j` 验证。
-2. 如需长期支持 PLY 或其它点云格式，在 `new-orin` 安装 `open3d` 或补充对应格式的直接解析逻辑。
-3. 如地图产物需要纳入发布流程，先确认仓库是否应追踪 `maps/` 及其文件大小策略。
+1. 同步提交到 GitHub 后，在 `new-orin` 拉取更新并重启控制台服务。
+2. 在控制台页面刷新缓存后确认封面图显示为 G1 正面透明抠图。
+3. 如后续获得现场拍摄或官方授权透明图，可继续替换同一路径静态资源。
 
 ## 注意事项
 
