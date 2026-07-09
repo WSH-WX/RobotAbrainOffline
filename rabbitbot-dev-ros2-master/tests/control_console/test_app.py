@@ -1,9 +1,26 @@
 import json
 
+import pytest
 from fastapi.testclient import TestClient
 
 from rabbitbot.control_console.app import create_app
 from rabbitbot.control_console.config import ConsoleConfig
+
+
+@pytest.fixture(autouse=True)
+def stub_live_status(monkeypatch):
+    from rabbitbot.control_console import app as app_mod
+
+    class DummySpeech:
+        def to_dict(self):
+            return {"listening": False, "service_online": False, "status": "offline", "message": "未在监听", "text": "", "utterance_id": 0, "raw_status": None}
+
+    class DummyRobot:
+        def to_dict(self):
+            return {"online": False, "status": "offline", "status_text": "离线", "battery_percent": None, "battery_text": "N/A", "dds_interface": "eno1", "topic": "rt/lf/bmsstate", "updated_at": None, "message": "未读取到机器人 BMS 数据", "error": None}
+
+    monkeypatch.setattr(app_mod, "get_speech_status", lambda: DummySpeech())
+    monkeypatch.setattr(app_mod, "get_robot_status", lambda dds_interface: DummyRobot())
 
 
 def make_config(tmp_path):
@@ -73,14 +90,7 @@ def make_config(tmp_path):
     )
 
 
-def test_status_does_not_require_login(tmp_path, monkeypatch):
-    from rabbitbot.control_console import app as app_mod
-
-    class DummySpeech:
-        def to_dict(self):
-            return {"listening": False, "service_online": False, "status": "offline", "message": "未在监听", "text": "", "utterance_id": 0, "raw_status": None}
-
-    monkeypatch.setattr(app_mod, "get_speech_status", lambda: DummySpeech())
+def test_status_does_not_require_login(tmp_path):
     client = TestClient(create_app(make_config(tmp_path)))
 
     response = client.get("/api/status")
@@ -94,6 +104,8 @@ def test_status_does_not_require_login(tmp_path, monkeypatch):
     assert service_by_key["embedding"]["required"] is True
     assert body["speech"]["listening"] is False
     assert body["speech"]["message"] == "未在监听"
+    assert body["robot_status"]["online"] is False
+    assert body["robot_status"]["battery_text"] == "N/A"
 
 
 def test_status_prefers_runtime_map_env_file(tmp_path):
@@ -180,6 +192,21 @@ def test_control_page_contains_live_speech_panel(tmp_path):
     assert 'id="speechText"' in html
     assert "function renderSpeechStatus" in html
     assert "peek_text_async" not in html
+
+
+def test_control_page_contains_live_robot_status_panel(tmp_path):
+    client = TestClient(create_app(make_config(tmp_path)))
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    html = response.text
+    assert 'id="robotBatteryText"' in html
+    assert 'id="robotBatteryBar"' in html
+    assert 'id="robotStateText"' in html
+    assert "function renderRobotStatus" in html
+    assert "当前模式" not in html
+    assert "自主导览" not in html
 
 
 def test_command_rejects_quit_without_login(tmp_path):

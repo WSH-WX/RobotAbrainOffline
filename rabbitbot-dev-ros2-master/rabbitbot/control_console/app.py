@@ -39,6 +39,7 @@ from .status import (
     detect_nav_bridge_status_from_lines,
     detect_main_loop_running,
     get_latest_workflow_status,
+    get_robot_status,
     get_runtime_service_statuses,
     get_speech_status,
     get_task_progress,
@@ -164,6 +165,9 @@ def _html() -> str:
   <style>
     .map-confirm-row{display:grid;grid-template-columns:minmax(180px,1fr) minmax(132px,auto);gap:10px;align-items:end}.map-confirm-row .refresh{min-height:44px}@media(max-width:620px){.map-confirm-row{grid-template-columns:1fr}}
   </style>
+  <style>
+    .status-dot.offline{background:#ff6b6b;box-shadow:0 0 15px rgba(255,107,107,.8)}.status-dot.online{background:#24e07b;box-shadow:0 0 15px #24e07b}.battery span.unknown{width:0!important;box-shadow:none}
+  </style>
 </head>
 <body>
   <div id="app" class="shell">
@@ -193,14 +197,12 @@ def _html() -> str:
                     <div class="metric-grid">
                       <div>
                         <div class="label">电量</div>
-                        <div class="metric-number">92%</div>
-                        <div class="battery"><span></span></div>
+                        <div id="robotBatteryText" class="metric-number">N/A</div>
+                        <div class="battery"><span id="robotBatteryBar" class="unknown"></span></div>
                       </div>
                       <div>
-                        <div class="label">运行状态</div>
-                        <div class="value"><span class="status-dot"></span>空闲</div>
-                        <div class="label" style="margin-top:14px">当前模式</div>
-                        <div class="value">自主导览</div>
+                        <div class="label">状态</div>
+                        <div class="value"><span id="robotStateDot" class="status-dot offline"></span><span id="robotStateText">离线</span></div>
                       </div>
                     </div>
                   </div>
@@ -537,6 +539,25 @@ function renderDashboardTaskInfo(data){
   var bar=document.getElementById('dashboardTaskProgressBar');
   if(bar){bar.style.width=percent.toFixed(1)+'%';}
 }
+function renderRobotStatus(data){
+  var robot=(data&&data.robot_status)||{};
+  var battery=Number(robot.battery_percent);
+  var hasBattery=Number.isFinite(battery);
+  var batteryText=hasBattery?Math.max(0,Math.min(100,battery)).toFixed(0)+'%':'N/A';
+  var batteryBar=document.getElementById('robotBatteryBar');
+  var online=!!robot.online;
+  setText('robotBatteryText',batteryText);
+  if(batteryBar){
+    batteryBar.style.width=hasBattery?Math.max(0,Math.min(100,battery)).toFixed(0)+'%':'0';
+    batteryBar.classList.toggle('unknown',!hasBattery);
+  }
+  var dot=document.getElementById('robotStateDot');
+  if(dot){
+    dot.classList.toggle('online',online);
+    dot.classList.toggle('offline',!online);
+  }
+  setText('robotStateText',online?'在线':'离线');
+}
 function renderSpeechStatus(data){
   var speech=(data&&data.speech)||{};
   var listening=!!speech.listening;
@@ -620,6 +641,7 @@ function renderStatus(data){
   renderServiceStatus(data.services||[]);
   renderDashboardServiceStatus(data);
   renderDashboardTaskInfo(data);
+  renderRobotStatus(data);
   renderSpeechStatus(data);
   if(logsVisible){refreshLogs();}
 }
@@ -944,6 +966,7 @@ def create_app(config: ConsoleConfig | None = None) -> FastAPI:
             workflow = type(workflow)(run_id=None, status="loop_not_running", ready=False)
         task_progress = get_task_progress(config.workflow_control_dir, workflow)
         speech = get_speech_status()
+        robot_status = get_robot_status(config.dds_interface)
         port_ready = is_port_open("127.0.0.1", config.nav_port)
         if no_robot_mode:
             nav_bridge = {"ready": True, "port": config.nav_port, "core_ready": True, "message": "无机器人模式：已跳过导航桥接", "source": None}
@@ -967,6 +990,7 @@ def create_app(config: ConsoleConfig | None = None) -> FastAPI:
             "workflow": workflow.to_dict(),
             "task_progress": task_progress.to_dict(),
             "speech": speech.to_dict(),
+            "robot_status": robot_status.to_dict(),
             "no_robot_mode": no_robot_mode,
             "services": [service.to_dict() for service in get_runtime_service_statuses()],
             "autostart": autostart,
