@@ -55,6 +55,9 @@
 - 轻量脚本确认控制台页面模板不再包含 `<header class="topbar">`、`<div class="tech-status">` 和“网络正常 电量 92%”文案。
 - 轻量脚本确认 `setText()` 已改为缺失元素容错，页面仍保留主标题“双足机器人导览系统”。
 - 本机系统 Python 缺少 `pytest`，因此未能在本机完整运行 `python3 -m pytest tests/control_console -q`。
+- 本轮提交已同步到 `new-orin:/mnt/disk1/gt/RobotAbrainOffline`，本机与服务器处于同一提交。
+- 已重启 `new-orin` 上的 `rabbitbot-control-console.service`，服务状态为 active。
+- 已请求控制台首页，确认不再包含顶部白色状态栏、标题栏网络电量块和“网络正常 电量 92%”文案；`/api/status` 返回 `api_ok=True`。
 
 ## 阻塞与风险
 
@@ -63,8 +66,7 @@
 
 ## 下一步
 
-1. 完成本轮提交后同步到 `new-orin:/mnt/disk1/gt/RobotAbrainOffline` 并重启 `rabbitbot-control-console.service`。
-2. 在控制台任务控制页刷新后确认顶部白色状态栏和“网络正常 电量 92%”块均已消失。
+1. 在浏览器中刷新控制台任务控制页，确认顶部白色状态栏和“网络正常 电量 92%”块均已消失。
 
 ## 注意事项
 
