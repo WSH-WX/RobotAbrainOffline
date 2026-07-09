@@ -171,7 +171,6 @@ def _html() -> str:
       <div class="brand">RabbitBot</div>
       <nav class="nav">
         <button class="nav-item active" type="button" data-page="control" onclick="showPage('control')">任务控制</button>
-        <button class="nav-item" type="button" data-page="status" onclick="showPage('status')">机器人状态</button>
         <button class="nav-item" type="button" data-page="dialogue" onclick="showPage('dialogue')">点位台词</button>
         <button class="nav-item" type="button" data-page="models" onclick="showPage('models')">服务状态管理</button>
         <button class="nav-item" type="button" data-page="developer" onclick="showPage('developer')">开发人员选项</button>
@@ -190,18 +189,13 @@ def _html() -> str:
                 <section class="tech-card">
                   <h3>机器人状态</h3>
                   <div class="tech-body">
-                    <div class="metric-grid">
-                      <div>
-                        <div class="label">电量</div>
-                        <div class="metric-number">92%</div>
-                        <div class="battery"><span></span></div>
-                      </div>
-                      <div>
-                        <div class="label">运行状态</div>
-                        <div class="value"><span class="status-dot"></span>空闲</div>
-                        <div class="label" style="margin-top:14px">当前模式</div>
-                        <div class="value">自主导览</div>
-                      </div>
+                    <div class="cards">
+                      <div class="card"><div class="label">开机自启动</div><div id="autostart" class="value">-</div></div>
+                      <div class="card"><div class="label">定位状态</div><div id="poseStatus" class="value">读取中</div></div>
+                    </div>
+                    <div class="field">
+                      <div class="label">当前位姿</div>
+                      <div id="pose" class="value pose-line">暂无定位位姿数据</div>
                     </div>
                   </div>
                 </section>
@@ -265,24 +259,6 @@ def _html() -> str:
                 <p id="message" class="control-message"></p>
               </div>
             </section>
-          </div>
-        </section>
-        <section id="page-status" class="page subpage" hidden>
-          <div class="stack">
-            <section class="panel">
-            <div class="panel-head">
-              <div class="panel-title">机器人状态</div>
-              <div class="panel-link">自动刷新</div>
-            </div>
-            <div class="cards">
-              <div class="card"><div class="label">开机自启动</div><div id="autostart" class="value">-</div></div>
-              <div class="card"><div class="label">定位状态</div><div id="poseStatus" class="value">读取中</div></div>
-            </div>
-            <div class="field">
-              <div class="label">当前位姿</div>
-              <div id="pose" class="value pose-line">暂无定位位姿数据</div>
-            </div>
-          </section>
           </div>
         </section>
         <section id="page-dialogue" class="page subpage" hidden>

@@ -561,6 +561,8 @@ def test_page_shows_console_without_login_form(tmp_path):
     assert 'unitree-g1-dashboard.png' in response.text
     assert '定位状态' in response.text
     assert '当前位姿' in response.text
+    assert 'page-status' not in response.text
+    assert 'data-page="status"' not in response.text
     assert 'primary-control-actions' in response.text
     assert '开始程序(无机器人模式)' in response.text
     assert '开发人员选项' in response.text
@@ -614,6 +616,9 @@ def test_page_shows_console_without_login_form(tmp_path):
     assert 'class="tech-status"' not in response.text
     assert '网络正常' not in response.text
     assert '电量 92%' not in response.text
+    assert '92%' not in response.text
+    assert '运行状态' not in response.text
+    assert '当前模式' not in response.text
     assert '当前运行日志' in response.text
     assert 'Workflow 日志' in response.text
     assert '导航日志' in response.text
