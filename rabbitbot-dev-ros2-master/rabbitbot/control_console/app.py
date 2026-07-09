@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
+import subprocess
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
@@ -97,6 +99,38 @@ def _restart_service_container_bg(container_name: str, service_key: str, docker_
         restart_service_container(container_name, docker_path=docker_path)
     except CommandError:
         logger.exception("后台重启服务容器失败：service_key=%s, container=%s", service_key, container_name)
+
+
+def _service_log_targets(config: ConsoleConfig) -> dict[str, tuple[str, str]]:
+    return {
+        "service-neo4j": ("Neo4j 服务日志", os.environ.get("RABBITBOT_NEO4J_CONTAINER_NAME", "neo4j")),
+        "service-vlm": ("VLM 服务日志", os.environ.get("RABBITBOT_VLM_CONTAINER_NAME", "rabbitbot-vlm")),
+        "service-embedding": ("Embedding 服务日志", os.environ.get("RABBITBOT_VLM_CONTAINER_NAME", "rabbitbot-vlm")),
+        "service-tts": ("TTS 服务日志", os.environ.get("RABBITBOT_TTS_CONTAINER_NAME", "rabbitbot-tts")),
+        "service-stt": ("STT 服务日志", os.environ.get("RABBITBOT_STT_CONTAINER_NAME", "rabbitbot-stt")),
+        "service-memory": ("Memory 服务日志", os.environ.get("RABBITBOT_MEMORY_CONTAINER_NAME", "rabbitbot-memory")),
+        "service-workflow": ("Workflow 容器日志", os.environ.get("RABBITBOT_WORKFLOW_CONTAINER_NAME", config.runtime_container_name)),
+        "service-navbridge": ("NavBridge 服务日志", config.nav_container_name),
+    }
+
+
+def _docker_log_lines(container_name: str, docker_path: Path, limit: int) -> list[str]:
+    if not container_name.strip():
+        raise CommandError("Docker 容器名不能为空")
+    if not docker_path.exists():
+        raise CommandError(f"docker 不存在：{docker_path}")
+    args = [str(docker_path), "logs", "--tail", str(limit), container_name]
+    logger.info("准备读取服务容器日志：container=%s, docker=%s, lines=%s", container_name, docker_path, limit)
+    try:
+        result = subprocess.run(args, check=False, text=True, capture_output=True, timeout=8)
+    except subprocess.TimeoutExpired as exc:
+        logger.error("读取服务容器日志超时：container=%s, lines=%s", container_name, limit)
+        raise CommandError(f"读取容器日志超时：{container_name}") from exc
+    output = "\n".join(part for part in (result.stdout, result.stderr) if part)
+    if result.returncode != 0:
+        logger.error("读取服务容器日志失败：container=%s, returncode=%s, output=%s", container_name, result.returncode, output[-500:])
+        raise CommandError(output.strip() or f"读取容器日志失败，退出码：{result.returncode}")
+    return [line.rstrip("\n") for line in output.splitlines()]
 
 
 def _html() -> str:
@@ -329,6 +363,14 @@ def _html() -> str:
                   <button class="refresh" onclick="showLog('runtime')">当前运行日志</button>
                   <button class="refresh" onclick="showLog('workflow')">Workflow 日志</button>
                   <button class="refresh" onclick="showLog('nav')">导航日志</button>
+                  <button class="refresh" onclick="showLog('service-neo4j')">Neo4j 服务日志</button>
+                  <button class="refresh" onclick="showLog('service-vlm')">VLM 服务日志</button>
+                  <button class="refresh" onclick="showLog('service-embedding')">Embedding 服务日志</button>
+                  <button class="refresh" onclick="showLog('service-tts')">TTS 服务日志</button>
+                  <button class="refresh" onclick="showLog('service-stt')">STT 服务日志</button>
+                  <button class="refresh" onclick="showLog('service-memory')">Memory 服务日志</button>
+                  <button class="refresh" onclick="showLog('service-workflow')">Workflow 容器日志</button>
+                  <button class="refresh" onclick="showLog('service-navbridge')">NavBridge 服务日志</button>
                 </div>
               </div>
               <pre id="logs" class="log developer-log" hidden></pre>
@@ -975,6 +1017,25 @@ def create_app(config: ConsoleConfig | None = None) -> FastAPI:
             else:
                 path = None
                 source = "none"
+        elif target.startswith("service-"):
+            service_targets = _service_log_targets(config)
+            service_target = service_targets.get(target)
+            if service_target is None:
+                raise HTTPException(status_code=400, detail="不支持的服务日志目标")
+            label, container_name = service_target
+            try:
+                container_lines = _docker_log_lines(container_name, config.docker_path, bounded_lines)
+            except CommandError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            return {
+                "ok": True,
+                "target": target,
+                "source": "docker",
+                "path": f"docker:{container_name}",
+                "label": label,
+                "container": container_name,
+                "lines": container_lines,
+            }
         else:
             raise HTTPException(status_code=400, detail="不支持的日志目标")
         return {

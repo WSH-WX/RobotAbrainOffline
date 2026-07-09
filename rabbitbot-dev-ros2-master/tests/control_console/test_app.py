@@ -39,6 +39,11 @@ def make_config(tmp_path):
         "  printf '%s\\n' neo4j rabbitbot-vlm rabbitbot-tts rabbitbot-stt rabbitbot-memory rabbitbot-workflow rabbitbot-navbridge\n"
         "  exit 0\n"
         "fi\n"
+        "if [ \"$1\" = logs ]; then\n"
+        f"  printf '%s\n' \"$@\" > {docker_record}\n"
+        "  printf '%s\\n' service-log-one service-log-two\n"
+        "  exit 0\n"
+        "fi\n"
         f"printf '%s\n' \"$@\" > {docker_record}\n"
         "printf '%s\\n' rabbitbot-vlm rabbitbot-tts rabbitbot-stt rabbitbot-memory rabbitbot-workflow rabbitbot-navbridge neo4j\n",
         encoding="utf-8",
@@ -437,6 +442,22 @@ def test_runtime_logs_return_empty_when_no_current_run_log(tmp_path):
     assert response.json()["lines"] == []
 
 
+def test_service_logs_return_docker_container_logs(tmp_path):
+    config = make_config(tmp_path)
+    client = TestClient(create_app(config))
+
+    response = client.get("/api/logs?target=service-tts&lines=2")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["source"] == "docker"
+    assert body["container"] == "rabbitbot-tts"
+    assert body["path"] == "docker:rabbitbot-tts"
+    assert body["lines"] == ["service-log-one", "service-log-two"]
+    record = config.project_root / "docker_args.txt"
+    assert record.read_text(encoding="utf-8").splitlines() == ["logs", "--tail", "2", "rabbitbot-tts"]
+
+
 def test_main_module_exposes_run_function():
     from rabbitbot.control_console.__main__ import run
 
@@ -502,9 +523,25 @@ def test_page_shows_console_without_login_form(tmp_path):
     assert '当前运行日志' in response.text
     assert 'Workflow 日志' in response.text
     assert '导航日志' in response.text
+    assert 'Neo4j 服务日志' in response.text
+    assert 'VLM 服务日志' in response.text
+    assert 'Embedding 服务日志' in response.text
+    assert 'TTS 服务日志' in response.text
+    assert 'STT 服务日志' in response.text
+    assert 'Memory 服务日志' in response.text
+    assert 'Workflow 容器日志' in response.text
+    assert 'NavBridge 服务日志' in response.text
     assert "showLog('runtime')" in response.text
     assert "showLog('workflow')" in response.text
     assert "showLog('nav')" in response.text
+    assert "showLog('service-neo4j')" in response.text
+    assert "showLog('service-vlm')" in response.text
+    assert "showLog('service-embedding')" in response.text
+    assert "showLog('service-tts')" in response.text
+    assert "showLog('service-stt')" in response.text
+    assert "showLog('service-memory')" in response.text
+    assert "showLog('service-workflow')" in response.text
+    assert "showLog('service-navbridge')" in response.text
     assert 'logsVisible=false' in response.text
     assert '<pre id="logs" class="log developer-log" hidden>' in response.text
     assert 'setInterval(refreshLogs,500)' in response.text

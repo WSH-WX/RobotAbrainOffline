@@ -38,7 +38,8 @@
 
 - 控制台页面以 fuxing 为基准同步深色任务控制页、点位台词热更新、嘉宾称呼、当前位置回填、开机自启动按钮和静态机器人图展示。
 - 控制台正式任务区按钮收敛为同一行的“导览、返航、一键重启、关闭程序、开机自启动”；无机器人模式按钮移入新建“开发人员选项”页面。
-- “开发人员选项”页面新增当前运行日志、Workflow 日志、导航日志按钮，复用 `/api/logs` 展示对应日志。
+- “开发人员选项”页面新增当前运行日志、Workflow 日志、导航日志和所有 compose 服务日志按钮，复用 `/api/logs` 展示对应日志。
+- `/api/logs` 新增 `service-*` 目标，支持读取 Neo4j、VLM、Embedding、TTS、STT、Memory、Workflow、NavBridge 容器日志；Embedding 复用 VLM 容器日志。
 - 控制台后端新增/合并 `/api/dialogue/leader-calling`、`/api/dialogue/hot-rows`、`/api/autostart`，并保留本项目 `/api/start-no-robot`、`/api/service/restart`、portable 服务状态和当前运行日志接口。
 - `rabbitbot-dev-ros2-master/conf/dialogue_0.json` 已替换为 fuxing 台词；`dialogue_fuxing.json` 同步为同内容备份留档。
 - workflow 数据层新增 `reload_docx_guide_dialogue()`，`run_kuavo_agno_workflow.py` 在 go 闸门释放后刷新台词缓存，确保热更新在下一次导览读取最新台词。
@@ -50,6 +51,7 @@
 - `rabbitbot.control_console.commands` 新增开机自启动查询/设置 INFO 日志，失败记录 ERROR 并保留命令上下文。
 - `rabbitbot.control_console.dialogue` 同步 fuxing 的台词读写、备份、嘉宾称呼校验、点位热更新读写日志；不记录完整台词正文。
 - `rabbitbot.control_console.app` 对当前运行日志清空、服务容器后台重启提交/失败、开机自启动查询失败降级返回增加诊断日志。
+- `rabbitbot.control_console.app` 新增服务容器日志读取 INFO/ERROR 日志，记录容器名、行数、退出码和错误尾部，不记录密钥。
 - `rabbitbot.agno_agents.workflow_data` 在台词缓存刷新时记录 reason、台词文件路径、steps/points 数量。
 
 ## 已验证事实
@@ -58,6 +60,7 @@
 - `python3 -m json.tool rabbitbot-dev-ros2-master/conf/dialogue_fuxing.json` 通过。
 - `python3 -m py_compile` 已覆盖控制台、dialogue、commands、workflow 数据加载、workflow 入口和测试文件，通过。
 - 本轮按钮重排后已用 `python3 -m py_compile rabbitbot-dev-ros2-master/rabbitbot/control_console/app.py rabbitbot-dev-ros2-master/tests/control_console/test_app.py` 复查通过。
+- 本轮服务日志选项扩展后再次用 `python3 -m py_compile rabbitbot-dev-ros2-master/rabbitbot/control_console/app.py rabbitbot-dev-ros2-master/tests/control_console/test_app.py` 复查通过。
 - `bash -n deploy/install_air_project.sh rabbitbot-dev-ros2-master/scripts/run_kuavo_agno_workflow.py` 通过。
 - 本机 `/Applications/Xcode.app/Contents/Developer/usr/bin/python3` 缺少 `pytest`，完整控制台 pytest 未运行。
 - 本机缺少 FastAPI 运行依赖，无法用 `TestClient` 做手工路由调用；仅完成语法/JSON/shell 静态验证。
