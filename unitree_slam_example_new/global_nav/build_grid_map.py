@@ -26,6 +26,9 @@ else:
 
 
 LOGGER = logging.getLogger("build_grid_map")
+GROUND_CELL_SIZE_M = 0.20
+GROUND_MIN_CELL_POINTS = 2
+GROUND_HIST_BIN_SIZE_M = 0.05
 
 
 def _pcd_numpy_dtype(type_name: str, size: int) -> str:
@@ -136,15 +139,77 @@ def load_points(file_path: Path) -> np.ndarray:
     return pts
 
 
+def estimate_ground_z(points_xyz: np.ndarray) -> float:
+    finite = np.all(np.isfinite(points_xyz), axis=1)
+    pts = points_xyz[finite]
+    if pts.size == 0:
+        raise ValueError("Cannot estimate ground height from empty point cloud")
+
+    min_x = float(np.min(pts[:, 0]))
+    min_y = float(np.min(pts[:, 1]))
+    gx = np.floor((pts[:, 0] - min_x) / GROUND_CELL_SIZE_M).astype(np.int64)
+    gy = np.floor((pts[:, 1] - min_y) / GROUND_CELL_SIZE_M).astype(np.int64)
+    key = gx + (int(np.max(gx)) + 1) * gy
+
+    order = np.argsort(key, kind="mergesort")
+    sorted_key = key[order]
+    sorted_z = pts[:, 2][order]
+    starts = np.r_[0, np.flatnonzero(sorted_key[1:] != sorted_key[:-1]) + 1]
+    counts = np.diff(np.r_[starts, len(sorted_key)])
+    cell_min_z = np.minimum.reduceat(sorted_z, starts)
+    candidates = cell_min_z[counts >= GROUND_MIN_CELL_POINTS]
+    if candidates.size == 0:
+        candidates = cell_min_z
+        LOGGER.info("Ground estimation fallback: using all lower-envelope cells")
+
+    lo, hi = np.percentile(candidates, [1, 99])
+    trimmed = candidates[(candidates >= lo) & (candidates <= hi)]
+    if trimmed.size == 0:
+        trimmed = candidates
+
+    bin_start = np.floor(float(np.min(trimmed)) / GROUND_HIST_BIN_SIZE_M) * GROUND_HIST_BIN_SIZE_M
+    bin_stop = np.ceil(float(np.max(trimmed)) / GROUND_HIST_BIN_SIZE_M) * GROUND_HIST_BIN_SIZE_M
+    bins = np.arange(bin_start, bin_stop + GROUND_HIST_BIN_SIZE_M * 2, GROUND_HIST_BIN_SIZE_M)
+    hist, edges = np.histogram(trimmed, bins=bins)
+    if hist.size == 0 or int(np.max(hist)) == 0:
+        ground_z = float(np.median(trimmed))
+        LOGGER.info("Ground estimation fallback: using median lower-envelope z=%s", ground_z)
+        return ground_z
+
+    best = int(np.argmax(hist))
+    in_mode = trimmed[(trimmed >= edges[best]) & (trimmed < edges[best + 1])]
+    ground_z = float(np.median(in_mode if in_mode.size else trimmed))
+    LOGGER.info(
+        "Estimated ground_z=%.4f from lower envelope cells=%s candidates=%s mode_bin=[%.2f, %.2f)",
+        ground_z,
+        cell_min_z.size,
+        candidates.size,
+        edges[best],
+        edges[best + 1],
+    )
+    return ground_z
+
+
 def build_occupancy(
     points_xyz: np.ndarray,
     resolution: float,
     z_min: float,
     z_max: float,
     inflation_radius: float,
-) -> tuple[np.ndarray, float, float, float]:
-    # Height filter for near-ground obstacles / structure points.
-    mask = (points_xyz[:, 2] >= z_min) & (points_xyz[:, 2] <= z_max)
+) -> tuple[np.ndarray, float, float, float, float, float, float]:
+    ground_z = estimate_ground_z(points_xyz)
+    abs_z_min = ground_z + z_min
+    abs_z_max = ground_z + z_max
+    LOGGER.info(
+        "Applying ground-relative height filter ground_z=%.4f relative_z=[%.3f, %.3f] absolute_z=[%.4f, %.4f]",
+        ground_z,
+        z_min,
+        z_max,
+        abs_z_min,
+        abs_z_max,
+    )
+
+    mask = (points_xyz[:, 2] >= abs_z_min) & (points_xyz[:, 2] <= abs_z_max)
     pts = points_xyz[mask]
     if pts.size == 0:
         raise ValueError(
@@ -185,7 +250,7 @@ def build_occupancy(
             inflated[y0:y1, x0:x1][circle] = 1
         occ = inflated
 
-    return occ, min_x, min_y, resolution
+    return occ, min_x, min_y, resolution, ground_z, abs_z_min, abs_z_max
 
 
 def main() -> None:
@@ -194,8 +259,8 @@ def main() -> None:
     parser.add_argument("--input", required=True, help="Input .pcd/.ply map")
     parser.add_argument("--output", required=True, help="Output .npz map file")
     parser.add_argument("--resolution", type=float, default=0.10, help="Grid resolution in meters")
-    parser.add_argument("--z-min", type=float, default=-0.20, help="Min z for obstacle extraction")
-    parser.add_argument("--z-max", type=float, default=1.50, help="Max z for obstacle extraction")
+    parser.add_argument("--z-min", type=float, default=-0.20, help="Min height above estimated ground for obstacle extraction")
+    parser.add_argument("--z-max", type=float, default=1.50, help="Max height above estimated ground for obstacle extraction")
     parser.add_argument(
         "--inflation-radius",
         type=float,
@@ -207,7 +272,7 @@ def main() -> None:
     input_path = Path(args.input)
     output_path = Path(args.output)
     LOGGER.info(
-        "Build occupancy map input=%s output=%s resolution=%s z_min=%s z_max=%s inflation_radius=%s",
+        "Build occupancy map input=%s output=%s resolution=%s relative_z_min=%s relative_z_max=%s inflation_radius=%s",
         input_path,
         output_path,
         args.resolution,
@@ -217,7 +282,7 @@ def main() -> None:
     )
 
     points = load_points(input_path)
-    occ, origin_x, origin_y, resolution = build_occupancy(
+    occ, origin_x, origin_y, resolution, ground_z, abs_z_min, abs_z_max = build_occupancy(
         points,
         resolution=args.resolution,
         z_min=args.z_min,
@@ -231,6 +296,9 @@ def main() -> None:
         occupancy=occ,
         origin=np.array([origin_x, origin_y], dtype=np.float64),
         resolution=np.array([resolution], dtype=np.float64),
+        ground_z=np.array([ground_z], dtype=np.float64),
+        z_filter_absolute=np.array([abs_z_min, abs_z_max], dtype=np.float64),
+        z_filter_relative=np.array([args.z_min, args.z_max], dtype=np.float64),
     )
 
     # Also dump a quick debug image (0=free, 255=occupied).
@@ -246,6 +314,8 @@ def main() -> None:
     print("Grid shape (h, w):", occ.shape)
     print("Origin (x, y):", (origin_x, origin_y))
     print("Resolution:", resolution)
+    print("Estimated ground z:", ground_z)
+    print("Absolute z filter:", (abs_z_min, abs_z_max))
 
 
 if __name__ == "__main__":
