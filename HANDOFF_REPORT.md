@@ -2,7 +2,7 @@
 
 生成时间：2026-07-09（Asia/Singapore）
 本轮工作目录：`/Users/firmiana/Desktop/RobotAbrainOffline`
-本轮主题：将控制台任务控制页“机器人状态”板块改为显示真实 DDS 电量和机器人在线状态。
+本轮主题：将控制台任务控制页“语音交互”板块改为显示真实 STT 监听状态、声波动画和识别文本。
 
 ## 项目整体描述
 
@@ -36,38 +36,41 @@
 
 ## 本轮修改摘要
 
-- `rabbitbot-dev-ros2-master/rabbitbot/control_console/status.py` 新增 `RobotStatus` 和后台 DDS BMS 订阅缓存，订阅 `rt/lf/bmsstate` 的 `BmsState_` 并读取 `soc` 作为电量百分比。
-- `rabbitbot-dev-ros2-master/rabbitbot/control_console/config.py` 新增 `dds_interface` 配置，优先读取 `RABBITBOT_DDS_INTERFACE` / `NAV_INTERFACE`，默认 `eno1`。
-- `rabbitbot-dev-ros2-master/rabbitbot/control_console/app.py` 的 `/api/status` 新增 `robot_status` 字段；任务控制页“机器人状态”板块改为真实电量、可视化电量条和在线/离线状态，移除“当前模式”。
-- `rabbitbot-dev-ros2-master/tests/control_console/test_status.py` 增加机器人状态缓存单元测试；`test_app.py` 增加状态接口和页面模板断言。
+- `rabbitbot-dev-ros2-master/rabbitbot/control_console/status.py` 新增 `SpeechStatus` 和 STT 状态探测：端口未开或未监听时返回“未在监听”，监听中返回“正在聆听”并通过非消费式接口读取最近识别文本。
+- `rabbitbot-dev-ros2-master/rabbitbot/control_console/app.py` 的 `/api/status` 新增 `speech` 字段；任务控制页“语音交互”板块改为真实状态文案、可跳动竖线声波和识别文本显示。
+- `rabbitbot-dev-ros2-master/stt_app.py`、`stt_app1.py`、`stt_app_funasr.py` 新增 `peek_text_async`，用于查看最近识别结果且不清空工作流要消费的 `get_text_async` 输出。
+- `rabbitbot-dev-ros2-master/tests/control_console/test_status.py` 增加语音状态单元测试；`test_app.py` 增加状态接口和页面模板断言。
 
 ## 日志新增或调整
 
-- DDS BMS 订阅启动时记录 `INFO`，首次读到机器人 BMS 数据时记录 `INFO`，包含网卡、topic 和电量文本。
-- 缺少 `unitree_sdk2py` 或 DDS 订阅异常时记录有上下文的 `WARNING`/异常日志；状态接口本身读取缓存，不在每次轮询时刷日志。
+- 控制台查询 STT 失败时仅 `DEBUG` 记录接口、任务和异常类型；STT 返回非 JSON 或结构异常时 `WARNING` 记录必要上下文，不记录识别正文。
+- STT 新增的 `peek_text_async` 高频调用只打印文本长度和 utterance_id，不打印识别正文，避免控制台轮询把语音文本写入日志。
 
 ## 已验证事实
 
-- 本轮开始前本机与 `new-orin:/mnt/disk1/gt/RobotAbrainOffline` 均为提交 `9f60859`，分支 `air_robot_gt_projects-master`。
-- `python3 -m py_compile rabbitbot-dev-ros2-master/rabbitbot/control_console/app.py rabbitbot-dev-ros2-master/rabbitbot/control_console/status.py rabbitbot-dev-ros2-master/rabbitbot/control_console/config.py` 通过。
+- 本轮开始前本机与 `new-orin:/mnt/disk1/gt/RobotAbrainOffline` 均为提交 `1500f46`，分支 `air_robot_gt_projects-master`。
+- `python3 -m py_compile rabbitbot-dev-ros2-master/rabbitbot/control_console/app.py rabbitbot-dev-ros2-master/rabbitbot/control_console/status.py rabbitbot-dev-ros2-master/stt_app.py rabbitbot-dev-ros2-master/stt_app1.py rabbitbot-dev-ros2-master/stt_app_funasr.py` 通过。
 - `git diff --check` 通过。
-- 轻量脚本确认 `get_robot_status()` 对最近 BMS 缓存返回在线和电量百分比，对过期缓存返回离线和 `N/A`。
-- 轻量脚本确认控制台页面模板包含 `robotBatteryText`、`robotBatteryBar`、`robotStateText` 和 `renderRobotStatus`，且不再包含“当前模式”和“自主导览”。
+- 轻量脚本确认 `get_speech_status()` 在 STT 监听中会调用 `get_status_async` 与 `peek_text_async`，并返回识别文本与 utterance_id。
+- 轻量脚本确认控制台页面模板包含 `speechState`、`voiceWave`、`speechText` 和 `renderSpeechStatus`，且不再保留固定“正在聆听...”文案。
 - 本机系统 Python 缺少 `pytest`，因此未能在本机完整运行 `python3 -m pytest tests/control_console -q`。
 - 本机系统 Python 缺少 `fastapi`，因此未能在本机用 `TestClient` 导入控制台应用做完整接口 smoke；改用文件文本检查页面模板。
-- 服务器同步、服务重启和线上状态接口验证：待完成。
+- 本轮代码提交已同步到 `new-orin:/mnt/disk1/gt/RobotAbrainOffline`，服务器与本机处于同一提交。
+- 服务器上 `python3 -m py_compile rabbitbot-dev-ros2-master/rabbitbot/control_console/app.py rabbitbot-dev-ros2-master/rabbitbot/control_console/status.py rabbitbot-dev-ros2-master/stt_app.py rabbitbot-dev-ros2-master/stt_app1.py rabbitbot-dev-ros2-master/stt_app_funasr.py` 通过。
+- 已重启 `new-orin` 上的 `rabbitbot-control-console.service`，服务状态为 active。
+- 已重启正在运行的 `rabbitbot-stt` 容器，健康状态恢复为 healthy。
+- 已请求服务器控制台 `/api/status`，确认返回 `speech={"listening": false, "service_online": true, "status": "idle", "message": "未在监听", "text": "", "utterance_id": 0, "raw_status": "<REC_STOP>"}`；STT 服务状态为 `28184 在线`。
+- 已请求服务器控制台首页，确认页面包含 `speechState`、`voiceWave`、`speechText` 和 `renderSpeechStatus`，且不再包含固定“正在聆听...”文案。
 
 ## 阻塞与风险
 
 - 本机缺少测试依赖，完整控制台 pytest 和 FastAPI TestClient smoke 尚未在本机执行；服务器同步后可在具备项目运行环境的机器上补跑。
-- 真实 DDS 订阅需要服务器控制台运行环境能导入 `unitree_sdk2py`，并且 `RABBITBOT_DDS_INTERFACE` / `NAV_INTERFACE` 指向连接机器人 DDS 的网卡。
-- 当前以最近 `rt/lf/bmsstate` 消息作为机器人在线判据；超过 `RABBITBOT_ROBOT_STATUS_STALE_SECONDS`（默认 6 秒）未收到 BMS 数据即显示离线和 `N/A`。
+- 已重启 `rabbitbot-stt` 容器加载 `peek_text_async`；如果后续改为其他 STT 进程入口，仍需确保对应进程重启后再验证识别文本显示。
 
 ## 下一步
 
-1. 提交本轮代码，随后同步到 `new-orin:/mnt/disk1/gt/RobotAbrainOffline`。
-2. 重启 `rabbitbot-control-console.service`，请求 `/api/status` 确认返回 `robot_status` 字段。
-3. 在真机 DDS 网络下刷新任务控制页，确认电量显示真实百分比、状态显示在线；断开或未读到 BMS 时显示 `N/A` 和离线。
+1. 浏览器刷新任务控制页，确认空闲态显示“未在监听”。
+2. 启动 STT 监听并说话，确认面板切换为“正在聆听”、竖线跳动，并显示最新识别文本。
 
 ## 注意事项
 

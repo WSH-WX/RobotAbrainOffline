@@ -8,7 +8,6 @@ import os
 import re
 import socket
 import subprocess
-import threading
 import time
 from typing import Iterable
 import urllib.error
@@ -32,9 +31,6 @@ LOCALIZATION_STATE_WINDOW_LINES = 300
 
 logger = logging.getLogger(__name__)
 _stt_peek_unsupported_logged = False
-ROBOT_BMS_TOPIC = "rt/lf/bmsstate"
-ROBOT_STATUS_STALE_SECONDS = float(os.environ.get("RABBITBOT_ROBOT_STATUS_STALE_SECONDS", "6"))
-ROBOT_STATUS_RETRY_SECONDS = float(os.environ.get("RABBITBOT_ROBOT_STATUS_RETRY_SECONDS", "30"))
 
 
 @dataclass(frozen=True)
@@ -113,29 +109,6 @@ class SpeechStatus:
 
     def to_dict(self) -> dict:
         return asdict(self)
-
-
-@dataclass(frozen=True)
-class RobotStatus:
-    online: bool = False
-    status: str = "offline"
-    status_text: str = "离线"
-    battery_percent: int | None = None
-    battery_text: str = "N/A"
-    dds_interface: str = "eno1"
-    topic: str = ROBOT_BMS_TOPIC
-    updated_at: float | None = None
-    message: str | None = "未读取到机器人 BMS 数据"
-    error: str | None = None
-
-    def to_dict(self) -> dict:
-        return asdict(self)
-
-
-_robot_status_lock = threading.Lock()
-_robot_status_cache = RobotStatus()
-_robot_status_thread: threading.Thread | None = None
-_robot_status_next_retry = 0.0
 
 
 def strip_ansi(value: str) -> str:
@@ -465,112 +438,6 @@ def is_port_open(host: str, port: int, timeout: float = 0.25) -> bool:
             return True
     except OSError:
         return False
-
-
-def _coerce_battery_percent(value) -> int | None:
-    try:
-        percent = int(round(float(value)))
-    except (TypeError, ValueError):
-        return None
-    return max(0, min(100, percent))
-
-
-def _update_robot_status(status: RobotStatus) -> None:
-    global _robot_status_cache
-    with _robot_status_lock:
-        previous = _robot_status_cache
-        _robot_status_cache = status
-    if status.online and not previous.online:
-        logger.info(
-            "已读取机器人 BMS DDS 数据：interface=%s, topic=%s, battery=%s",
-            status.dds_interface,
-            status.topic,
-            status.battery_text,
-        )
-
-
-def _robot_bms_subscriber_worker(dds_interface: str) -> None:
-    global _robot_status_next_retry
-    try:
-        from unitree_sdk2py.core.channel import ChannelFactoryInitialize, ChannelSubscriber
-        from unitree_sdk2py.idl.unitree_hg.msg.dds_ import BmsState_
-    except ImportError as exc:
-        _robot_status_next_retry = time.time() + ROBOT_STATUS_RETRY_SECONDS
-        _update_robot_status(
-            RobotStatus(
-                dds_interface=dds_interface,
-                message="未读取到机器人 BMS 数据",
-                error=f"unitree_sdk2py 不可用：{type(exc).__name__}",
-            )
-        )
-        logger.warning("机器人 BMS DDS 订阅不可用，缺少 unitree_sdk2py：interface=%s, error=%s", dds_interface, exc)
-        return
-
-    def on_bms(message) -> None:
-        soc = _coerce_battery_percent(getattr(message, "soc", None))
-        _update_robot_status(
-            RobotStatus(
-                online=True,
-                status="online",
-                status_text="在线",
-                battery_percent=soc,
-                battery_text=f"{soc}%" if soc is not None else "N/A",
-                dds_interface=dds_interface,
-                updated_at=time.time(),
-                message="已读取机器人 BMS 数据",
-            )
-        )
-
-    try:
-        logger.info("启动机器人 BMS DDS 订阅：interface=%s, topic=%s", dds_interface, ROBOT_BMS_TOPIC)
-        ChannelFactoryInitialize(0, dds_interface)
-        subscriber = ChannelSubscriber(ROBOT_BMS_TOPIC, BmsState_)
-        subscriber.Init(on_bms, 10)
-        while True:
-            time.sleep(1)
-    except Exception as exc:
-        _robot_status_next_retry = time.time() + ROBOT_STATUS_RETRY_SECONDS
-        _update_robot_status(
-            RobotStatus(
-                dds_interface=dds_interface,
-                message="机器人 BMS DDS 订阅异常",
-                error=f"{type(exc).__name__}: {exc}",
-            )
-        )
-        logger.exception("机器人 BMS DDS 订阅异常：interface=%s, topic=%s", dds_interface, ROBOT_BMS_TOPIC)
-
-
-def _ensure_robot_status_subscriber(dds_interface: str) -> None:
-    global _robot_status_thread
-    now = time.time()
-    if now < _robot_status_next_retry:
-        return
-    if _robot_status_thread is not None and _robot_status_thread.is_alive():
-        return
-    _robot_status_thread = threading.Thread(
-        target=_robot_bms_subscriber_worker,
-        args=(dds_interface,),
-        daemon=True,
-        name="robot-bms-dds-subscriber",
-    )
-    _robot_status_thread.start()
-
-
-def get_robot_status(dds_interface: str = "eno1") -> RobotStatus:
-    _ensure_robot_status_subscriber(dds_interface)
-    now = time.time()
-    with _robot_status_lock:
-        cached = _robot_status_cache
-    if cached.updated_at is None or now - cached.updated_at > ROBOT_STATUS_STALE_SECONDS:
-        return RobotStatus(
-            dds_interface=dds_interface,
-            updated_at=cached.updated_at,
-            message="未读取到机器人 BMS 数据",
-            error=cached.error,
-        )
-    if cached.dds_interface != dds_interface:
-        return RobotStatus(dds_interface=dds_interface, message="DDS 网卡已切换，等待新的机器人 BMS 数据")
-    return cached
 
 
 def _post_stt_exec(host: str, port: int, task: str, timeout: float = 0.35) -> tuple[str, int]:

@@ -3,9 +3,7 @@ import time
 
 from rabbitbot.control_console.config import ConsoleConfig
 from rabbitbot.control_console.status import (
-    RobotStatus,
     WorkflowStatus,
-    get_robot_status,
     get_speech_status,
     get_latest_workflow_status,
     get_task_progress,
@@ -238,60 +236,6 @@ def test_get_speech_status_does_not_read_text_when_not_listening(monkeypatch):
     assert speech.service_online is True
     assert speech.message == "未在监听"
     assert speech.raw_status == "<REC_STOP>"
-
-
-def test_get_robot_status_returns_recent_bms_cache(monkeypatch):
-    from rabbitbot.control_console import status as status_mod
-
-    monkeypatch.setattr(status_mod, "_ensure_robot_status_subscriber", lambda dds_interface: None)
-    monkeypatch.setattr(
-        status_mod,
-        "_robot_status_cache",
-        RobotStatus(
-            online=True,
-            status="online",
-            status_text="在线",
-            battery_percent=87,
-            battery_text="87%",
-            dds_interface="eno1",
-            updated_at=time.time(),
-            message="已读取机器人 BMS 数据",
-        ),
-    )
-
-    robot = get_robot_status("eno1")
-
-    assert robot.online is True
-    assert robot.status_text == "在线"
-    assert robot.battery_percent == 87
-    assert robot.battery_text == "87%"
-
-
-def test_get_robot_status_marks_stale_cache_offline(monkeypatch):
-    from rabbitbot.control_console import status as status_mod
-
-    monkeypatch.setattr(status_mod, "_ensure_robot_status_subscriber", lambda dds_interface: None)
-    monkeypatch.setattr(
-        status_mod,
-        "_robot_status_cache",
-        RobotStatus(
-            online=True,
-            status="online",
-            status_text="在线",
-            battery_percent=87,
-            battery_text="87%",
-            dds_interface="eno1",
-            updated_at=time.time() - 60,
-            message="已读取机器人 BMS 数据",
-        ),
-    )
-
-    robot = get_robot_status("eno1")
-
-    assert robot.online is False
-    assert robot.status_text == "离线"
-    assert robot.battery_percent is None
-    assert robot.battery_text == "N/A"
 
 
 def test_parse_latest_pose_marks_unlocalized_after_new_relocation_attempt(tmp_path):

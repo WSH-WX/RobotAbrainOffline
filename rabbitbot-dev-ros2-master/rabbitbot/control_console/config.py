@@ -28,7 +28,6 @@ class ConsoleConfig:
     dialogue_dir: Path
     dialogue_index: str
     dialogue_file: Path | None
-    dds_interface: str = "eno1"
 
     @classmethod
     def from_env(cls) -> "ConsoleConfig":
@@ -70,5 +69,4 @@ class ConsoleConfig:
             dialogue_dir=project_root / "conf",
             dialogue_index=os.environ.get("RABBITBOT_DIALOGUE_INDEX", os.environ.get("RABBITBOT_DOCX_GUIDE_DIALOGUE_INDEX", "0")),
             dialogue_file=dialogue_file,
-            dds_interface=os.environ.get("RABBITBOT_DDS_INTERFACE", os.environ.get("NAV_INTERFACE", "eno1")),
         )
