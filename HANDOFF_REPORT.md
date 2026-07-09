@@ -2,7 +2,7 @@
 
 生成时间：2026-07-09（Asia/Singapore）
 本轮工作目录：`/Users/firmiana/Desktop/RobotAbrainOffline`
-本轮主题：在控制台任务控制页的地图选择处增加“确认地图”按钮。
+本轮主题：移除控制台任务控制页顶部状态栏和标题栏网络电量块。
 
 ## 项目整体描述
 
@@ -36,40 +36,35 @@
 
 ## 本轮修改摘要
 
-- `rabbitbot-dev-ros2-master/rabbitbot/control_console/app.py` 在“重启地图”输入框旁新增“确认地图”按钮。
-- 新增 `POST /api/map` 接口，复用既有 `write_map_path()` 校验并写入 `runtime/rabbitbot-loop.env` 的 `NAV_PCD_PATH`，不启动、不停止、不重启 `rabbitbot-loop.service`。
-- 前端 `confirmMap()` 调用 `/api/map` 后显示“已确认使用地图 ...”，刷新顶部“地图：...”状态，并将输入框同步为后端确认后的路径。
-- 地图确认区域增加响应式布局样式，小屏下按钮自动换行。
-- `rabbitbot-dev-ros2-master/tests/control_console/test_app.py` 新增接口测试，确认地图写入不会触发 systemd；页面模板测试补充“确认地图”、`/api/map` 和 `confirmMap` 断言。
+- `rabbitbot-dev-ros2-master/rabbitbot/control_console/app.py` 移除主内容区顶部白色状态栏，包括“RabbitBot 控制台”、顶部地图、控制台状态、主循环、导航桥接和当前模式。
+- 移除任务控制页标题栏右侧的“网络正常 电量 92%”状态块。
+- 调整任务控制页高度和标题栏布局，让移除顶部区域后页面继续铺满视口。
+- 将前端 `setText()` 改为缺失元素容错，避免状态刷新继续写入已删除的顶部状态 DOM 时抛错。
+- `rabbitbot-dev-ros2-master/tests/control_console/test_app.py` 增加页面模板断言，防止顶部状态栏和网络电量块被误加回来。
 
 ## 日志新增或调整
 
-- `write_map_path()` 已有 INFO 日志记录地图环境文件和确认路径。
-- `/api/map` 新增 INFO 日志，记录控制台地图确认完成的路径和 env 文件位置。
+- 本轮仅调整前端页面结构和 DOM 容错，没有新增或调整运行时日志。
 
 ## 已验证事实
 
-- 本轮开始前本机与 `new-orin:/mnt/disk1/gt/RobotAbrainOffline` 均为提交 `4092ec2`，分支 `air_robot_gt_projects-master`。
+- 本轮开始前本机与 `new-orin:/mnt/disk1/gt/RobotAbrainOffline` 均为提交 `1d320a9`，分支 `air_robot_gt_projects-master`。
 - `python3 -m py_compile rabbitbot/agno_agents/workflow.py rabbitbot/control_console/app.py rabbitbot/control_console/status.py` 通过。
 - `bash -n rabbitbot-dev-ros2-master/scripts_1/start_nav_bridge_workflow_loop.sh` 通过。
 - `git diff --check` 通过。
-- 轻量脚本验证 `write_map_path()` 与 `read_map_path()` 可完成地图确认写入和读取。
-- 轻量脚本确认控制台页面模板包含“确认地图”、`/api/map`、`confirmMapBtn` 和 `confirmMap`。
+- 轻量脚本确认控制台页面模板不再包含 `<header class="topbar">`、`<div class="tech-status">` 和“网络正常 电量 92%”文案。
+- 轻量脚本确认 `setText()` 已改为缺失元素容错，页面仍保留主标题“双足机器人导览系统”。
 - 本机系统 Python 缺少 `pytest`，因此未能在本机完整运行 `python3 -m pytest tests/control_console -q`。
-- 本轮提交已同步到 `new-orin:/mnt/disk1/gt/RobotAbrainOffline`，本机与服务器处于同一提交。
-- 已重启 `new-orin` 上的 `rabbitbot-control-console.service`，服务状态为 active。
-- 已请求控制台首页，确认页面包含“确认地图”；`/api/status` 返回 `api_ok=True`，当前地图为 `/home/unitree/test9.pcd`。
-- 已用当前地图 `/home/unitree/test9.pcd` 调用 `/api/map`，返回 `map_ok=True` 和“已确认使用地图 /home/unitree/test9.pcd”，未改变现场地图配置。
 
 ## 阻塞与风险
 
 - 本机缺少测试依赖，完整控制台 pytest 尚未在本机执行；服务器同步后可在具备项目运行环境的机器上补跑。
-- “确认地图”只更新下一次启动/重启主循环会读取的 `runtime/rabbitbot-loop.env`；若当前 `rabbitbot-loop.service` 已经运行，仍需“一键重启”才能让导航主程序切到新地图。
+- 顶部地图和主循环/导航桥接状态入口被移除后，这些信息仍可通过服务状态管理、开发人员日志和状态接口查看；任务控制页不再展示顶部摘要。
 
 ## 下一步
 
-1. 在控制台填写新的地图路径，点击“确认地图”，确认页面反馈和顶部地图路径同步更新。
-2. 如需让运行中的导航主程序使用新地图，继续点击“一键重启”。
+1. 完成本轮提交后同步到 `new-orin:/mnt/disk1/gt/RobotAbrainOffline` 并重启 `rabbitbot-control-console.service`。
+2. 在控制台任务控制页刷新后确认顶部白色状态栏和“网络正常 电量 92%”块均已消失。
 
 ## 注意事项
 

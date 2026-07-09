@@ -582,6 +582,15 @@ def test_page_shows_console_without_login_form(tmp_path):
     assert '/api/dialogue' in response.text
     assert '/api/dialogue/leader-calling' in response.text
     assert '/api/dialogue/hot-rows' in response.text
+    assert 'class="topbar"' not in response.text
+    assert 'class="top-status"' not in response.text
+    assert 'id="overall"' not in response.text
+    assert 'id="mainLoop"' not in response.text
+    assert 'id="navBridge"' not in response.text
+    assert 'id="workflow"' not in response.text
+    assert 'class="tech-status"' not in response.text
+    assert '网络正常' not in response.text
+    assert '电量 92%' not in response.text
     assert '当前运行日志' in response.text
     assert 'Workflow 日志' in response.text
     assert '导航日志' in response.text
