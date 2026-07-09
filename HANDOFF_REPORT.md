@@ -2,7 +2,7 @@
 
 生成时间：2026-07-09（Asia/Singapore）
 本轮工作目录：`/Users/firmiana/Desktop/RobotAbrainOffline`
-本轮主题：移除控制台任务控制页顶部状态栏和标题栏网络电量块。
+本轮主题：将控制台任务控制页“语音交互”板块改为显示真实 STT 监听状态、声波动画和识别文本。
 
 ## 项目整体描述
 
@@ -36,37 +36,37 @@
 
 ## 本轮修改摘要
 
-- `rabbitbot-dev-ros2-master/rabbitbot/control_console/app.py` 移除主内容区顶部白色状态栏，包括“RabbitBot 控制台”、顶部地图、控制台状态、主循环、导航桥接和当前模式。
-- 移除任务控制页标题栏右侧的“网络正常 电量 92%”状态块。
-- 调整任务控制页高度和标题栏布局，让移除顶部区域后页面继续铺满视口。
-- 将前端 `setText()` 改为缺失元素容错，避免状态刷新继续写入已删除的顶部状态 DOM 时抛错。
-- `rabbitbot-dev-ros2-master/tests/control_console/test_app.py` 增加页面模板断言，防止顶部状态栏和网络电量块被误加回来。
+- `rabbitbot-dev-ros2-master/rabbitbot/control_console/status.py` 新增 `SpeechStatus` 和 STT 状态探测：端口未开或未监听时返回“未在监听”，监听中返回“正在聆听”并通过非消费式接口读取最近识别文本。
+- `rabbitbot-dev-ros2-master/rabbitbot/control_console/app.py` 的 `/api/status` 新增 `speech` 字段；任务控制页“语音交互”板块改为真实状态文案、可跳动竖线声波和识别文本显示。
+- `rabbitbot-dev-ros2-master/stt_app.py`、`stt_app1.py`、`stt_app_funasr.py` 新增 `peek_text_async`，用于查看最近识别结果且不清空工作流要消费的 `get_text_async` 输出。
+- `rabbitbot-dev-ros2-master/tests/control_console/test_status.py` 增加语音状态单元测试；`test_app.py` 增加状态接口和页面模板断言。
 
 ## 日志新增或调整
 
-- 本轮仅调整前端页面结构和 DOM 容错，没有新增或调整运行时日志。
+- 控制台查询 STT 失败时仅 `DEBUG` 记录接口、任务和异常类型；STT 返回非 JSON 或结构异常时 `WARNING` 记录必要上下文，不记录识别正文。
+- STT 新增的 `peek_text_async` 高频调用只打印文本长度和 utterance_id，不打印识别正文，避免控制台轮询把语音文本写入日志。
 
 ## 已验证事实
 
-- 本轮开始前本机与 `new-orin:/mnt/disk1/gt/RobotAbrainOffline` 均为提交 `1d320a9`，分支 `air_robot_gt_projects-master`。
-- `python3 -m py_compile rabbitbot/agno_agents/workflow.py rabbitbot/control_console/app.py rabbitbot/control_console/status.py` 通过。
-- `bash -n rabbitbot-dev-ros2-master/scripts_1/start_nav_bridge_workflow_loop.sh` 通过。
+- 本轮开始前本机与 `new-orin:/mnt/disk1/gt/RobotAbrainOffline` 均为提交 `1500f46`，分支 `air_robot_gt_projects-master`。
+- `python3 -m py_compile rabbitbot-dev-ros2-master/rabbitbot/control_console/app.py rabbitbot-dev-ros2-master/rabbitbot/control_console/status.py rabbitbot-dev-ros2-master/stt_app.py rabbitbot-dev-ros2-master/stt_app1.py rabbitbot-dev-ros2-master/stt_app_funasr.py` 通过。
 - `git diff --check` 通过。
-- 轻量脚本确认控制台页面模板不再包含 `<header class="topbar">`、`<div class="tech-status">` 和“网络正常 电量 92%”文案。
-- 轻量脚本确认 `setText()` 已改为缺失元素容错，页面仍保留主标题“双足机器人导览系统”。
+- 轻量脚本确认 `get_speech_status()` 在 STT 监听中会调用 `get_status_async` 与 `peek_text_async`，并返回识别文本与 utterance_id。
+- 轻量脚本确认控制台页面模板包含 `speechState`、`voiceWave`、`speechText` 和 `renderSpeechStatus`，且不再保留固定“正在聆听...”文案。
 - 本机系统 Python 缺少 `pytest`，因此未能在本机完整运行 `python3 -m pytest tests/control_console -q`。
-- 本轮提交已同步到 `new-orin:/mnt/disk1/gt/RobotAbrainOffline`，本机与服务器处于同一提交。
-- 已重启 `new-orin` 上的 `rabbitbot-control-console.service`，服务状态为 active。
-- 已请求控制台首页，确认不再包含顶部白色状态栏、标题栏网络电量块和“网络正常 电量 92%”文案；`/api/status` 返回 `api_ok=True`。
+- 本机系统 Python 缺少 `fastapi`，因此未能在本机用 `TestClient` 导入控制台应用做完整接口 smoke；改用文件文本检查页面模板。
+- 服务器同步、服务重启和线上状态接口验证：待完成。
 
 ## 阻塞与风险
 
-- 本机缺少测试依赖，完整控制台 pytest 尚未在本机执行；服务器同步后可在具备项目运行环境的机器上补跑。
-- 顶部地图和主循环/导航桥接状态入口被移除后，这些信息仍可通过服务状态管理、开发人员日志和状态接口查看；任务控制页不再展示顶部摘要。
+- 本机缺少测试依赖，完整控制台 pytest 和 FastAPI TestClient smoke 尚未在本机执行；服务器同步后可在具备项目运行环境的机器上补跑。
+- `peek_text_async` 需要 STT 服务进程重启后才会在运行态生效；如果 STT 容器仍是旧进程，控制台能显示监听状态，但识别文本会为空并记录一次兼容提示。
 
 ## 下一步
 
-1. 在浏览器中刷新控制台任务控制页，确认顶部白色状态栏和“网络正常 电量 92%”块均已消失。
+1. 提交本轮代码，随后同步到 `new-orin:/mnt/disk1/gt/RobotAbrainOffline`。
+2. 重启 `rabbitbot-control-console.service`；如 `rabbitbot-stt` 容器正在运行，也需重启 STT 容器让 `peek_text_async` 生效。
+3. 请求服务器控制台 `/api/status`，确认返回 `speech` 字段；浏览器刷新任务控制页，确认语音板块按 STT 状态显示。
 
 ## 注意事项
 

@@ -73,7 +73,14 @@ def make_config(tmp_path):
     )
 
 
-def test_status_does_not_require_login(tmp_path):
+def test_status_does_not_require_login(tmp_path, monkeypatch):
+    from rabbitbot.control_console import app as app_mod
+
+    class DummySpeech:
+        def to_dict(self):
+            return {"listening": False, "service_online": False, "status": "offline", "message": "未在监听", "text": "", "utterance_id": 0, "raw_status": None}
+
+    monkeypatch.setattr(app_mod, "get_speech_status", lambda: DummySpeech())
     client = TestClient(create_app(make_config(tmp_path)))
 
     response = client.get("/api/status")
@@ -85,6 +92,8 @@ def test_status_does_not_require_login(tmp_path):
     assert {"tts", "stt", "memory", "neo4j", "vlm", "embedding"}.issubset(service_by_key)
     assert service_by_key["vlm"]["required"] is True
     assert service_by_key["embedding"]["required"] is True
+    assert body["speech"]["listening"] is False
+    assert body["speech"]["message"] == "未在监听"
 
 
 def test_status_prefers_runtime_map_env_file(tmp_path):
@@ -157,6 +166,20 @@ def test_status_returns_task_progress_for_current_workflow(tmp_path, monkeypatch
     assert progress["next_site"] == "点位2"
     assert progress["completed_points"] == 1
     assert progress["total_points"] == 4
+
+
+def test_control_page_contains_live_speech_panel(tmp_path):
+    client = TestClient(create_app(make_config(tmp_path)))
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    html = response.text
+    assert 'id="speechState"' in html
+    assert 'id="voiceWave"' in html
+    assert 'id="speechText"' in html
+    assert "function renderSpeechStatus" in html
+    assert "peek_text_async" not in html
 
 
 def test_command_rejects_quit_without_login(tmp_path):

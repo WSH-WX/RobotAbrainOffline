@@ -177,6 +177,8 @@ class AudioRecorder:
         self.input_speech = False
         self.utterance_id = 0
         self.output_utterance_id = 0
+        self.last_output_text = ""
+        self.last_output_utterance_id = 0
         self.has_recognized = False
         self.speech_hit_count = 0
         
@@ -188,6 +190,8 @@ class AudioRecorder:
             self.last_voice_time = 0
             self.output_text = ""
             self.output_utterance_id = 0
+            self.last_output_text = ""
+            self.last_output_utterance_id = 0
             self.has_recognized = False
             self.speech_hit_count = 0
             self.recording_complete.clear()
@@ -291,6 +295,8 @@ class AudioRecorder:
                 recorder.utterance_id += 1
                 recorder.output_utterance_id = recorder.utterance_id
                 recorder.output_text = text
+                recorder.last_output_utterance_id = recorder.output_utterance_id
+                recorder.last_output_text = text
                 recorder.has_recognized = True
                 
     def get_status(self):
@@ -306,11 +312,19 @@ class AudioRecorder:
     def get_utterance_id(self):
         return getattr(self, 'output_utterance_id', 0) or 0
 
+    def peek_text(self):
+        return getattr(self, 'last_output_text', "") or self.get_text()
+
+    def peek_utterance_id(self):
+        return getattr(self, 'last_output_utterance_id', 0) or self.get_utterance_id()
+
 
 # ===== 全局录音器 =====
 recorder = AudioRecorder()
 recorder.output_text = ""
 recorder.output_utterance_id = 0
+recorder.last_output_text = ""
+recorder.last_output_utterance_id = 0
 audio_queue = queue.Queue(maxsize=AUDIO_QUEUE_MAX_CHUNKS)
 injected_text_queue = queue.Queue()
 # 标记“最近一次 get_text_async 消费的文本是否来自注入(inject_text_async)”。
@@ -503,6 +517,14 @@ async def _exec(task, lang, text, timeout):
             with audio_level_lock:
                 out_text = f"{last_audio_level['rms']:.8f}"
 
+    elif task == "peek_text_async":
+        out_text = recorder.peek_text()
+        utterance_id = recorder.peek_utterance_id()
+        if lang == "zh" and out_text:
+            out_text = cc.convert(out_text)
+        if out_text is None:
+            out_text = ""
+
     elif task == "get_text_async":
         try:
             utterance_id, out_text = injected_text_queue.get_nowait()
@@ -533,6 +555,8 @@ async def _exec(task, lang, text, timeout):
         with recorder.lock:
             recorder.utterance_id += 1
             utterance_id = recorder.utterance_id
+            recorder.last_output_utterance_id = utterance_id
+            recorder.last_output_text = out_text
         injected_text_queue.put((utterance_id, out_text))
         LOGGER.info(
             "STT 注入文本已入队：utterance_id=%s, text_len=%s, text_hash=%s, queue_size=%s",
@@ -545,7 +569,10 @@ async def _exec(task, lang, text, timeout):
     else:
         out_text = f"Unsupported task: {task}"
         
-    print("out_text:", out_text)
+    if task == "peek_text_async":
+        print(f"out_text: <peek_text_async text_len={len(out_text or '')} utterance_id={utterance_id}>")
+    else:
+        print("out_text:", out_text)
     return out_text or "", utterance_id
 
 

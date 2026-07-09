@@ -40,6 +40,7 @@ from .status import (
     detect_main_loop_running,
     get_latest_workflow_status,
     get_runtime_service_statuses,
+    get_speech_status,
     get_task_progress,
     get_tail_lines,
     is_port_open,
@@ -158,6 +159,9 @@ def _html() -> str:
     .dashboard-service-list{display:grid;gap:10px}.dashboard-service-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;align-items:center;padding:8px 0;border-bottom:1px solid rgba(83,157,214,.22)}.dashboard-service-row:last-child{border-bottom:0}.dashboard-service-name{font-size:16px;font-weight:900;color:#e9f7ff}.dashboard-service-desc{font-size:12px;line-height:1.35;color:#a9c9e8;margin-top:2px}.dashboard-service-state{font-size:15px;font-weight:900;white-space:nowrap}.dashboard-service-state.online{color:#74f590}.dashboard-service-state.starting{color:#ffd666}.dashboard-service-state.offline{color:#ff8a8a}
   </style>
   <style>
+    .voice-state{font-size:23px;font-weight:900;color:#8199b4}.voice-state.listening{color:#43b65b}.voice-wave{height:64px;margin-top:8px;display:flex;align-items:center;gap:11px;background:none;mask:none;opacity:.38}.voice-wave span{width:4px;height:35px;border-radius:999px;background:linear-gradient(180deg,rgba(117,206,255,.18),#27d7ff,rgba(117,206,255,.18));box-shadow:0 0 15px rgba(39,215,255,.48);transform:scaleY(.7);transform-origin:center}.voice-wave.listening{opacity:1}.voice-wave.listening span{animation:voicePulse 1.05s ease-in-out infinite;animation-delay:calc(var(--i)*.055s)}.voice-transcript{min-height:58px;margin-top:8px;padding:10px 12px;border:1px solid rgba(67,157,220,.34);border-radius:8px;background:rgba(3,16,29,.48);color:#cfeeff;font-size:15px;line-height:1.45;word-break:break-word}.voice-transcript.empty{color:#7890a8}@keyframes voicePulse{0%,100%{transform:scaleY(.45)}35%{transform:scaleY(1.28)}65%{transform:scaleY(.78)}}
+  </style>
+  <style>
     .map-confirm-row{display:grid;grid-template-columns:minmax(180px,1fr) minmax(132px,auto);gap:10px;align-items:end}.map-confirm-row .refresh{min-height:44px}@media(max-width:620px){.map-confirm-row{grid-template-columns:1fr}}
   </style>
 </head>
@@ -230,8 +234,11 @@ def _html() -> str:
                 <section class="tech-card">
                   <h3>语音交互</h3>
                   <div class="tech-body">
-                    <div class="value ok">正在聆听...</div>
-                    <div class="voice-wave"></div>
+                    <div id="speechState" class="voice-state">未在监听</div>
+                    <div id="voiceWave" class="voice-wave" aria-hidden="true">
+                      <span style="--i:0"></span><span style="--i:1"></span><span style="--i:2"></span><span style="--i:3"></span><span style="--i:4"></span><span style="--i:5"></span><span style="--i:6"></span><span style="--i:7"></span><span style="--i:8"></span><span style="--i:9"></span><span style="--i:10"></span><span style="--i:11"></span><span style="--i:12"></span><span style="--i:13"></span><span style="--i:14"></span><span style="--i:15"></span><span style="--i:16"></span><span style="--i:17"></span>
+                    </div>
+                    <div id="speechText" class="voice-transcript empty">暂无识别文本</div>
                   </div>
                 </section>
               </div>
@@ -530,6 +537,23 @@ function renderDashboardTaskInfo(data){
   var bar=document.getElementById('dashboardTaskProgressBar');
   if(bar){bar.style.width=percent.toFixed(1)+'%';}
 }
+function renderSpeechStatus(data){
+  var speech=(data&&data.speech)||{};
+  var listening=!!speech.listening;
+  var state=document.getElementById('speechState');
+  var wave=document.getElementById('voiceWave');
+  var transcript=document.getElementById('speechText');
+  if(state){
+    state.textContent=listening?'正在聆听':'未在监听';
+    state.classList.toggle('listening',listening);
+  }
+  if(wave){wave.classList.toggle('listening',listening);}
+  if(transcript){
+    var text=(speech.text||'').trim();
+    transcript.textContent=text || (listening?'等待语音输入...':'暂无识别文本');
+    transcript.classList.toggle('empty',!text);
+  }
+}
 function renderServiceStatus(services){
   var grid=document.getElementById('serviceStatusGrid');
   if(!grid){return;}
@@ -596,6 +620,7 @@ function renderStatus(data){
   renderServiceStatus(data.services||[]);
   renderDashboardServiceStatus(data);
   renderDashboardTaskInfo(data);
+  renderSpeechStatus(data);
   if(logsVisible){refreshLogs();}
 }
 function refresh(){
@@ -918,6 +943,7 @@ def create_app(config: ConsoleConfig | None = None) -> FastAPI:
         if main_loop != "running":
             workflow = type(workflow)(run_id=None, status="loop_not_running", ready=False)
         task_progress = get_task_progress(config.workflow_control_dir, workflow)
+        speech = get_speech_status()
         port_ready = is_port_open("127.0.0.1", config.nav_port)
         if no_robot_mode:
             nav_bridge = {"ready": True, "port": config.nav_port, "core_ready": True, "message": "无机器人模式：已跳过导航桥接", "source": None}
@@ -940,6 +966,7 @@ def create_app(config: ConsoleConfig | None = None) -> FastAPI:
             "nav_bridge": nav_bridge,
             "workflow": workflow.to_dict(),
             "task_progress": task_progress.to_dict(),
+            "speech": speech.to_dict(),
             "no_robot_mode": no_robot_mode,
             "services": [service.to_dict() for service in get_runtime_service_statuses()],
             "autostart": autostart,

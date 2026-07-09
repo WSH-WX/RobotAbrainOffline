@@ -146,6 +146,8 @@ class STTTimeoutWrapper(object):
         self.recoder_thread = None
         self.output_text = None
         self.output_utterance_id = 0
+        self.last_output_text = None
+        self.last_output_utterance_id = 0
         self.utterance_id = 0
         self.recoder_status = "<REC_STOP>"
 
@@ -185,11 +187,15 @@ class STTTimeoutWrapper(object):
         if self.output_text:
             self.utterance_id += 1
             self.output_utterance_id = self.utterance_id
+            self.last_output_text = self.output_text
+            self.last_output_utterance_id = self.output_utterance_id
         print(f"STTTimeoutWrapper: output_text {self.output_text}")
         self.recoder_status = "<REC_STOP>"
 
     def start(self, prompt=None):
         self.reset()
+        self.last_output_text = None
+        self.last_output_utterance_id = 0
 
         if prompt and hasattr(self.recorder, "set_global_prompt"):
             self.recorder.set_global_prompt(prompt)
@@ -224,6 +230,12 @@ class STTTimeoutWrapper(object):
 
     def get_output_utterance_id(self):
         return self.output_utterance_id
+
+    def peek_output_text(self):
+        return self.last_output_text if self.last_output_text is not None else self.output_text
+
+    def peek_output_utterance_id(self):
+        return self.last_output_utterance_id or self.output_utterance_id
 
 
 recorder_timeout = STTTimeoutWrapper(recorder)
@@ -333,12 +345,26 @@ async def _exec(task, lang, text, timeout):
             recorder_timeout.reset()
         if lang == "zh":
             out_text = cc.convert(out_text)
+    elif task == "peek_text_async":
+        try:
+            out_text = recorder_timeout.peek_output_text()
+            utterance_id = recorder_timeout.peek_output_utterance_id()
+        except Exception as e:
+            traceback.print_exc()
+            raise e
+        if out_text is None:
+            out_text = ""
+        if lang == "zh":
+            out_text = cc.convert(out_text)
     elif task == "get_last_rms":
         out_text = f"{get_last_recorded_rms():.6f}"
     else:
         out_text = f"Unsupported task: {task}"
 
-    print("out_text:", out_text)
+    if task == "peek_text_async":
+        print(f"out_text: <peek_text_async text_len={len(out_text or '')} utterance_id={utterance_id}>")
+    else:
+        print("out_text:", out_text)
     return out_text, utterance_id
 
 

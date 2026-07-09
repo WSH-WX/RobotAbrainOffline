@@ -4,6 +4,7 @@ import time
 from rabbitbot.control_console.config import ConsoleConfig
 from rabbitbot.control_console.status import (
     WorkflowStatus,
+    get_speech_status,
     get_latest_workflow_status,
     get_task_progress,
     latest_file,
@@ -181,6 +182,60 @@ def test_console_config_defaults_to_test9_map(monkeypatch):
     config = ConsoleConfig.from_env()
 
     assert config.map_path == "/home/unitree/test9.pcd"
+
+
+def test_get_speech_status_reports_not_listening_when_stt_port_closed(monkeypatch):
+    monkeypatch.setattr("rabbitbot.control_console.status.is_port_open", lambda host, port, timeout=0.25: False)
+
+    speech = get_speech_status()
+
+    assert speech.listening is False
+    assert speech.service_online is False
+    assert speech.message == "未在监听"
+    assert speech.text == ""
+
+
+def test_get_speech_status_reads_non_consuming_text_when_listening(monkeypatch):
+    calls = []
+
+    def fake_post(host, port, task, timeout=0.35):
+        calls.append(task)
+        if task == "get_status_async":
+            return "<REC_START>", 0
+        if task == "peek_text_async":
+            return "你好", 7
+        return "", 0
+
+    monkeypatch.setattr("rabbitbot.control_console.status.is_port_open", lambda host, port, timeout=0.25: True)
+    monkeypatch.setattr("rabbitbot.control_console.status._post_stt_exec", fake_post)
+
+    speech = get_speech_status()
+
+    assert calls == ["get_status_async", "peek_text_async"]
+    assert speech.listening is True
+    assert speech.service_online is True
+    assert speech.message == "正在聆听"
+    assert speech.text == "你好"
+    assert speech.utterance_id == 7
+
+
+def test_get_speech_status_does_not_read_text_when_not_listening(monkeypatch):
+    calls = []
+
+    def fake_post(host, port, task, timeout=0.35):
+        calls.append(task)
+        return "<REC_STOP>", 0
+
+    monkeypatch.setattr("rabbitbot.control_console.status.is_port_open", lambda host, port, timeout=0.25: True)
+    monkeypatch.setattr("rabbitbot.control_console.status._post_stt_exec", fake_post)
+
+    speech = get_speech_status()
+
+    assert calls == ["get_status_async"]
+    assert speech.listening is False
+    assert speech.service_online is True
+    assert speech.message == "未在监听"
+    assert speech.raw_status == "<REC_STOP>"
 
 
 def test_parse_latest_pose_marks_unlocalized_after_new_relocation_attempt(tmp_path):

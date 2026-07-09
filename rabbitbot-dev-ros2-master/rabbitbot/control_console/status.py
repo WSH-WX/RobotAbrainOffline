@@ -10,6 +10,9 @@ import socket
 import subprocess
 import time
 from typing import Iterable
+import urllib.error
+import urllib.parse
+import urllib.request
 
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
@@ -27,6 +30,7 @@ LOCALIZATION_UNKNOWN_MESSAGE = "当前位姿已读取，定位状态待确认"
 LOCALIZATION_STATE_WINDOW_LINES = 300
 
 logger = logging.getLogger(__name__)
+_stt_peek_unsupported_logged = False
 
 
 @dataclass(frozen=True)
@@ -88,6 +92,20 @@ class ServiceStatus:
     message: str | None = None
     state: str = "offline"
     container: str | None = None
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class SpeechStatus:
+    listening: bool = False
+    service_online: bool = False
+    status: str = "offline"
+    message: str = "未在监听"
+    text: str = ""
+    utterance_id: int = 0
+    raw_status: str | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -420,6 +438,68 @@ def is_port_open(host: str, port: int, timeout: float = 0.25) -> bool:
             return True
     except OSError:
         return False
+
+
+def _post_stt_exec(host: str, port: int, task: str, timeout: float = 0.35) -> tuple[str, int]:
+    url = f"http://{host}:{port}/exec"
+    payload = json.dumps({"task": task, "lang": "zh", "text": "", "timeout": 1}, ensure_ascii=False)
+    data = urllib.parse.urlencode({"task": payload}).encode("utf-8")
+    request = urllib.request.Request(url, data=data, headers={"Content-Type": "application/x-www-form-urlencoded"}, method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            body = response.read(4096).decode("utf-8", errors="replace")
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        logger.debug("查询 STT 接口失败：url=%s, task=%s, error_type=%s, error=%s", url, task, type(exc).__name__, exc)
+        return "", 0
+    try:
+        parsed = json.loads(body)
+    except json.JSONDecodeError as exc:
+        logger.warning(
+            "STT 接口返回非 JSON，忽略本次语音状态：url=%s, task=%s, line=%s, column=%s, body_len=%s",
+            url,
+            task,
+            exc.lineno,
+            exc.colno,
+            len(body),
+        )
+        return "", 0
+    if not isinstance(parsed, dict):
+        logger.warning("STT 接口返回结构非法，忽略本次语音状态：url=%s, task=%s, actual_type=%s", url, task, type(parsed).__name__)
+        return "", 0
+    raw_text = str(parsed.get("out_text") or "")
+    try:
+        utterance_id = int(parsed.get("utterance_id") or 0)
+    except (TypeError, ValueError):
+        utterance_id = 0
+    return raw_text, utterance_id
+
+
+def get_speech_status(host: str = "127.0.0.1", port: int = 28184) -> SpeechStatus:
+    global _stt_peek_unsupported_logged
+    if not is_port_open(host, port, timeout=0.12):
+        return SpeechStatus()
+
+    raw_status, _ = _post_stt_exec(host, port, "get_status_async")
+    listening = raw_status == "<REC_START>"
+    if not listening:
+        return SpeechStatus(service_online=True, status="idle", raw_status=raw_status)
+
+    text, utterance_id = _post_stt_exec(host, port, "peek_text_async")
+    if text.startswith("Unsupported task:"):
+        if not _stt_peek_unsupported_logged:
+            logger.info("STT 服务暂不支持非消费式文本查看：port=%s, raw_status=%s", port, raw_status)
+            _stt_peek_unsupported_logged = True
+        text = ""
+        utterance_id = 0
+    return SpeechStatus(
+        listening=True,
+        service_online=True,
+        status="listening",
+        message="正在聆听",
+        text=text,
+        utterance_id=utterance_id,
+        raw_status=raw_status,
+    )
 
 
 def get_systemd_journal_lines(unit: str, limit: int = 120) -> list[str]:
