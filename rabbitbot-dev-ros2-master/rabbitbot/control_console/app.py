@@ -214,7 +214,7 @@ def _html() -> str:
               </div>
               <section class="robot-stage">
                 <span class="dev-overlay">开发中</span>
-                <img class="robot-photo" src="/static/control_console/unitree-g1-dashboard.png?v=20260709-g1-front" alt="宇树 G1 机器人展示图">
+                <img class="robot-photo" src="/static/control_console/unitree-g1-dashboard.png?v=20260709-g1-scene" alt="宇树 G1 机器人展示图">
               </section>
               <div class="tech-stack">
                 <section class="tech-card">
