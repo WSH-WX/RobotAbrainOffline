@@ -508,6 +508,14 @@ def test_page_shows_console_without_login_form(tmp_path):
     assert 'mapPathInput' in response.text
     assert 'map_path' in response.text
     assert '服务状态' in response.text
+    assert '服务状态管理' in response.text
+    assert '模型服务' not in response.text
+    assert '运动状态' not in response.text
+    assert 'dashboardServiceStatusList' in response.text
+    assert 'renderDashboardServiceStatus' in response.text
+    assert '语音合成服务，把文字讲解转成语音播报' in response.text
+    assert '导览编排服务，负责台词、点位和任务流程' in response.text
+    assert '导航桥接服务，连接控制台/workflow 与机器人导航' in response.text
     assert 'serviceStatusGrid' in response.text
     assert 'renderServiceStatus' in response.text
     assert 'restartService' in response.text

@@ -45,6 +45,8 @@
   - `/mnt/disk1/gt/RobotAbrainOffline/maps/global_map_20260708_124133_grid.png`
   - `/mnt/disk1/gt/RobotAbrainOffline/maps/global_map_20260708_124133_edited_grid.png`
 - 转换参数均为：`resolution=0.10`、`z_min=-0.20`、`z_max=1.50`、`inflation_radius=0.45`。
+- 控制台任务控制页左侧“运动状态”板块已改为动态“服务状态”板块，显示 Neo4j、VLM、Embedding、TTS、STT、Memory、Workflow、NavBridge 的在线状态和用户友好的服务作用说明。
+- 控制台原“模型服务”页面已改名为“服务状态管理”，继续提供详细服务状态与服务重启入口。
 
 ## 日志新增或调整
 
@@ -52,21 +54,25 @@
 - 转换开始时记录输入文件、输出文件、分辨率、高度过滤范围和膨胀半径。
 - 读取 PCD 时记录文件路径、声明点数和数据格式；不记录原始点云数据。
 - 非 PCD 且缺少 `open3d` 时保留原始导入异常链，便于诊断依赖问题。
+- 本轮控制台服务状态板块复用既有 `/api/status` 数据和前端渲染逻辑，未新增后端日志。
 
 ## 已验证事实
 
 - 本地 `python3 -m py_compile unitree_slam_example_new/global_nav/build_grid_map.py` 通过。
+- 本地 `python3 -m py_compile rabbitbot-dev-ros2-master/rabbitbot/control_console/app.py rabbitbot-dev-ros2-master/tests/control_console/test_app.py` 通过。
 - 远端 `python3 -m py_compile unitree_slam_example_new/global_nav/build_grid_map.py` 通过。
 - `new-orin` 缺少 `open3d`，但存在 `numpy 1.26.4` 和 `Pillow 9.0.1`；本轮 PCD 读取不依赖 `open3d`。
 - `/mnt/disk1/gt/RobotAbrainOffline/maps/global_map_20260708_124133.pcd` 声明点数为 `243037`，已转换为 `global_map_20260708_124133_grid.npz`；栅格形状 `(914, 747)`，占据单元 `83076`，原点 `[-45.643035888671875, -28.656492233276367]`，分辨率 `[0.1]`。
 - `/mnt/disk1/gt/RobotAbrainOffline/maps/global_map_20260708_124133_edited.pcd` 声明点数为 `79074`，已转换为 `global_map_20260708_124133_edited_grid.npz`；栅格形状 `(629, 434)`，占据单元 `26551`，原点 `[-24.151477813720703, -19.83965492248535]`，分辨率 `[0.1]`。
 - 两个 `.npz` 均已用 `numpy.load` 读取并确认包含 `occupancy`、`origin`、`resolution`。
+- 本地 `pytest` 未运行：`/Applications/Xcode.app/Contents/Developer/usr/bin/python3` 缺少 `pytest`。
 
 ## 阻塞与风险
 
 - 本轮未验证规划器是否能直接消费新生成的 `.npz`，只验证了地图文件可生成并可读取。
 - `maps/` 在远端 Git 状态中仍为未跟踪目录，包含输入 PCD 和输出地图；本轮不提交这些地图产物，避免把现场大文件纳入代码提交。
 - 非 PCD 点云仍需要 `open3d`；`new-orin` 当前未安装该依赖。
+- 控制台服务状态板块尚未在 new-orin 浏览器视觉截图验证；需同步后通过控制台页面检查。
 
 ## 下一步
 

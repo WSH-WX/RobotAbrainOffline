@@ -148,6 +148,9 @@ def _html() -> str:
   <style>
     .motion-actions.primary-control-actions{grid-template-columns:repeat(5,minmax(132px,1fr));min-width:760px}.motion-actions-wrap{overflow-x:auto;padding-bottom:4px}.dev-actions{display:grid;grid-template-columns:repeat(2,minmax(220px,1fr));gap:12px}.log-actions{display:flex;gap:10px;flex-wrap:wrap}.developer-log{min-height:360px;max-height:54vh}.developer-message{min-height:20px;color:#a9c9e8}.developer-panel{background:rgba(5,20,37,.86);border-color:rgba(61,151,218,.75);color:#e9f7ff}.developer-panel .panel-title{color:#e9f7ff}.developer-panel .label{color:#a9c9e8}@media(max-width:1180px){.motion-actions.primary-control-actions{grid-template-columns:repeat(5,minmax(132px,1fr))}}@media(max-width:820px){.motion-actions.primary-control-actions{grid-template-columns:repeat(5,minmax(132px,1fr))}.dev-actions{grid-template-columns:1fr}}
   </style>
+  <style>
+    .dashboard-service-list{display:grid;gap:10px}.dashboard-service-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;align-items:center;padding:8px 0;border-bottom:1px solid rgba(83,157,214,.22)}.dashboard-service-row:last-child{border-bottom:0}.dashboard-service-name{font-size:16px;font-weight:900;color:#e9f7ff}.dashboard-service-desc{font-size:12px;line-height:1.35;color:#a9c9e8;margin-top:2px}.dashboard-service-state{font-size:15px;font-weight:900;white-space:nowrap}.dashboard-service-state.online{color:#74f590}.dashboard-service-state.starting{color:#ffd666}.dashboard-service-state.offline{color:#ff8a8a}
+  </style>
 </head>
 <body>
   <div id="app" class="shell">
@@ -157,7 +160,7 @@ def _html() -> str:
         <button class="nav-item active" type="button" data-page="control" onclick="showPage('control')">任务控制</button>
         <button class="nav-item" type="button" data-page="status" onclick="showPage('status')">机器人状态</button>
         <button class="nav-item" type="button" data-page="dialogue" onclick="showPage('dialogue')">点位台词</button>
-        <button class="nav-item" type="button" data-page="models" onclick="showPage('models')">模型服务</button>
+        <button class="nav-item" type="button" data-page="models" onclick="showPage('models')">服务状态管理</button>
         <button class="nav-item" type="button" data-page="developer" onclick="showPage('developer')">开发人员选项</button>
       </nav>
       <div class="sidebar-spacer"></div>
@@ -203,14 +206,9 @@ def _html() -> str:
                   </div>
                 </section>
                 <section class="tech-card">
-                  <h3>运动状态 <span class="dev-badge">开发中</span></h3>
-                  <div class="tech-body joint-list">
-                    <div><span>头部</span><strong>正常</strong></div>
-                    <div><span>躯干</span><strong>正常</strong></div>
-                    <div><span>左臂</span><strong>正常</strong></div>
-                    <div><span>右臂</span><strong>正常</strong></div>
-                    <div><span>左腿</span><strong>正常</strong></div>
-                    <div><span>右腿</span><strong>正常</strong></div>
+                  <h3>服务状态 <span id="dashboardServiceSummary" class="dev-badge">读取中</span></h3>
+                  <div class="tech-body">
+                    <div id="dashboardServiceStatusList" class="dashboard-service-list"></div>
                   </div>
                 </section>
               </div>
@@ -330,7 +328,7 @@ def _html() -> str:
           <div class="stack">
             <section class="panel">
             <div class="panel-head">
-              <div class="panel-title">服务状态</div>
+              <div class="panel-title">服务状态管理</div>
               <div class="panel-link">运行中</div>
             </div>
             <div id="serviceStatusGrid" class="service-grid"></div>
@@ -447,6 +445,66 @@ function servicesReady(data){
   return data&&data.main_loop==='running'&&data.workflow&&data.workflow.ready&&(data.no_robot_mode||(data.nav_bridge&&data.nav_bridge.ready));
 }
 function autostartLabel(enabled){return enabled?'已启用':'未启用';}
+var serviceDescriptions={
+  neo4j:'图数据库，用于长期记忆和关系数据存储',
+  vlm:'视觉语言模型，用于图像理解和视觉问答',
+  embedding:'语义向量服务，用于资料检索和相似度匹配',
+  tts:'语音合成服务，把文字讲解转成语音播报',
+  stt:'语音识别服务，把现场语音转成文本指令',
+  memory:'记忆检索服务，负责资料问答和上下文记忆',
+  workflow:'导览编排服务，负责台词、点位和任务流程',
+  navbridge:'导航桥接服务，连接控制台/workflow 与机器人导航'
+};
+function serviceStateText(state){
+  if(state==='online'){return '在线';}
+  if(state==='starting'){return '启动中';}
+  return '离线';
+}
+function serviceStateClass(state){
+  if(state==='online'){return 'online';}
+  if(state==='starting'){return 'starting';}
+  return 'offline';
+}
+function renderDashboardServiceStatus(data){
+  var list=document.getElementById('dashboardServiceStatusList');
+  if(!list){return;}
+  var rows=(data&&data.services?data.services.slice():[]).map(function(svc){
+    return {
+      key:svc.key,
+      label:svc.label,
+      state:svc.state||((svc.online)?'online':'offline'),
+      message:svc.message||'',
+      desc:serviceDescriptions[svc.key]||'项目基础服务'
+    };
+  });
+  var workflowState=(data&&data.main_loop==='running')?(data.workflow&&data.workflow.ready?'online':'starting'):'offline';
+  rows.push({key:'workflow',label:'Workflow',state:workflowState,message:data&&data.workflow?guideStateLabel(data.workflow.status):'',desc:serviceDescriptions.workflow});
+  var navState=(data&&data.nav_bridge&&data.nav_bridge.ready)?'online':'offline';
+  rows.push({key:'navbridge',label:'NavBridge',state:navState,message:data&&data.nav_bridge?data.nav_bridge.message:'',desc:serviceDescriptions.navbridge});
+  var onlineCount=0;
+  list.innerHTML='';
+  for(var i=0;i<rows.length;i++){
+    if(rows[i].state==='online'){onlineCount+=1;}
+    var row=document.createElement('div');
+    row.className='dashboard-service-row';
+    var meta=document.createElement('div');
+    var name=document.createElement('div');
+    name.className='dashboard-service-name';
+    name.textContent=rows[i].label;
+    var desc=document.createElement('div');
+    desc.className='dashboard-service-desc';
+    desc.textContent=rows[i].desc+(rows[i].message?' / '+rows[i].message:'');
+    meta.appendChild(name);
+    meta.appendChild(desc);
+    var state=document.createElement('div');
+    state.className='dashboard-service-state '+serviceStateClass(rows[i].state);
+    state.textContent=serviceStateText(rows[i].state);
+    row.appendChild(meta);
+    row.appendChild(state);
+    list.appendChild(row);
+  }
+  setText('dashboardServiceSummary',onlineCount+'/'+rows.length+' 在线');
+}
 function renderServiceStatus(services){
   var grid=document.getElementById('serviceStatusGrid');
   if(!grid){return;}
@@ -511,6 +569,7 @@ function renderStatus(data){
     setText('pose',(data.pose&&data.pose.message)||'暂无定位位姿数据');
   }
   renderServiceStatus(data.services||[]);
+  renderDashboardServiceStatus(data);
   if(logsVisible){refreshLogs();}
 }
 function refresh(){
