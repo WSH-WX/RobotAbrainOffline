@@ -56,6 +56,10 @@
 - 轻量脚本验证 `write_map_path()` 与 `read_map_path()` 可完成地图确认写入和读取。
 - 轻量脚本确认控制台页面模板包含“确认地图”、`/api/map`、`confirmMapBtn` 和 `confirmMap`。
 - 本机系统 Python 缺少 `pytest`，因此未能在本机完整运行 `python3 -m pytest tests/control_console -q`。
+- 本轮提交已同步到 `new-orin:/mnt/disk1/gt/RobotAbrainOffline`，本机与服务器处于同一提交。
+- 已重启 `new-orin` 上的 `rabbitbot-control-console.service`，服务状态为 active。
+- 已请求控制台首页，确认页面包含“确认地图”；`/api/status` 返回 `api_ok=True`，当前地图为 `/home/unitree/test9.pcd`。
+- 已用当前地图 `/home/unitree/test9.pcd` 调用 `/api/map`，返回 `map_ok=True` 和“已确认使用地图 /home/unitree/test9.pcd”，未改变现场地图配置。
 
 ## 阻塞与风险
 
@@ -64,9 +68,8 @@
 
 ## 下一步
 
-1. 完成本轮提交后同步到 `new-orin:/mnt/disk1/gt/RobotAbrainOffline` 并重启 `rabbitbot-control-console.service`。
-2. 在控制台填写地图路径，点击“确认地图”，确认页面反馈和顶部地图路径同步更新。
-3. 如需让运行中的导航主程序使用新地图，继续点击“一键重启”。
+1. 在控制台填写新的地图路径，点击“确认地图”，确认页面反馈和顶部地图路径同步更新。
+2. 如需让运行中的导航主程序使用新地图，继续点击“一键重启”。
 
 ## 注意事项
 
