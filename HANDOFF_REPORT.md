@@ -38,8 +38,9 @@
 
 - 替换 `rabbitbot-dev-ros2-master/rabbitbot/control_console/static/unitree-g1-dashboard.png`。
 - 新图为宇树 G1 正面机器人本体抠图，透明背景，保持原资源路径和 `1024x1536` 画布尺寸，避免修改控制台 HTML/CSS 引用。
+- 控制台首页图片引用增加 `?v=20260709-g1-front` 版本参数，用于绕过浏览器旧图缓存。
 - 素材来自网络检索到的 G1 正面产品图，白底来源页为 RoboStore 的 Unitree G1 商品页；另核对过 Unitree 官方 G1 页面作为产品外观参考。
-- 本轮未修改控制台后端、前端代码、部署脚本或运行配置。
+- 本轮未修改控制台后端逻辑、部署脚本或运行配置。
 
 ## 日志新增或调整
 
@@ -49,12 +50,14 @@
 
 - 本地已用 Pillow 打开新封面图，确认路径为 `rabbitbot-dev-ros2-master/rabbitbot/control_console/static/unitree-g1-dashboard.png`，尺寸 `(1024, 1536)`，模式 `RGBA`。
 - 本地已人工预览抠图效果：机器人主体居中，背景透明，适配现有控制台封面图槽位。
+- 已确认 `new-orin` 和 `http://192.168.101.121:8080/static/control_console/unitree-g1-dashboard.png` 返回的新图 SHA256 均为 `42a30a3e5cdc75aa0fe66ffe0620d0d6426bc86495e41995b462266b62b95590`。
 - 本轮修改前本地 Git 工作区为空。
 
 ## 阻塞与风险
 
 - 新图来自第三方商品页的白底产品图，并非项目自有拍摄素材；如现场有版权或品牌素材要求，应替换为授权图片。
 - 透明抠图由本地脚本基于白底阈值生成，边缘在深色背景下已做收紧处理，但不是专业人工精修。
+- 如果浏览器仍显示旧图，优先确认页面 HTML 中图片地址是否包含 `?v=20260709-g1-front`，其次再清理浏览器缓存。
 
 ## 下一步
 
