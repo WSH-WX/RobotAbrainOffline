@@ -2,7 +2,7 @@
 
 生成时间：2026-07-09（Asia/Singapore）
 本轮工作目录：`/Users/firmiana/Desktop/RobotAbrainOffline`
-本轮主题：将控制台任务控制页“语音交互”板块改为显示真实 STT 监听状态、声波动画和识别文本。
+本轮主题：停止“机器人状态真实 DDS 电量”改造，回退已写入仓库的功能代码。
 
 ## 项目整体描述
 
@@ -36,41 +36,33 @@
 
 ## 本轮修改摘要
 
-- `rabbitbot-dev-ros2-master/rabbitbot/control_console/status.py` 新增 `SpeechStatus` 和 STT 状态探测：端口未开或未监听时返回“未在监听”，监听中返回“正在聆听”并通过非消费式接口读取最近识别文本。
-- `rabbitbot-dev-ros2-master/rabbitbot/control_console/app.py` 的 `/api/status` 新增 `speech` 字段；任务控制页“语音交互”板块改为真实状态文案、可跳动竖线声波和识别文本显示。
-- `rabbitbot-dev-ros2-master/stt_app.py`、`stt_app1.py`、`stt_app_funasr.py` 新增 `peek_text_async`，用于查看最近识别结果且不清空工作流要消费的 `get_text_async` 输出。
-- `rabbitbot-dev-ros2-master/tests/control_console/test_status.py` 增加语音状态单元测试；`test_app.py` 增加状态接口和页面模板断言。
+- 已按用户最新要求停止继续实现真实机器人状态功能：该功能需要控制台运行环境具备 `unitree_sdk2py` / CycloneDDS 依赖，属于环境变更范畴。
+- 已回退本轮先前提交的机器人状态功能代码，当前仓库不保留 `robot_status` 接口、DDS BMS 订阅缓存、机器人状态面板改造或相关测试。
+- 服务器上曾短暂安装 `cyclonedds-dev` 及其依赖以验证 Python SDK 安装路径；收到停止指令后已卸载这些包并执行 `apt autoremove`，未继续安装 `unitree-sdk2` Python 包。
+- 未更改镜像，未重启 `rabbitbot-control-console.service`，运行中的控制台服务仍保持上一轮已部署状态。
 
 ## 日志新增或调整
 
-- 控制台查询 STT 失败时仅 `DEBUG` 记录接口、任务和异常类型；STT 返回非 JSON 或结构异常时 `WARNING` 记录必要上下文，不记录识别正文。
-- STT 新增的 `peek_text_async` 高频调用只打印文本长度和 utterance_id，不打印识别正文，避免控制台轮询把语音文本写入日志。
+- 本轮最终没有保留运行时代码改动，因此没有新增或调整运行时日志。
 
 ## 已验证事实
 
-- 本轮开始前本机与 `new-orin:/mnt/disk1/gt/RobotAbrainOffline` 均为提交 `1500f46`，分支 `air_robot_gt_projects-master`。
-- `python3 -m py_compile rabbitbot-dev-ros2-master/rabbitbot/control_console/app.py rabbitbot-dev-ros2-master/rabbitbot/control_console/status.py rabbitbot-dev-ros2-master/stt_app.py rabbitbot-dev-ros2-master/stt_app1.py rabbitbot-dev-ros2-master/stt_app_funasr.py` 通过。
-- `git diff --check` 通过。
-- 轻量脚本确认 `get_speech_status()` 在 STT 监听中会调用 `get_status_async` 与 `peek_text_async`，并返回识别文本与 utterance_id。
-- 轻量脚本确认控制台页面模板包含 `speechState`、`voiceWave`、`speechText` 和 `renderSpeechStatus`，且不再保留固定“正在聆听...”文案。
-- 本机系统 Python 缺少 `pytest`，因此未能在本机完整运行 `python3 -m pytest tests/control_console -q`。
-- 本机系统 Python 缺少 `fastapi`，因此未能在本机用 `TestClient` 导入控制台应用做完整接口 smoke；改用文件文本检查页面模板。
-- 本轮代码提交已同步到 `new-orin:/mnt/disk1/gt/RobotAbrainOffline`，服务器与本机处于同一提交。
-- 服务器上 `python3 -m py_compile rabbitbot-dev-ros2-master/rabbitbot/control_console/app.py rabbitbot-dev-ros2-master/rabbitbot/control_console/status.py rabbitbot-dev-ros2-master/stt_app.py rabbitbot-dev-ros2-master/stt_app1.py rabbitbot-dev-ros2-master/stt_app_funasr.py` 通过。
-- 已重启 `new-orin` 上的 `rabbitbot-control-console.service`，服务状态为 active。
-- 已重启正在运行的 `rabbitbot-stt` 容器，健康状态恢复为 healthy。
-- 已请求服务器控制台 `/api/status`，确认返回 `speech={"listening": false, "service_online": true, "status": "idle", "message": "未在监听", "text": "", "utterance_id": 0, "raw_status": "<REC_STOP>"}`；STT 服务状态为 `28184 在线`。
-- 已请求服务器控制台首页，确认页面包含 `speechState`、`voiceWave`、`speechText` 和 `renderSpeechStatus`，且不再包含固定“正在聆听...”文案。
+- 本轮开始前本机与 `new-orin:/mnt/disk1/gt/RobotAbrainOffline` 均为提交 `9f60859`，分支 `air_robot_gt_projects-master`。
+- 先前机器人状态功能提交 `640c6f2` 已通过 `git revert` 回退，回退提交为 `7a808c5`。
+- 服务器控制台虚拟环境与系统 Python 均无法导入 `unitree_sdk2py`；当前项目内 `unitree_sdk2` 目录为空，未发现可直接复用的 Python DDS SDK。
+- 尝试安装 `unitree-sdk2` Python 包时失败，原因是构建依赖 `cyclonedds==0.10.2` 需要本机 CycloneDDS；这确认该功能涉及环境依赖变更。
+- 已卸载本轮临时安装的 `cyclonedds-dev`、`cyclonedds-tools`、`libddsc0`、`libcycloneddsidl0` 和相关 iceoryx 包，并执行 `apt autoremove`。
+- `rabbitbot-control-console.service` 当前仍为 active；本轮停止后未重启服务。
 
 ## 阻塞与风险
 
-- 本机缺少测试依赖，完整控制台 pytest 和 FastAPI TestClient smoke 尚未在本机执行；服务器同步后可在具备项目运行环境的机器上补跑。
-- 已重启 `rabbitbot-stt` 容器加载 `peek_text_async`；如果后续改为其他 STT 进程入口，仍需确保对应进程重启后再验证识别文本显示。
+- 真实 DDS 电量读取需要在控制台运行环境中提供 `unitree_sdk2py` 与 CycloneDDS，或改为由已有机器人/导航运行环境暴露一个轻量状态接口；当前用户要求不做环境或镜像变更，因此功能停止。
+- 如果未来允许改环境，需决定依赖放在宿主控制台虚拟环境、portable 镜像，还是由已有 nav/workflow 容器提供转发接口。
 
 ## 下一步
 
-1. 浏览器刷新任务控制页，确认空闲态显示“未在监听”。
-2. 启动 STT 监听并说话，确认面板切换为“正在聆听”、竖线跳动，并显示最新识别文本。
+1. 将回退和本交接报告更新同步到 `new-orin:/mnt/disk1/gt/RobotAbrainOffline`，保持本机与服务器同一提交。
+2. 不继续实现机器人真实电量功能，除非后续明确允许环境/镜像依赖调整，或提供一个现成可调用的机器人状态数据源。
 
 ## 注意事项
 
