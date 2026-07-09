@@ -2,7 +2,7 @@
 
 生成时间：2026-07-09（Asia/Singapore）
 本轮工作目录：`/Users/firmiana/Desktop/RobotAbrainOffline`
-本轮主题：同步 fuxing 控制台能力与台词配置，保留本项目 portable 单镜像多容器部署结构。
+本轮主题：同步 fuxing 控制台能力与台词配置，并调整控制台正式操作区/开发人员选项页。
 
 ## 项目整体描述
 
@@ -37,6 +37,8 @@
 ## 本轮修改摘要
 
 - 控制台页面以 fuxing 为基准同步深色任务控制页、点位台词热更新、嘉宾称呼、当前位置回填、开机自启动按钮和静态机器人图展示。
+- 控制台正式任务区按钮收敛为同一行的“导览、返航、一键重启、关闭程序、开机自启动”；无机器人模式按钮移入新建“开发人员选项”页面。
+- “开发人员选项”页面新增当前运行日志、Workflow 日志、导航日志按钮，复用 `/api/logs` 展示对应日志。
 - 控制台后端新增/合并 `/api/dialogue/leader-calling`、`/api/dialogue/hot-rows`、`/api/autostart`，并保留本项目 `/api/start-no-robot`、`/api/service/restart`、portable 服务状态和当前运行日志接口。
 - `rabbitbot-dev-ros2-master/conf/dialogue_0.json` 已替换为 fuxing 台词；`dialogue_fuxing.json` 同步为同内容备份留档。
 - workflow 数据层新增 `reload_docx_guide_dialogue()`，`run_kuavo_agno_workflow.py` 在 go 闸门释放后刷新台词缓存，确保热更新在下一次导览读取最新台词。
@@ -55,6 +57,7 @@
 - `python3 -m json.tool rabbitbot-dev-ros2-master/conf/dialogue_0.json` 通过。
 - `python3 -m json.tool rabbitbot-dev-ros2-master/conf/dialogue_fuxing.json` 通过。
 - `python3 -m py_compile` 已覆盖控制台、dialogue、commands、workflow 数据加载、workflow 入口和测试文件，通过。
+- 本轮按钮重排后已用 `python3 -m py_compile rabbitbot-dev-ros2-master/rabbitbot/control_console/app.py rabbitbot-dev-ros2-master/tests/control_console/test_app.py` 复查通过。
 - `bash -n deploy/install_air_project.sh rabbitbot-dev-ros2-master/scripts/run_kuavo_agno_workflow.py` 通过。
 - 本机 `/Applications/Xcode.app/Contents/Developer/usr/bin/python3` 缺少 `pytest`，完整控制台 pytest 未运行。
 - 本机缺少 FastAPI 运行依赖，无法用 `TestClient` 做手工路由调用；仅完成语法/JSON/shell 静态验证。

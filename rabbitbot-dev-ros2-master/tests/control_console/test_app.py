@@ -467,11 +467,15 @@ def test_page_shows_console_without_login_form(tmp_path):
     assert 'unitree-g1-dashboard.png' in response.text
     assert '定位状态' in response.text
     assert '当前位姿' in response.text
-    assert '开始程序' in response.text
+    assert 'primary-control-actions' in response.text
     assert '开始程序(无机器人模式)' in response.text
+    assert '开发人员选项' in response.text
+    assert 'page-developer' in response.text
     assert '/api/start-no-robot' in response.text
-    assert '一键重启主循环' in response.text
+    assert '一键重启' in response.text
+    assert '一键重启主循环' not in response.text
     assert '关闭程序' in response.text
+    assert '开机自启动' in response.text
     assert '/api/start' in response.text
     assert 'startProgram' in response.text
     assert 'waitForServicesReady' in response.text
@@ -495,10 +499,14 @@ def test_page_shows_console_without_login_form(tmp_path):
     assert '/api/dialogue' in response.text
     assert '/api/dialogue/leader-calling' in response.text
     assert '/api/dialogue/hot-rows' in response.text
-    assert '显示日志' in response.text
-    assert '关闭日志' in response.text
+    assert '当前运行日志' in response.text
+    assert 'Workflow 日志' in response.text
+    assert '导航日志' in response.text
+    assert "showLog('runtime')" in response.text
+    assert "showLog('workflow')" in response.text
+    assert "showLog('nav')" in response.text
     assert 'logsVisible=false' in response.text
-    assert '<pre id="logs" class="log" hidden>' in response.text
+    assert '<pre id="logs" class="log developer-log" hidden>' in response.text
     assert 'setInterval(refreshLogs,500)' in response.text
 
 def test_restart_preserves_no_robot_mode(tmp_path):

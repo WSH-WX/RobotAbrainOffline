@@ -111,6 +111,9 @@ def _html() -> str:
   <style>
     .control-page{width:100%;max-width:none}.control-deck{position:relative;overflow:hidden;min-height:calc(100vh - 104px);padding:22px;border:1px solid #1e5f95;border-radius:16px;color:#e9f7ff;background:#06121f}.control-deck:before{content:"";position:absolute;inset:0;background:linear-gradient(90deg,rgba(29,161,242,.07) 1px,transparent 1px),linear-gradient(rgba(29,161,242,.07) 1px,transparent 1px);background-size:46px 46px;pointer-events:none}.control-deck:after{content:"";position:absolute;inset:0;background:radial-gradient(circle at 50% 45%,rgba(0,154,255,.22),transparent 34%),linear-gradient(180deg,rgba(9,37,65,.3),rgba(2,8,16,.85));pointer-events:none}.control-deck>*{position:relative;z-index:1}.control-titlebar{display:grid;grid-template-columns:1fr 220px;align-items:center;gap:16px;margin-bottom:18px}.tech-status{border:1px solid #2d7cba;background:rgba(7,28,49,.78);color:#a9c9e8;border-radius:12px;padding:11px 14px;text-align:right}.control-title{text-align:center;font-size:30px;font-weight:900;letter-spacing:3px;text-shadow:0 0 18px rgba(42,183,255,.8)}.dev-badge{display:inline-flex;align-items:center;margin-left:8px;padding:3px 8px;border:1px solid rgba(255,205,86,.65);border-radius:999px;color:#ffd666;background:rgba(95,70,12,.4);font-size:12px;font-weight:900;letter-spacing:0}.control-layout{display:grid;grid-template-columns:minmax(240px,.72fr) minmax(320px,1.2fr) minmax(260px,.88fr);gap:16px;align-items:stretch}.tech-stack{display:grid;gap:14px}.tech-card{border:1px solid rgba(61,151,218,.75);border-radius:12px;background:rgba(4,22,39,.78);box-shadow:inset 0 1px 0 rgba(124,206,255,.22),0 12px 36px rgba(0,0,0,.28);overflow:hidden}.tech-card h3{margin:0;padding:13px 16px;background:linear-gradient(90deg,rgba(25,87,145,.68),rgba(3,18,34,.2));font-size:17px;color:#cfeeff}.tech-body{padding:16px}.metric-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}.metric-number{font-size:31px;font-weight:900;color:#fff}.battery{height:36px;border:2px solid #b5f4ff;border-radius:6px;padding:3px;margin-top:8px}.battery span{display:block;height:100%;border-radius:3px;background:linear-gradient(90deg,#19d777,#57f5a6);box-shadow:0 0 18px rgba(39,242,146,.7)}.status-dot{display:inline-block;width:12px;height:12px;border-radius:50%;background:#24e07b;box-shadow:0 0 15px #24e07b;margin-right:8px}.joint-list{display:grid;gap:9px}.joint-list div{display:flex;justify-content:space-between;color:#a9c9e8}.joint-list strong{color:#4dff92}.robot-stage{min-height:520px;border:1px solid rgba(33,128,201,.5);border-radius:16px;background:radial-gradient(circle at center bottom,rgba(0,150,255,.3),transparent 30%),rgba(2,12,24,.45);display:grid;place-items:center;position:relative}.robot-stage:before{content:"";position:absolute;left:14%;right:14%;bottom:42px;height:22px;border:2px solid rgba(55,183,255,.55);border-radius:50%;box-shadow:0 0 32px rgba(55,183,255,.55)}.dev-overlay{position:absolute;top:18px;right:18px;padding:6px 12px;border:1px solid rgba(255,205,86,.65);border-radius:999px;color:#ffd666;background:rgba(16,20,28,.78);font-size:13px;font-weight:900;z-index:2}.robot-photo{position:relative;z-index:1;max-width:min(76%,430px);max-height:88%;object-fit:contain;filter:drop-shadow(0 0 28px rgba(40,183,255,.6));border-radius:12px}.task-info{display:grid;grid-template-columns:110px 1fr;gap:13px;color:#a9c9e8}.task-info strong{color:#e9f7ff}.progress-rail{height:10px;border-radius:99px;background:#0c2741;overflow:hidden}.progress-rail span{display:block;width:45%;height:100%;background:linear-gradient(90deg,#189dff,#1ee6ff);box-shadow:0 0 14px rgba(30,230,255,.9)}.map-grid{height:132px;border:1px solid rgba(67,157,220,.45);border-radius:10px;background:linear-gradient(90deg,rgba(44,151,235,.18) 1px,transparent 1px),linear-gradient(rgba(44,151,235,.18) 1px,transparent 1px);background-size:24px 24px;position:relative}.map-grid:before{content:"X-01";position:absolute;left:28%;top:52%;color:#e9f7ff}.map-grid:after{content:"";position:absolute;left:34%;right:18%;top:56%;border-top:3px dashed #1bbdff}.pin{position:absolute;right:14%;top:43%;width:18px;height:18px;border-radius:50%;background:#2ce07c;box-shadow:0 0 18px #2ce07c}.voice-wave{height:58px;background:repeating-linear-gradient(90deg,transparent 0 10px,#12caff 10px 12px,transparent 12px 18px);mask:linear-gradient(180deg,transparent 0,#000 30%,#000 70%,transparent 100%);opacity:.9}.motion-console{margin-top:16px;border:1px solid rgba(61,151,218,.75);border-radius:14px;background:rgba(5,20,37,.86);padding:18px}.motion-title{font-size:18px;font-weight:900;margin-bottom:12px}.motion-actions{display:grid;grid-template-columns:repeat(5,minmax(118px,1fr));gap:12px}.motion-actions button{min-height:64px;border:1px solid rgba(102,190,255,.55);background:rgba(17,55,89,.86);box-shadow:inset 0 0 18px rgba(24,143,255,.18)}.motion-actions .go{background:linear-gradient(180deg,#079456,#0b6842)}.motion-actions .back{background:linear-gradient(180deg,#7b1f1b,#4d1110)}.motion-actions .restart{background:linear-gradient(180deg,#0b5d98,#08385f)}.motion-actions .refresh{background:linear-gradient(180deg,#1b4a78,#102b49)}.motion-field{display:grid;grid-template-columns:minmax(240px,1fr) minmax(220px,.7fr);gap:14px;align-items:end;margin-top:14px}.motion-field .text-input{background:#061b30;border-color:#2a76ad;color:#e9f7ff}.control-message{min-height:42px;margin:0;padding:10px 12px;border:1px solid rgba(61,151,218,.4);border-radius:8px;color:#a9c9e8;background:rgba(2,10,18,.52)}@media(max-width:1180px){.control-titlebar,.control-layout,.motion-field{grid-template-columns:1fr}.tech-status{text-align:left}.motion-actions{grid-template-columns:repeat(auto-fit,minmax(140px,1fr))}.robot-stage{min-height:420px}}@media(max-width:620px){.control-deck{padding:14px}.control-title{font-size:22px}.metric-grid,.task-info{grid-template-columns:1fr}.robot-stage{min-height:360px}.robot-photo{max-width:86%}}
   </style>
+  <style>
+    .motion-actions.primary-control-actions{grid-template-columns:repeat(5,minmax(132px,1fr));min-width:760px}.motion-actions-wrap{overflow-x:auto;padding-bottom:4px}.dev-actions{display:grid;grid-template-columns:repeat(2,minmax(220px,1fr));gap:12px}.log-actions{display:flex;gap:10px;flex-wrap:wrap}.developer-log{min-height:360px;max-height:54vh}.developer-message{min-height:20px;color:#a9c9e8}.developer-panel{background:rgba(5,20,37,.86);border-color:rgba(61,151,218,.75);color:#e9f7ff}.developer-panel .panel-title{color:#e9f7ff}.developer-panel .label{color:#a9c9e8}@media(max-width:1180px){.motion-actions.primary-control-actions{grid-template-columns:repeat(5,minmax(132px,1fr))}}@media(max-width:820px){.motion-actions.primary-control-actions{grid-template-columns:repeat(5,minmax(132px,1fr))}.dev-actions{grid-template-columns:1fr}}
+  </style>
 </head>
 <body>
   <div id="app" class="shell">
@@ -121,6 +124,7 @@ def _html() -> str:
         <button class="nav-item" type="button" data-page="status" onclick="showPage('status')">机器人状态</button>
         <button class="nav-item" type="button" data-page="dialogue" onclick="showPage('dialogue')">点位台词</button>
         <button class="nav-item" type="button" data-page="models" onclick="showPage('models')">模型服务</button>
+        <button class="nav-item" type="button" data-page="developer" onclick="showPage('developer')">开发人员选项</button>
       </nav>
       <div class="sidebar-spacer"></div>
     </aside>
@@ -208,15 +212,14 @@ def _html() -> str:
             </div>
             <section class="motion-console">
               <div class="motion-title">开始任务 / 运动控制</div>
-              <div class="motion-actions">
-                <button id="startBtn" class="go" onclick="startProgram(false)">开始程序</button>
-                <button id="startNoRobotBtn" class="task" onclick="startProgram(true)">开始程序(无机器人模式)</button>
+              <div class="motion-actions-wrap">
+              <div class="motion-actions primary-control-actions">
                 <button id="guideBtn" class="go" onclick="startTask('guide')">导览</button>
-                <button id="arriveBtn" class="task" onclick="sendCommand('arrive')">到达下一个点位(无机器人模式)</button>
                 <button class="back" onclick="sendCommand('back')">返航</button>
-                <button id="restartBtn" class="restart" onclick="restartProgram()">一键重启主循环</button>
+                <button id="restartBtn" class="restart" onclick="restartProgram()">一键重启</button>
                 <button id="stopBtn" class="back" onclick="stopProgram()">关闭程序</button>
                 <button id="autostartBtn" class="refresh" onclick="toggleAutostart()">开机自启动</button>
+              </div>
               </div>
               <div class="motion-field">
                 <div>
@@ -243,10 +246,6 @@ def _html() -> str:
               <div class="label">当前位姿</div>
               <div id="pose" class="value pose-line">暂无定位位姿数据</div>
             </div>
-            <div class="actions">
-              <button id="logsToggleBtn" class="refresh" onclick="toggleLogs()">显示日志</button>
-            </div>
-            <pre id="logs" class="log" hidden></pre>
           </section>
           </div>
         </section>
@@ -305,6 +304,37 @@ def _html() -> str:
           </section>
           </div>
         </section>
+        <section id="page-developer" class="page subpage" hidden>
+          <div class="stack">
+            <section class="panel developer-panel">
+              <div class="panel-head">
+                <div>
+                  <div class="panel-title">无机器人模式</div>
+                  <div class="label">用于离线调试 workflow，不触发真实机器人导航。</div>
+                </div>
+              </div>
+              <div class="dev-actions">
+                <button id="startNoRobotBtn" class="task" onclick="startProgram(true)">开始程序(无机器人模式)</button>
+                <button id="arriveBtn" class="task" onclick="sendCommand('arrive')">到达下一个点位(无机器人模式)</button>
+              </div>
+              <p id="devMessage" class="developer-message"></p>
+            </section>
+            <section class="panel developer-panel">
+              <div class="panel-head">
+                <div>
+                  <div class="panel-title">运行日志</div>
+                  <div id="devLogSummary" class="label">未选择日志</div>
+                </div>
+                <div class="log-actions">
+                  <button class="refresh" onclick="showLog('runtime')">当前运行日志</button>
+                  <button class="refresh" onclick="showLog('workflow')">Workflow 日志</button>
+                  <button class="refresh" onclick="showLog('nav')">导航日志</button>
+                </div>
+              </div>
+              <pre id="logs" class="log developer-log" hidden></pre>
+            </section>
+          </div>
+        </section>
       </div>
     </main>
   </div>
@@ -315,8 +345,14 @@ var leaderCallingLoaded=false;
 var leaderCallingOriginal='';
 var latestPose=null;
 var logsVisible=false;
+var currentLogTarget='runtime';
 var pendingRestartUntil={};
 function setText(id,text){document.getElementById(id).textContent=text;}
+function setMessage(text){
+  setText('message',text);
+  var devMessage=document.getElementById('devMessage');
+  if(devMessage){devMessage.textContent=text;}
+}
 function showPage(page){
   var pages=document.querySelectorAll('.page');
   for(var i=0;i<pages.length;i++){pages[i].hidden=true;}
@@ -342,7 +378,7 @@ function requestJson(method,url,payload,callback){
 }
 function showError(message){
   setText('overall','读取失败');
-  setText('message',message);
+  setMessage(message);
 }
 function guideStateValue(data){return data&&data.workflow&&data.workflow.status?data.workflow.status:'unknown';}
 function guideStateLabel(state){
@@ -405,7 +441,7 @@ function restartService(key,container){
   if(container){pendingRestartUntil[container]=Date.now()+22000;}
   renderServiceStatus(lastStatus&&lastStatus.services?lastStatus.services:[]);
   requestJson('POST','/api/service/restart',{key:key},function(error,body){
-    setText('message',error?error.message:(body.message||'已提交服务重启'));
+    setMessage(error?error.message:(body.message||'已提交服务重启'));
     refresh();
   });
 }
@@ -444,18 +480,18 @@ function refresh(){
 function waitForServicesReady(button,startedAt){
   requestJson('GET','/api/status',null,function(error,data){
     if(error){
-      setText('message','正在等待服务就绪：'+error.message);
+      setMessage('正在等待服务就绪：'+error.message);
     }else{
       renderStatus(data);
       if(servicesReady(data)){
-        setText('message','所有服务已加载成功，可执行相关操作');
+        setMessage('所有服务已加载成功，可执行相关操作');
         button.disabled=false;
         return;
       }
-      setText('message','正在等待所有服务加载完成...');
+      setMessage('正在等待所有服务加载完成...');
     }
     if(Date.now()-startedAt>90000){
-      setText('message','服务仍未全部就绪，请查看状态或打开日志排查');
+      setMessage('服务仍未全部就绪，请查看状态或打开日志排查');
       button.disabled=false;
       return;
     }
@@ -630,17 +666,19 @@ function saveHotRows(){
 }
 function refreshLogs(){
   if(!logsVisible){return;}
-  requestJson('GET','/api/logs?target=runtime&lines=120',null,function(error,body){
+  requestJson('GET','/api/logs?target='+encodeURIComponent(currentLogTarget)+'&lines=160',null,function(error,body){
     var logs=document.getElementById('logs');
     if(error){logs.textContent=error.message;return;}
+    setText('devLogSummary',(body.source||body.target||currentLogTarget)+' / '+(body.path||'暂无日志文件'));
     logs.textContent=(body.lines||[]).join('\\n');
   });
 }
-function toggleLogs(){
-  logsVisible=!logsVisible;
-  document.getElementById('logs').hidden=!logsVisible;
-  setText('logsToggleBtn',logsVisible?'关闭日志':'显示日志');
-  if(logsVisible){refreshLogs();}
+function showLog(target){
+  currentLogTarget=target;
+  logsVisible=true;
+  document.getElementById('logs').hidden=false;
+  setText('devLogSummary','正在加载 '+target+' 日志...');
+  refreshLogs();
 }
 function markServiceCardsStarting(container){
   if(container){pendingRestartUntil[container]=Date.now()+22000;}
@@ -648,24 +686,24 @@ function markServiceCardsStarting(container){
 }
 function sendCommand(command){
   requestJson('POST','/api/command',{command:command},function(error,body){
-    setText('message',error?error.message:body.message);
+    setMessage(error?error.message:body.message);
     refresh();
   });
 }
 function startTask(task){
   requestJson('POST','/api/task',{task:task},function(error,body){
-    setText('message',error?error.message:body.message);
+    setMessage(error?error.message:body.message);
     refresh();
   });
 }
 function startProgram(noRobot){
-  var button=document.getElementById(noRobot?'startNoRobotBtn':'startBtn');
+  var button=document.getElementById(noRobot?'startNoRobotBtn':'startBtn')||document.getElementById('restartBtn');
   button.disabled=true;
   setText('overall','启动中');
-  setText('message',noRobot?'正在启动无机器人模式...':'正在启动导航主程序...');
+  setMessage(noRobot?'正在启动无机器人模式...':'正在启动导航主程序...');
   requestJson('POST',noRobot?'/api/start-no-robot':'/api/start',{},function(error,body){
-    if(error){setText('message',error.message);button.disabled=false;refresh();return;}
-    setText('message',body.message+'，正在等待所有服务加载完成...');
+    if(error){setMessage(error.message);button.disabled=false;refresh();return;}
+    setMessage(body.message+'，正在等待所有服务加载完成...');
     waitForServicesReady(button,Date.now());
   });
 }
@@ -675,9 +713,9 @@ function stopProgram(){
   var button=document.getElementById('stopBtn');
   button.disabled=true;
   setText('overall','关闭中');
-  setText('message','正在关闭导航主程序...');
+  setMessage('正在关闭导航主程序...');
   requestJson('POST','/api/stop',{},function(error,body){
-    setText('message',error?error.message:body.message);
+    setMessage(error?error.message:body.message);
     setTimeout(function(){button.disabled=false;refresh();},1500);
   });
 }
@@ -686,10 +724,10 @@ function toggleAutostart(){
   var enable=button.textContent.indexOf('启用')===0;
   if(!window.confirm(enable?'确定启用导航主程序开机自启动吗？':'确定关闭导航主程序开机自启动吗？')){return;}
   button.disabled=true;
-  setText('message',enable?'正在启用开机自启动...':'正在关闭开机自启动...');
+  setMessage(enable?'正在启用开机自启动...':'正在关闭开机自启动...');
   requestJson('POST','/api/autostart',{enabled:enable},function(error,body){
     button.disabled=false;
-    setText('message',error?error.message:body.message);
+    setMessage(error?error.message:body.message);
     refresh();
   });
 }
@@ -698,11 +736,11 @@ function restartProgram(){
   var button=document.getElementById('restartBtn');
   button.disabled=true;
   setText('overall','重启中');
-  setText('message','正在重新启动导航主程序...');
+  setMessage('正在重新启动导航主程序...');
   var mapPath=document.getElementById('mapPathInput').value;
   requestJson('POST','/api/restart',{map_path:mapPath},function(error,body){
-    if(error){setText('message',error.message);button.disabled=false;refresh();return;}
-    setText('message',body.message+'，正在等待所有服务加载完成...');
+    if(error){setMessage(error.message);button.disabled=false;refresh();return;}
+    setMessage(body.message+'，正在等待所有服务加载完成...');
     waitForServicesReady(button,Date.now());
   });
 }
