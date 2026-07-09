@@ -55,18 +55,22 @@
 - 轻量脚本确认控制台页面模板包含 `speechState`、`voiceWave`、`speechText` 和 `renderSpeechStatus`，且不再保留固定“正在聆听...”文案。
 - 本机系统 Python 缺少 `pytest`，因此未能在本机完整运行 `python3 -m pytest tests/control_console -q`。
 - 本机系统 Python 缺少 `fastapi`，因此未能在本机用 `TestClient` 导入控制台应用做完整接口 smoke；改用文件文本检查页面模板。
-- 服务器同步、服务重启和线上状态接口验证：待完成。
+- 本轮代码提交已同步到 `new-orin:/mnt/disk1/gt/RobotAbrainOffline`，服务器与本机处于同一提交。
+- 服务器上 `python3 -m py_compile rabbitbot-dev-ros2-master/rabbitbot/control_console/app.py rabbitbot-dev-ros2-master/rabbitbot/control_console/status.py rabbitbot-dev-ros2-master/stt_app.py rabbitbot-dev-ros2-master/stt_app1.py rabbitbot-dev-ros2-master/stt_app_funasr.py` 通过。
+- 已重启 `new-orin` 上的 `rabbitbot-control-console.service`，服务状态为 active。
+- 已重启正在运行的 `rabbitbot-stt` 容器，健康状态恢复为 healthy。
+- 已请求服务器控制台 `/api/status`，确认返回 `speech={"listening": false, "service_online": true, "status": "idle", "message": "未在监听", "text": "", "utterance_id": 0, "raw_status": "<REC_STOP>"}`；STT 服务状态为 `28184 在线`。
+- 已请求服务器控制台首页，确认页面包含 `speechState`、`voiceWave`、`speechText` 和 `renderSpeechStatus`，且不再包含固定“正在聆听...”文案。
 
 ## 阻塞与风险
 
 - 本机缺少测试依赖，完整控制台 pytest 和 FastAPI TestClient smoke 尚未在本机执行；服务器同步后可在具备项目运行环境的机器上补跑。
-- `peek_text_async` 需要 STT 服务进程重启后才会在运行态生效；如果 STT 容器仍是旧进程，控制台能显示监听状态，但识别文本会为空并记录一次兼容提示。
+- 已重启 `rabbitbot-stt` 容器加载 `peek_text_async`；如果后续改为其他 STT 进程入口，仍需确保对应进程重启后再验证识别文本显示。
 
 ## 下一步
 
-1. 提交本轮代码，随后同步到 `new-orin:/mnt/disk1/gt/RobotAbrainOffline`。
-2. 重启 `rabbitbot-control-console.service`；如 `rabbitbot-stt` 容器正在运行，也需重启 STT 容器让 `peek_text_async` 生效。
-3. 请求服务器控制台 `/api/status`，确认返回 `speech` 字段；浏览器刷新任务控制页，确认语音板块按 STT 状态显示。
+1. 浏览器刷新任务控制页，确认空闲态显示“未在监听”。
+2. 启动 STT 监听并说话，确认面板切换为“正在聆听”、竖线跳动，并显示最新识别文本。
 
 ## 注意事项
 
