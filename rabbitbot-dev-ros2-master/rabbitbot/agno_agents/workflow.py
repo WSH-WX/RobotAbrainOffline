@@ -815,6 +815,67 @@ def create_main_workflow(ctx: Any) -> Workflow:
     }
     DOCX_SCRIPT_STEPS = _load_docx_script_steps(DOCX_SCRIPT_POINT_ENTITY)
 
+    def _task_progress_path():
+        explicit_path = os.getenv("RABBITBOT_WORKFLOW_TASK_PROGRESS_FILE", "").strip()
+        if explicit_path:
+            return Path(explicit_path)
+        run_id = os.getenv("RABBITBOT_WORKFLOW_RUN_ID", "").strip()
+        if not run_id:
+            return None
+        log_dir = Path(os.getenv("RABBITBOT_LOG_DIR", Path.cwd() / "logs"))
+        return log_dir / "workflow_control" / f"{run_id}.task_progress.json"
+
+    def _docx_step_site_name(step, index):
+        if not isinstance(step, dict):
+            return f"步骤{index + 1}"
+        return str(step.get("scene") or step.get("entity") or f"步骤{index + 1}").strip() or f"步骤{index + 1}"
+
+    def _docx_next_site(index):
+        next_index = index + 1
+        if next_index >= len(DOCX_SCRIPT_STEPS):
+            return None
+        return _docx_step_site_name(DOCX_SCRIPT_STEPS[next_index], next_index)
+
+    def write_task_progress(status, current_site=None, next_site=None, completed_points=0, total_points=None, active=True):
+        progress_path = _task_progress_path()
+        if progress_path is None:
+            _workflow_log("任务进度未写入：缺少 RABBITBOT_WORKFLOW_RUN_ID")
+            return
+        if total_points is None:
+            total_points = len(DOCX_SCRIPT_STEPS)
+        try:
+            total_points = max(0, int(total_points or 0))
+            completed_points = max(0, min(int(completed_points or 0), total_points)) if total_points else 0
+        except (TypeError, ValueError):
+            total_points = 0
+            completed_points = 0
+        payload = {
+            "active": bool(active),
+            "task_name": "展厅导览" if active else "待命",
+            "status": str(status or "idle"),
+            "current_site": current_site or "",
+            "next_site": next_site or "",
+            "completed_points": completed_points,
+            "total_points": total_points,
+            "run_id": os.getenv("RABBITBOT_WORKFLOW_RUN_ID", "").strip(),
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        tmp_path = progress_path.with_suffix(progress_path.suffix + ".tmp")
+        try:
+            progress_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
+            os.replace(tmp_path, progress_path)
+            _workflow_log(
+                "任务进度已更新: "
+                f"status={payload['status']}, completed={completed_points}/{total_points}, "
+                f"current={payload['current_site'] or '未知'}, next={payload['next_site'] or '未知'}, path={progress_path}"
+            )
+        except OSError as exc:
+            _workflow_log(
+                "任务进度写入失败: "
+                f"status={payload['status']}, path={progress_path}, error_type={type(exc).__name__}, error={exc}"
+            )
+
     def scripted_tour_enabled():
         value = os.getenv("RABBITBOT_SCRIPTED_TOUR", "1").strip().lower()
         return value not in {"0", "false", "no", "off", "skip"}
@@ -879,6 +940,7 @@ def create_main_workflow(ctx: Any) -> Workflow:
             return
         ctx.scripted_tour_started = True
         ctx.pre_guide_qa_mode = False
+        write_task_progress("guide_running", current_site=getattr(ctx, "current_entity_name", None), next_site=_docx_next_site(-1), completed_points=0, active=True)
         trigger_len = len((trigger_text or "").strip())
         opening_enabled = os.getenv("RABBITBOT_ENABLE_GUIDE_OPENING", "1")
         _workflow_log(f"语音口令启动导览: trigger_len={trigger_len}, opening_enabled={opening_enabled}")
@@ -928,6 +990,7 @@ def create_main_workflow(ctx: Any) -> Workflow:
             ctx.docx_script_elapsed_finish_printed = False
             ctx.docx_script_elapsed_seconds = None
         ctx.docx_total_profile_span = _profile_start("docx_total")
+        write_task_progress("guide_running", current_site=getattr(ctx, "current_entity_name", None), next_site=_docx_next_site(-1), completed_points=0, active=True)
         _workflow_log("初始化 DOCX 剧本演出状态", verbose=True)
 
     def format_docx_script_text(text):
@@ -1352,24 +1415,29 @@ def create_main_workflow(ctx: Any) -> Workflow:
     async def navigate_docx_script_step(step, step_index):
         entity_name = step.get("entity")
         scene = step.get("scene", entity_name)
+        site_name = _docx_step_site_name(step, step_index)
         span_token = _profile_start("navigation", step_index=step_index, scene=scene, entity=entity_name)
         if not entity_name:
+            write_task_progress("arrived", current_site=site_name, next_site=_docx_next_site(step_index), completed_points=step_index + 1, active=True)
             _profile_end(span_token, step_index=step_index, scene=scene, entity=entity_name, status=NavigationStatus.SUCCEEDED)
             return NavigationStatus.SUCCEEDED
 
         if step.get("skip_navigation_if_current") and getattr(ctx, "current_entity_name", None) == entity_name:
+            write_task_progress("arrived", current_site=site_name, next_site=_docx_next_site(step_index), completed_points=step_index + 1, active=True)
             _profile_end(span_token, step_index=step_index, scene=scene, entity=entity_name, status=NavigationStatus.SUCCEEDED, skipped=True)
             return NavigationStatus.SUCCEEDED
 
         entity = load_docx_script_entity(entity_name)
         if entity is None:
             print(f"DOCX 剧本展点不存在或缺少点位配置: {entity_name}")
+            write_task_progress("guide_running", current_site=getattr(ctx, "current_entity_name", None), next_site=site_name, completed_points=step_index, active=True)
             _profile_end(span_token, step_index=step_index, scene=scene, entity=entity_name, status=NavigationStatus.ABORTED, error="entity_missing")
             return NavigationStatus.ABORTED
 
         location_points = _extract_location_points(entity)
         if not location_points:
             print(f"DOCX 剧本展点缺少可用导航点位: {entity_name}")
+            write_task_progress("guide_running", current_site=getattr(ctx, "current_entity_name", None), next_site=site_name, completed_points=step_index, active=True)
             _profile_end(span_token, step_index=step_index, scene=scene, entity=entity_name, status=NavigationStatus.ABORTED, error="location_missing")
             return NavigationStatus.ABORTED
         _workflow_log(f"DOCX 剧本导航目标: step={step_index}, scene={scene}, entity={entity_name}, points={len(location_points)}")
@@ -1395,6 +1463,7 @@ def create_main_workflow(ctx: Any) -> Workflow:
         enable_navi = os.getenv("RABBITBOT_ENABLE_NAVI", "1").strip().lower() not in {"0", "false", "no", "off"}
         navi_status = NavigationStatus.SUCCEEDED
         if enable_navi:
+            write_task_progress("navigating", current_site=getattr(ctx, "current_entity_name", None), next_site=site_name, completed_points=step_index, active=True)
             if _workflow_non_integration_enabled():
                 speech_result = await speak_docx_script_navigation_segments(step, step.get("scene", entity_name))
                 if speech_result:
@@ -1423,6 +1492,9 @@ def create_main_workflow(ctx: Any) -> Workflow:
         if navi_status == NavigationStatus.SUCCEEDED:
             set_current_entity_name(entity_name)
             ctx.docx_script_nav_done_step = step_index
+            write_task_progress("arrived", current_site=site_name, next_site=_docx_next_site(step_index), completed_points=step_index + 1, active=True)
+        else:
+            write_task_progress("guide_running", current_site=getattr(ctx, "current_entity_name", None), next_site=site_name, completed_points=step_index, active=True)
         _profile_end(span_token, step_index=step_index, scene=scene, entity=entity_name, status=navi_status)
         return navi_status
 
@@ -1439,6 +1511,7 @@ def create_main_workflow(ctx: Any) -> Workflow:
         step_index = getattr(ctx, "docx_script_step_index", 0)
         if step_index >= len(DOCX_SCRIPT_STEPS):
             ctx.docx_script_done = True
+            write_task_progress("finished", current_site=getattr(ctx, "current_entity_name", None), next_site=None, completed_points=len(DOCX_SCRIPT_STEPS), active=False)
             _profile_end(getattr(ctx, "docx_total_profile_span", None), status="finished")
             ctx.docx_total_profile_span = None
             _finish_docx_script_elapsed_timer(ctx, reason="script_index_finished")
@@ -1565,6 +1638,7 @@ def create_main_workflow(ctx: Any) -> Workflow:
         if ctx.docx_script_step_index >= len(DOCX_SCRIPT_STEPS):
             ctx.docx_script_done = True
             ctx.post_docx_chat_mode = False
+            write_task_progress("finished", current_site=scene, next_site=None, completed_points=len(DOCX_SCRIPT_STEPS), active=False)
             _profile_end(getattr(ctx, "docx_total_profile_span", None), status="finished")
             ctx.docx_total_profile_span = None
             _finish_docx_script_elapsed_timer(ctx, reason="script_finished")
@@ -1590,6 +1664,7 @@ def create_main_workflow(ctx: Any) -> Workflow:
         index = getattr(ctx, "scripted_tour_index", 0)
         if index >= len(entity_order):
             ctx.scripted_tour_done = True
+            write_task_progress("finished", current_site=getattr(ctx, "current_entity_name", None), next_site=None, completed_points=len(entity_order), total_points=len(entity_order), active=False)
             await _do_arm_async_timed(ctx.robot, "high_wave")
             leader_info = getattr(ctx, "leader_info", {}) or {}
             leader_calling = leader_info.get("leader_calling") or _docx_guide_leader_calling()
@@ -1610,6 +1685,7 @@ def create_main_workflow(ctx: Any) -> Workflow:
             and getattr(ctx, "current_entity_name", None) == entity_name
         )
         if not already_arrived:
+            write_task_progress("navigating", current_site=getattr(ctx, "current_entity_name", None), next_site=entity_name, completed_points=index, total_points=len(entity_order), active=True)
             guide_text = build_scripted_intro(entity_name)
             tts_sound(tts_agent, f"{before_text}{guide_text}", "zh")
             tts_wait(tts_agent)
@@ -1646,7 +1722,11 @@ def create_main_workflow(ctx: Any) -> Workflow:
 
             set_current_entity_name(entity_name)
             ctx.scripted_tour_arrived_index = index
+            next_entity_name = entity_order[index + 1] if index + 1 < len(entity_order) else None
+            write_task_progress("arrived", current_site=entity_name, next_site=next_entity_name, completed_points=index + 1, total_points=len(entity_order), active=True)
         else:
+            next_entity_name = entity_order[index + 1] if index + 1 < len(entity_order) else None
+            write_task_progress("arrived", current_site=entity_name, next_site=next_entity_name, completed_points=index + 1, total_points=len(entity_order), active=True)
             tts_sound(tts_agent, f"{before_text}我们继续刚才的介绍。", "zh")
             tts_wait(tts_agent)
 

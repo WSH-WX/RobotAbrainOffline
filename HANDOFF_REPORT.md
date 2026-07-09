@@ -2,7 +2,7 @@
 
 生成时间：2026-07-09（Asia/Singapore）
 本轮工作目录：`/Users/firmiana/Desktop/RobotAbrainOffline`
-本轮主题：将控制台封面图替换为带场景背景的宇树 G1 展示图。
+本轮主题：让控制台任务控制页显示真实导览任务进度，并移除“开发中”标识。
 
 ## 项目整体描述
 
@@ -36,36 +36,41 @@
 
 ## 本轮修改摘要
 
-- 替换 `rabbitbot-dev-ros2-master/rabbitbot/control_console/static/unitree-g1-dashboard.png`。
-- 新图为宇树 G1 正面机器人主体与深蓝机器人展台背景的合成图，保持原资源路径和 `1024x1536` 画布尺寸。
-- 使用内置 `imagegen` 生成无文字、无机器人主体的深蓝展台背景，再将现有 G1 主体本地合成进去，避免生成模型改变机器人形态。
-- 合成前对机器人 alpha 边缘做 1px 收缩、轻微羽化和白底反推去边，减少旧抠图白色毛边。
-- 控制台首页图片引用更新为 `?v=20260709-g1-scene` 版本参数，用于绕过浏览器旧图缓存。
-- 素材来自网络检索到的 G1 正面产品图，白底来源页为 RoboStore 的 Unitree G1 商品页；另核对过 Unitree 官方 G1 页面作为产品外观参考。
-- 本轮未修改控制台后端逻辑、部署脚本或运行配置。
+- `rabbitbot-dev-ros2-master/rabbitbot/agno_agents/workflow.py` 新增导览任务进度写出：每个 workflow run 在控制目录生成 `<run_id>.task_progress.json`，记录是否有活动任务、当前/下一站点、已完成点位数、总点位数和更新时间。
+- 严格 DOCX 导览路径在导览开始、前往点位、到达点位、点位失败/跳过和导览结束时更新进度；旧脚本化导览路径也同步写出基本进度。
+- `rabbitbot-dev-ros2-master/rabbitbot/control_console/status.py` 新增任务进度读取，缺失、损坏或读取失败时回退为空进度并记录诊断日志。
+- `rabbitbot-dev-ros2-master/rabbitbot/control_console/app.py` 的 `/api/status` 返回 `task_progress`，任务控制页“任务信息”板块改为动态渲染：工作流未启动、待命、展厅导览、前往下一站点、当前站点、下一站点和真实进度条。
+- 删除任务控制页所有可见“开发中”标签，并删除“预计状态”行；服务状态摘要保留为“读取中/在线数量”样式。
+- `rabbitbot-dev-ros2-master/scripts_1/start_nav_bridge_workflow_loop.sh` 清理 workflow 控制目录时同步删除旧任务进度 JSON。
+- 新增控制台状态相关测试，覆盖任务进度文件读取和 `/api/status` 返回任务进度。
 
 ## 日志新增或调整
 
-- 本轮仅替换静态图片资源，没有新增或调整运行时日志。
+- workflow 写任务进度成功时记录 INFO 级诊断日志，包含状态、完成点位数、当前/下一站点和进度文件路径。
+- workflow 写任务进度失败时记录路径、状态和原始异常类型/消息，导览流程继续运行。
+- 控制台读取任务进度 JSON 失败或格式非法时记录 warning/debug 级诊断日志，并回退为空进度，避免页面异常。
 
 ## 已验证事实
 
-- 本地已用 Pillow 打开新封面图，确认路径为 `rabbitbot-dev-ros2-master/rabbitbot/control_console/static/unitree-g1-dashboard.png`，尺寸 `(1024, 1536)`，模式 `RGB`。
-- 本地已人工预览合成效果：机器人主体居中，背景不抢主体，边缘白色毛边已明显收敛。
-- 本轮开始前本地与 `new-orin` 均为提交 `e5067ee`。
-- 本轮修改前本地 Git 工作区为空。
+- 本轮开始前本机与 `new-orin:/mnt/disk1/gt/RobotAbrainOffline` 均为提交 `a0dddc8`，分支 `air_robot_gt_projects-master`，工作区干净。
+- `python3 -m py_compile rabbitbot/agno_agents/workflow.py rabbitbot/control_console/app.py rabbitbot/control_console/status.py` 通过。
+- `bash -n rabbitbot-dev-ros2-master/scripts_1/start_nav_bridge_workflow_loop.sh` 通过。
+- `git diff --check` 通过。
+- 轻量脚本验证 `get_task_progress()` 可读取当前 run 的任务进度 JSON。
+- 轻量脚本确认控制台页面模板不再包含“开发中”和“预计状态”，并包含任务进度所需 DOM id。
+- 本机系统 Python 缺少 `fastapi` 和 `pytest`，因此未能在本机完整运行 `python3 -m pytest tests/control_console -q`。
 
 ## 阻塞与风险
 
-- 新图来自第三方商品页的白底产品图，并非项目自有拍摄素材；如现场有版权或品牌素材要求，应替换为授权图片。
-- 机器人主体仍来自低分辨率白底产品图，边缘已本地修整但不是专业人工精修。
-- 如果浏览器仍显示旧图，优先确认页面 HTML 中图片地址是否包含 `?v=20260709-g1-scene`，其次再清理浏览器缓存。
+- 本机缺少测试依赖，完整控制台 pytest 尚未在本机执行；服务器同步后可在具备项目运行环境的机器上补跑。
+- 任务进度依赖 workflow 正常写出 `<run_id>.task_progress.json`；若 workflow 未启动或尚未开始导览，控制台按需求显示“工作流未启动”或“待命”并保持空进度条。
+- 当前总点位数按 workflow 加载的导览步骤数计算，严格 DOCX 路径包含中转点位。
 
 ## 下一步
 
-1. 同步提交到 GitHub 后，在 `new-orin` 拉取更新并重启控制台服务。
-2. 在控制台页面刷新缓存后确认封面图显示为带展台背景的 G1 正面图。
-3. 如后续获得现场拍摄或官方授权透明图，可继续替换同一路径静态资源。
+1. 完成本轮 Git 提交并同步到 `new-orin:/mnt/disk1/gt/RobotAbrainOffline`。
+2. 重启 `new-orin` 上的 `rabbitbot-control-console.service`。
+3. 现场启动导览后，在任务控制页确认当前任务、进度条、当前站点和下一站点随 workflow 变化。
 
 ## 注意事项
 

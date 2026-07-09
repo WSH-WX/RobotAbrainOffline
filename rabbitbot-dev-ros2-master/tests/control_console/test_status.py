@@ -3,7 +3,9 @@ import time
 
 from rabbitbot.control_console.config import ConsoleConfig
 from rabbitbot.control_console.status import (
+    WorkflowStatus,
     get_latest_workflow_status,
+    get_task_progress,
     latest_file,
     get_tail_lines,
     parse_latest_pose,
@@ -121,6 +123,37 @@ def test_get_latest_workflow_status_handles_missing_directory(tmp_path):
     assert workflow.run_id is None
     assert workflow.status == "unknown"
     assert workflow.ready is False
+
+
+def test_get_task_progress_reads_current_run_progress(tmp_path):
+    control = tmp_path / "workflow_control"
+    control.mkdir()
+    (control / "20260609_100000.task_progress.json").write_text(
+        '{"active":true,"task_name":"展厅导览","status":"navigating","current_site":"点位1","next_site":"点位2","completed_points":2,"total_points":5,"updated_at":"2026-06-09T10:00:00"}\n',
+        encoding="utf-8",
+    )
+    workflow = WorkflowStatus(run_id="20260609_100000", status="running", ready=True)
+
+    progress = get_task_progress(control, workflow)
+
+    assert progress.active is True
+    assert progress.task_name == "展厅导览"
+    assert progress.status == "navigating"
+    assert progress.current_site == "点位1"
+    assert progress.next_site == "点位2"
+    assert progress.completed_points == 2
+    assert progress.total_points == 5
+
+
+def test_get_task_progress_returns_empty_progress_without_file(tmp_path):
+    workflow = WorkflowStatus(run_id="20260609_100000", status="running", ready=True)
+
+    progress = get_task_progress(tmp_path, workflow)
+
+    assert progress.active is False
+    assert progress.task_name == "待命"
+    assert progress.completed_points == 0
+    assert progress.total_points == 0
 
 
 def test_latest_file_ignores_future_mtime_when_current_log_exists(tmp_path):

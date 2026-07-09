@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import json
 from pathlib import Path
 import logging
 import os
@@ -55,6 +56,22 @@ class WorkflowStatus:
     pid: str | None = None
     exit_code: str | None = None
     finished_at: str | None = None
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class TaskProgress:
+    active: bool = False
+    task_name: str = "待命"
+    status: str = "idle"
+    current_site: str | None = None
+    next_site: str | None = None
+    completed_points: int = 0
+    total_points: int = 0
+    updated_at: str | None = None
+    run_id: str | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -305,6 +322,58 @@ def get_latest_workflow_status(control_dir: Path) -> WorkflowStatus:
         pid=_read_text(control_dir / f"{run_id}.pid"),
         exit_code=exit_code,
         finished_at=finished_at,
+    )
+
+
+def _bounded_int(value, default: int = 0) -> int:
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def get_task_progress(control_dir: Path, workflow: WorkflowStatus) -> TaskProgress:
+    if not workflow.run_id:
+        return TaskProgress()
+
+    path = control_dir / f"{workflow.run_id}.task_progress.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        logger.debug("当前 workflow 尚无任务进度文件：run_id=%s, path=%s", workflow.run_id, path)
+        return TaskProgress(run_id=workflow.run_id)
+    except json.JSONDecodeError as exc:
+        logger.warning(
+            "任务进度 JSON 解析失败，回退为空进度：run_id=%s, path=%s, line=%s, column=%s, message=%s",
+            workflow.run_id,
+            path,
+            exc.lineno,
+            exc.colno,
+            exc.msg,
+        )
+        return TaskProgress(run_id=workflow.run_id)
+    except OSError as exc:
+        logger.warning("读取任务进度文件失败，回退为空进度：run_id=%s, path=%s, error=%s", workflow.run_id, path, exc)
+        return TaskProgress(run_id=workflow.run_id)
+
+    if not isinstance(data, dict):
+        logger.warning("任务进度文件根节点非法，回退为空进度：run_id=%s, path=%s, actual_type=%s", workflow.run_id, path, type(data).__name__)
+        return TaskProgress(run_id=workflow.run_id)
+
+    total_points = _bounded_int(data.get("total_points"))
+    completed_points = min(_bounded_int(data.get("completed_points")), total_points) if total_points else 0
+    status = str(data.get("status") or "idle").strip() or "idle"
+    active = bool(data.get("active"))
+    return TaskProgress(
+        active=active,
+        task_name=str(data.get("task_name") or ("展厅导览" if active else "待命")),
+        status=status,
+        current_site=str(data.get("current_site") or "").strip() or None,
+        next_site=str(data.get("next_site") or "").strip() or None,
+        completed_points=completed_points,
+        total_points=total_points,
+        updated_at=str(data.get("updated_at") or "").strip() or None,
+        run_id=workflow.run_id,
     )
 
 

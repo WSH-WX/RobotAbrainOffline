@@ -673,7 +673,7 @@ cleanup_stale_workflow_control_files() {
     set +e
     deleted_output="$(find "${HOST_WORKFLOW_CONTROL_DIR}" -maxdepth 1 -type f \( \
         -name "*.status" -o -name "*.pid" -o -name "*.ready" -o -name "*.exit_code" -o \
-        -name "*.finished_at" -o -name "*.go" -o -name "*.arrive" -o -name "workflow_runner_*.sh" \) -print -delete 2>&1)"
+        -name "*.finished_at" -o -name "*.go" -o -name "*.arrive" -o -name "*.task_progress.json" -o -name "workflow_runner_*.sh" \) -print -delete 2>&1)"
     find_status=$?
     set -e
 
@@ -985,12 +985,12 @@ launch_workflow_detached() {
     current_host_manual_arrival_file="${current_host_control_dir}/${current_run_id}.arrive"
 
     mkdir -p "${current_host_control_dir}" "$(dirname "${current_host_workflow_log}")"
-    rm -f "${current_status_file}" "${current_exit_code_file}" "${current_pid_file}" "${current_finished_at_file}" "${current_host_gate_file}" "${current_host_gate_ready_file}" "${current_host_return_request_file}" "${current_host_manual_arrival_file}"
+    rm -f "${current_status_file}" "${current_exit_code_file}" "${current_pid_file}" "${current_finished_at_file}" "${current_host_gate_file}" "${current_host_gate_ready_file}" "${current_host_return_request_file}" "${current_host_manual_arrival_file}" "${current_host_control_dir}/${current_run_id}.task_progress.json"
     if ! : >"${current_host_workflow_log}"; then
         log_error "无法创建 workflow 宿主日志：${current_host_workflow_log}，请检查目录权限"
         return 1
     fi
-    docker exec "${CONTAINER_NAME}" bash -lc "mkdir -p '${current_control_dir}' '$(dirname "${current_workflow_log}")' && rm -f '${current_control_dir}/${current_run_id}.status' '${current_control_dir}/${current_run_id}.exit_code' '${current_control_dir}/${current_run_id}.pid' '${current_control_dir}/${current_run_id}.finished_at' '${current_gate_file}' '${current_gate_ready_file}' '${current_return_request_file}' '${current_manual_arrival_file}'" >/dev/null
+    docker exec "${CONTAINER_NAME}" bash -lc "mkdir -p '${current_control_dir}' '$(dirname "${current_workflow_log}")' && rm -f '${current_control_dir}/${current_run_id}.status' '${current_control_dir}/${current_run_id}.exit_code' '${current_control_dir}/${current_run_id}.pid' '${current_control_dir}/${current_run_id}.finished_at' '${current_control_dir}/${current_run_id}.task_progress.json' '${current_gate_file}' '${current_gate_ready_file}' '${current_return_request_file}' '${current_manual_arrival_file}'" >/dev/null
 
     local start_ms
     local dialogue_config

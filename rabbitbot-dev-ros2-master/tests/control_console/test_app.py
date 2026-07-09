@@ -122,6 +122,43 @@ def test_status_returns_map_and_pose_without_login(tmp_path):
     assert body["pose"]["x"] == 1.0
 
 
+def test_status_returns_task_progress_for_current_workflow(tmp_path, monkeypatch):
+    from rabbitbot.control_console import app as app_mod
+
+    monkeypatch.setattr(app_mod, "detect_main_loop_running", lambda: "running")
+    config = make_config(tmp_path)
+    (config.workflow_control_dir / "20260609_100000.status").write_text("running\n", encoding="utf-8")
+    (config.workflow_control_dir / "20260609_100000.ready").write_text("ready\n", encoding="utf-8")
+    (config.workflow_control_dir / "20260609_100000.task_progress.json").write_text(
+        json.dumps(
+            {
+                "active": True,
+                "task_name": "展厅导览",
+                "status": "navigating",
+                "current_site": "点位1",
+                "next_site": "点位2",
+                "completed_points": 1,
+                "total_points": 4,
+                "updated_at": "2026-06-09T10:00:00",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    client = TestClient(create_app(config))
+
+    response = client.get("/api/status")
+
+    assert response.status_code == 200
+    progress = response.json()["task_progress"]
+    assert progress["active"] is True
+    assert progress["status"] == "navigating"
+    assert progress["current_site"] == "点位1"
+    assert progress["next_site"] == "点位2"
+    assert progress["completed_points"] == 1
+    assert progress["total_points"] == 4
+
+
 def test_command_rejects_quit_without_login(tmp_path):
     client = TestClient(create_app(make_config(tmp_path)))
 
