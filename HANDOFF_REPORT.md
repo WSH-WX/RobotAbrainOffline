@@ -2,7 +2,7 @@
 
 生成时间：2026-07-09（Asia/Singapore）
 本轮工作目录：`/Users/firmiana/Desktop/RobotAbrainOffline`
-本轮主题：同步 fuxing 控制台能力与台词配置，并调整控制台正式操作区/开发人员选项页。
+本轮主题：在 new-orin 上使用 `build_grid_map.py` 将两份 PCD 点云转换为二维占据地图。
 
 ## 项目整体描述
 
@@ -36,51 +36,43 @@
 
 ## 本轮修改摘要
 
-- 控制台页面以 fuxing 为基准同步深色任务控制页、点位台词热更新、嘉宾称呼、当前位置回填、开机自启动按钮和静态机器人图展示。
-- 控制台正式任务区按钮收敛为同一行的“导览、返航、一键重启、关闭程序、开机自启动”；无机器人模式按钮移入新建“开发人员选项”页面。
-- “开发人员选项”页面新增当前运行日志、Workflow 日志、导航日志和所有 compose 服务日志按钮，复用 `/api/logs` 展示对应日志。
-- `/api/logs` 新增 `service-*` 目标，支持读取 Neo4j、VLM、Embedding、TTS、STT、Memory、Workflow、NavBridge 容器日志；Embedding 复用 VLM 容器日志。
-- 控制台后端新增/合并 `/api/dialogue/leader-calling`、`/api/dialogue/hot-rows`、`/api/autostart`，并保留本项目 `/api/start-no-robot`、`/api/service/restart`、portable 服务状态和当前运行日志接口。
-- `rabbitbot-dev-ros2-master/conf/dialogue_0.json` 已替换为 fuxing 台词；`dialogue_fuxing.json` 同步为同内容备份留档。
-- workflow 数据层新增 `reload_docx_guide_dialogue()`，`run_kuavo_agno_workflow.py` 在 go 闸门释放后刷新台词缓存，确保热更新在下一次导览读取最新台词。
-- `deploy/install_air_project.sh` 生成的 sudoers 增加 `enable/disable/is-enabled rabbitbot-loop.service` 权限，未引入 fuxing 旧路径 unit。
-- 控制台测试补充 leader-calling、hot-rows、autostart、静态图和页面断言。
+- `unitree_slam_example_new/global_nav/build_grid_map.py` 新增 PCD 直接读取路径：对 `.pcd` 使用 `numpy` 解析 PCD 头和 `binary/ascii` 点数据；非 PCD 仍沿用原有 `open3d` 读取。
+- 远端 `new-orin:/mnt/disk1/gt/RobotAbrainOffline/unitree_slam_example_new/global_nav/build_grid_map.py` 已同步该脚本。
+- 已在 `new-orin` 生成两份二维占据地图：
+  - `/mnt/disk1/gt/RobotAbrainOffline/maps/global_map_20260708_124133_grid.npz`
+  - `/mnt/disk1/gt/RobotAbrainOffline/maps/global_map_20260708_124133_edited_grid.npz`
+- 脚本自动生成了两份调试图：
+  - `/mnt/disk1/gt/RobotAbrainOffline/maps/global_map_20260708_124133_grid.png`
+  - `/mnt/disk1/gt/RobotAbrainOffline/maps/global_map_20260708_124133_edited_grid.png`
+- 转换参数均为：`resolution=0.10`、`z_min=-0.20`、`z_max=1.50`、`inflation_radius=0.45`。
 
 ## 日志新增或调整
 
-- `rabbitbot.control_console.commands` 新增开机自启动查询/设置 INFO 日志，失败记录 ERROR 并保留命令上下文。
-- `rabbitbot.control_console.dialogue` 同步 fuxing 的台词读写、备份、嘉宾称呼校验、点位热更新读写日志；不记录完整台词正文。
-- `rabbitbot.control_console.app` 对当前运行日志清空、服务容器后台重启提交/失败、开机自启动查询失败降级返回增加诊断日志。
-- `rabbitbot.control_console.app` 新增服务容器日志读取 INFO/ERROR 日志，记录容器名、行数、退出码和错误尾部，不记录密钥。
-- `rabbitbot.agno_agents.workflow_data` 在台词缓存刷新时记录 reason、台词文件路径、steps/points 数量。
+- `build_grid_map.py` 新增 `logging`，默认 INFO 级别。
+- 转换开始时记录输入文件、输出文件、分辨率、高度过滤范围和膨胀半径。
+- 读取 PCD 时记录文件路径、声明点数和数据格式；不记录原始点云数据。
+- 非 PCD 且缺少 `open3d` 时保留原始导入异常链，便于诊断依赖问题。
 
 ## 已验证事实
 
-- `python3 -m json.tool rabbitbot-dev-ros2-master/conf/dialogue_0.json` 通过。
-- `python3 -m json.tool rabbitbot-dev-ros2-master/conf/dialogue_fuxing.json` 通过。
-- `python3 -m py_compile` 已覆盖控制台、dialogue、commands、workflow 数据加载、workflow 入口和测试文件，通过。
-- 本轮按钮重排后已用 `python3 -m py_compile rabbitbot-dev-ros2-master/rabbitbot/control_console/app.py rabbitbot-dev-ros2-master/tests/control_console/test_app.py` 复查通过。
-- 本轮服务日志选项扩展后再次用 `python3 -m py_compile rabbitbot-dev-ros2-master/rabbitbot/control_console/app.py rabbitbot-dev-ros2-master/tests/control_console/test_app.py` 复查通过。
-- `bash -n deploy/install_air_project.sh rabbitbot-dev-ros2-master/scripts/run_kuavo_agno_workflow.py` 通过。
-- 本机 `/Applications/Xcode.app/Contents/Developer/usr/bin/python3` 缺少 `pytest`，完整控制台 pytest 未运行。
-- 本机缺少 FastAPI 运行依赖，无法用 `TestClient` 做手工路由调用；仅完成语法/JSON/shell 静态验证。
-- GitHub `origin/air_robot_gt_projects-master` 已更新到本轮提交；new-orin 已通过 git bundle 同步到同一提交。
-- new-orin 上 `docker compose config --services` 显示 `neo4j,rabbitbot-vlm,rabbitbot-memory,rabbitbot-navbridge,rabbitbot-stt,rabbitbot-tts,rabbitbot-workflow`，配置中旧路径 `/mnt/ssd/navgation`、`/mnt/disk1/gt/air_robot_gt_projects` 和 `fuxing` 计数为 0。
-- new-orin 已重新安装正式 systemd unit/sudoers；`rabbitbot-control-console.service` 指向 `/mnt/disk1/gt/RobotAbrainOffline/rabbitbot-dev-ros2-master` 并处于 active。
-- new-orin 正式控制台 `127.0.0.1:8080` 页面包含“双足机器人导览系统”“点位台词热更新”和 `unitree-g1-dashboard.png`；静态图 HEAD 返回 `200 OK image/png`；`/api/status` 返回 `200 OK`。
-- new-orin `/api/start-no-robot` 短跑通过：`workflow.status=waiting_for_go`、`ready=true`、`no_robot_mode=true`；验证后已停止 `rabbitbot-loop.service`。
+- 本地 `python3 -m py_compile unitree_slam_example_new/global_nav/build_grid_map.py` 通过。
+- 远端 `python3 -m py_compile unitree_slam_example_new/global_nav/build_grid_map.py` 通过。
+- `new-orin` 缺少 `open3d`，但存在 `numpy 1.26.4` 和 `Pillow 9.0.1`；本轮 PCD 读取不依赖 `open3d`。
+- `/mnt/disk1/gt/RobotAbrainOffline/maps/global_map_20260708_124133.pcd` 声明点数为 `243037`，已转换为 `global_map_20260708_124133_grid.npz`；栅格形状 `(914, 747)`，占据单元 `83076`，原点 `[-45.643035888671875, -28.656492233276367]`，分辨率 `[0.1]`。
+- `/mnt/disk1/gt/RobotAbrainOffline/maps/global_map_20260708_124133_edited.pcd` 声明点数为 `79074`，已转换为 `global_map_20260708_124133_edited_grid.npz`；栅格形状 `(629, 434)`，占据单元 `26551`，原点 `[-24.151477813720703, -19.83965492248535]`，分辨率 `[0.1]`。
+- 两个 `.npz` 均已用 `numpy.load` 读取并确认包含 `occupancy`、`origin`、`resolution`。
 
 ## 阻塞与风险
 
-- 本地 Python 缺少 `pytest`、FastAPI 等测试依赖，`PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest rabbitbot-dev-ros2-master/tests/control_console` 未能运行。
-- 真机移动闭环、DDS 网卡、真实地图 `/home/unitree/test9.pcd`、TTS/STT/VLM/Memory 健康状态未在本轮本机验证。
-- `runtime/portable.env` 和模型缓存完整性未做逐项审计；现场基础服务在控制台状态接口中为在线。
+- 本轮未验证规划器是否能直接消费新生成的 `.npz`，只验证了地图文件可生成并可读取。
+- `maps/` 在远端 Git 状态中仍为未跟踪目录，包含输入 PCD 和输出地图；本轮不提交这些地图产物，避免把现场大文件纳入代码提交。
+- 非 PCD 点云仍需要 `open3d`；`new-orin` 当前未安装该依赖。
 
 ## 下一步
 
-1. 在可用 Python 环境安装测试依赖后运行 `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest rabbitbot-dev-ros2-master/tests/control_console`。
-2. 在 new-orin 继续验证 leader-calling、hot-rows 和 autostart API 的实际页面操作。
-3. 按现场需要再做真机环境验证；不做真实机器人移动闭环，除非另行要求。
+1. 如需导航规划，使用新生成的 `.npz` 作为 `plan_nav_2d.py` 或动态规划脚本的 `--map` 输入做路径验证。
+2. 如需长期支持 PLY 或其它点云格式，在 `new-orin` 安装 `open3d` 或补充对应格式的直接解析逻辑。
+3. 如地图产物需要纳入发布流程，先确认仓库是否应追踪 `maps/` 及其文件大小策略。
 
 ## 注意事项
 
