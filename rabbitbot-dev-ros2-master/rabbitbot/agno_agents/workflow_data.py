@@ -38,6 +38,16 @@ def _load_docx_guide_dialogue():
         cache=_DOCX_GUIDE_DIALOGUE_CACHE,
         default_index=DOCX_GUIDE_DIALOGUE_DEFAULT_INDEX,
     )
+def reload_docx_guide_dialogue(reason="manual"):
+    _DOCX_GUIDE_DIALOGUE_CACHE["path"] = None
+    _DOCX_GUIDE_DIALOGUE_CACHE["data"] = None
+    data = _load_docx_guide_dialogue()
+    _workflow_log(
+        "DOCX 导览台词缓存已刷新: "
+        f"reason={reason}, path={_docx_guide_dialogue_path()}, "
+        f"steps={len(data.get('steps', []) or [])}, points={len(data.get('points', {}) or {})}"
+    )
+    return data
 def _docx_guide_variables(extra_variables=None):
     return guide_dialogue_variables(_load_docx_guide_dialogue(), _docx_guide_dialogue_path(), extra_variables)
 def _docx_guide_leader_calling():

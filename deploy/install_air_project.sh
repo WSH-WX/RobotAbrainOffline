@@ -108,7 +108,7 @@ UNIT
 
     cat >"${GENERATED_DIR}/rabbitbot-control-console.sudoers" <<SUDOERS
 # 允许局域网控制台只管理 RabbitBot 主循环服务。
-${SERVICE_USER} ALL=(root) NOPASSWD: /usr/bin/systemctl start rabbitbot-loop.service, /usr/bin/systemctl restart rabbitbot-loop.service, /usr/bin/systemctl stop rabbitbot-loop.service
+${SERVICE_USER} ALL=(root) NOPASSWD: /usr/bin/systemctl start rabbitbot-loop.service, /usr/bin/systemctl restart rabbitbot-loop.service, /usr/bin/systemctl stop rabbitbot-loop.service, /usr/bin/systemctl enable rabbitbot-loop.service, /usr/bin/systemctl disable rabbitbot-loop.service, /usr/bin/systemctl is-enabled rabbitbot-loop.service
 SUDOERS
 
     visudo -cf "${GENERATED_DIR}/rabbitbot-control-console.sudoers"

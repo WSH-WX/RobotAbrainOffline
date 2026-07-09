@@ -17,6 +17,7 @@ RUNTIME_CONTAINER_NAME = "rabbitbot-unified-runtime"
 MAP_ENV_KEY = "NAV_PCD_PATH"
 NO_ROBOT_ENV_KEY = "RABBITBOT_NAV_WORKFLOW_NO_ROBOT"
 WORKFLOW_MANUAL_ENV_KEY = "RABBITBOT_WORKFLOW_NON_INTEGRATION"
+WORKFLOW_VOICE_START_ENV_KEY = "RABBITBOT_NAV_WORKFLOW_VOICE_START"
 
 COMPOSE_PROJECT_CONTAINER_ENVS = [
     ("RABBITBOT_NEO4J_CONTAINER_NAME", "neo4j"),
@@ -128,12 +129,15 @@ def write_loop_mode(map_env_file: Path, no_robot_mode: bool) -> bool:
         NO_ROBOT_ENV_KEY: value,
         WORKFLOW_MANUAL_ENV_KEY: value,
     }
+    if no_robot_mode:
+        updates[WORKFLOW_VOICE_START_ENV_KEY] = "0"
     _write_loop_env_values(map_env_file, updates)
     logger.info(
-        "已写入控制台启动模式环境文件：env_file=%s, no_robot_mode=%s, workflow_manual=%s",
+        "已写入控制台启动模式环境文件：env_file=%s, no_robot_mode=%s, workflow_manual=%s, voice_start=%s",
         map_env_file,
         no_robot_mode,
         value,
+        updates.get(WORKFLOW_VOICE_START_ENV_KEY, "preserve"),
     )
     return no_robot_mode
 
@@ -325,7 +329,7 @@ def _run_loop_service_action(
 ) -> str:
     if service_name != LOOP_SERVICE_NAME:
         raise CommandError(f"不支持操作的服务：{service_name}")
-    if action not in {"start", "restart", "stop"}:
+    if action not in {"start", "restart", "stop", "enable", "disable"}:
         raise CommandError(f"不支持的服务操作：{action}")
     if not systemctl_path.exists():
         raise CommandError(f"systemctl 不存在：{systemctl_path}")
@@ -439,3 +443,50 @@ def stop_loop_service(
         "message": "；".join(message_parts),
         "docker_output": restart_result["output"],
     }
+
+
+def loop_service_autostart_enabled(
+    service_name: str = LOOP_SERVICE_NAME,
+    systemctl_path: Path = Path("/usr/bin/systemctl"),
+    sudo_path: Path | None = Path("/usr/bin/sudo"),
+) -> bool:
+    if service_name != LOOP_SERVICE_NAME:
+        raise CommandError(f"不支持查询的服务：{service_name}")
+    if not systemctl_path.exists():
+        raise CommandError(f"systemctl 不存在：{systemctl_path}")
+    if sudo_path is not None and not sudo_path.exists():
+        raise CommandError(f"sudo 不存在：{sudo_path}")
+
+    args: list[str] = []
+    if sudo_path is not None:
+        args.extend([str(sudo_path), "-n"])
+    args.extend([str(systemctl_path), "is-enabled", service_name])
+
+    logger.info("准备查询主循环开机自启动：service=%s, use_sudo=%s", service_name, sudo_path is not None)
+    result = subprocess.run(args, check=False, text=True, capture_output=True)
+    output = (result.stdout or result.stderr or "").strip().lower()
+    if result.returncode == 0:
+        enabled = output == "enabled"
+        logger.info("主循环开机自启动查询完成：service=%s, enabled=%s", service_name, enabled)
+        return enabled
+    if output in {"disabled", "static", "indirect", "masked"}:
+        logger.info("主循环开机自启动未启用：service=%s, state=%s", service_name, output)
+        return False
+    logger.error("主循环开机自启动查询失败：service=%s, returncode=%s, output=%s", service_name, result.returncode, output)
+    raise CommandError(output or f"查询开机自启动失败，退出码：{result.returncode}")
+
+
+def set_loop_service_autostart(
+    enabled: bool,
+    service_name: str = LOOP_SERVICE_NAME,
+    systemctl_path: Path = Path("/usr/bin/systemctl"),
+    sudo_path: Path | None = Path("/usr/bin/sudo"),
+) -> dict:
+    if service_name != LOOP_SERVICE_NAME:
+        raise CommandError(f"不支持设置开机自启动的服务：{service_name}")
+    action = "enable" if enabled else "disable"
+    failure_label = "启用开机自启动" if enabled else "关闭开机自启动"
+    output = _run_loop_service_action(action, service_name, systemctl_path, sudo_path, failure_label)
+    message = output or ("已启用开机自启动" if enabled else "已关闭开机自启动")
+    logger.info("主循环开机自启动设置完成：service=%s, enabled=%s", service_name, enabled)
+    return {"ok": True, "service": service_name, "enabled": enabled, "message": message}

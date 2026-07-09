@@ -1,3 +1,5 @@
+import json
+
 from fastapi.testclient import TestClient
 
 from rabbitbot.control_console.app import create_app
@@ -193,6 +195,7 @@ def test_start_no_robot_restarts_loop_service_and_writes_mode(tmp_path):
     content = config.map_env_file.read_text(encoding="utf-8")
     assert 'RABBITBOT_NAV_WORKFLOW_NO_ROBOT="1"' in content
     assert 'RABBITBOT_WORKFLOW_NON_INTEGRATION="1"' in content
+    assert 'RABBITBOT_NAV_WORKFLOW_VOICE_START="0"' in content
     record = config.project_root / "systemctl_args.txt"
     assert record.read_text(encoding="utf-8").splitlines() == ["restart", "rabbitbot-loop.service"]
 
@@ -229,6 +232,29 @@ def test_stop_stops_loop_service_without_login(tmp_path):
     assert record.read_text(encoding="utf-8").splitlines() == ["stop", "rabbitbot-loop.service"]
     docker_record = config.project_root / "docker_args.txt"
     assert docker_record.read_text(encoding="utf-8").splitlines() == ["restart", "-t", "20", "neo4j", "rabbitbot-vlm", "rabbitbot-tts", "rabbitbot-stt", "rabbitbot-memory", "rabbitbot-workflow", "rabbitbot-navbridge"]
+
+
+def test_autostart_toggles_loop_service_without_login(tmp_path):
+    config = make_config(tmp_path)
+    client = TestClient(create_app(config))
+
+    response = client.post("/api/autostart", json={"enabled": True})
+
+    assert response.status_code == 200
+    assert response.json()["service"] == "rabbitbot-loop.service"
+    assert response.json()["enabled"] is True
+    record = config.project_root / "systemctl_args.txt"
+    assert record.read_text(encoding="utf-8").splitlines() == ["enable", "rabbitbot-loop.service"]
+
+
+def test_static_robot_dashboard_image_is_served(tmp_path):
+    client = TestClient(create_app(make_config(tmp_path)))
+
+    response = client.get("/static/control_console/unitree-g1-dashboard.png")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/png"
+    assert response.content.startswith(b"\x89PNG")
 
 
 def test_dialogue_loads_current_config(tmp_path):
@@ -275,6 +301,44 @@ def test_dialogue_save_rejects_invalid_structure(tmp_path):
 
     assert response.status_code == 400
     assert "根节点必须是对象" in response.json()["detail"]
+
+
+def test_dialogue_leader_calling_reads_and_writes(tmp_path):
+    config = make_config(tmp_path)
+    client = TestClient(create_app(config))
+
+    loaded = client.get("/api/dialogue/leader-calling")
+    saved = client.post("/api/dialogue/leader-calling", json={"leader_calling": "各位嘉宾"})
+
+    assert loaded.status_code == 200
+    assert loaded.json()["leader_calling"] == "各位领导"
+    assert saved.status_code == 200
+    assert saved.json()["leader_calling"] == "各位嘉宾"
+    data = json.loads((config.dialogue_dir / "dialogue_0.json").read_text(encoding="utf-8"))
+    assert data["variables"]["leader_calling"] == "各位嘉宾"
+
+
+def test_dialogue_hot_rows_reads_and_writes(tmp_path):
+    config = make_config(tmp_path)
+    client = TestClient(create_app(config))
+
+    loaded = client.get("/api/dialogue/hot-rows")
+    assert loaded.status_code == 200
+    rows = loaded.json()["rows"]
+    assert rows[0]["row_type"] == "opening"
+    rows[0]["script"] = '{"short_mode_intro":"新开场"}'
+    rows[1]["point_name"] = "新点位"
+    rows[1]["coordinate"] = '{"x":1,"y":2,"z":3,"ox":0.1,"oy":0.2,"oz":0.3,"ow":0.9,"mode":1}'
+    rows[1]["script"] = "第一段\n\n第二段"
+
+    saved = client.post("/api/dialogue/hot-rows", json={"rows": rows})
+
+    assert saved.status_code == 200
+    data = json.loads((config.dialogue_dir / "dialogue_0.json").read_text(encoding="utf-8"))
+    assert data["opening"]["short_mode_intro"] == "新开场"
+    assert data["steps"][0]["scene"] == "新点位"
+    assert data["steps"][0]["segments"] == [{"text": "第一段"}, {"text": "第二段"}]
+    assert data["points"][data["steps"][0]["entity_key"]]["location"][0]["x"] == 1.0
 
 
 def test_logs_return_latest_nav_log_lines(tmp_path):
@@ -392,22 +456,26 @@ def test_page_shows_console_without_login_form(tmp_path):
     assert 'id="loginForm"' not in response.text
     assert 'password' not in response.text.lower()
     assert '/api/login' not in response.text
-    assert '开始任务' in response.text
+    assert '双足机器人导览系统' in response.text
+    assert '开始任务 / 运动控制' in response.text
     assert '导览' in response.text
-    assert '对话' in response.text
-    assert '视觉导航' in response.text
     assert '/api/task' in response.text
     assert '返航' in response.text
+    assert '点位台词热更新' in response.text
+    assert '嘉宾称呼' in response.text
+    assert '更新为机器人当前位置' in response.text
+    assert 'unitree-g1-dashboard.png' in response.text
     assert '定位状态' in response.text
     assert '当前位姿' in response.text
     assert '开始程序' in response.text
+    assert '开始程序(无机器人模式)' in response.text
+    assert '/api/start-no-robot' in response.text
     assert '一键重启主循环' in response.text
     assert '关闭程序' in response.text
     assert '/api/start' in response.text
     assert 'startProgram' in response.text
     assert 'waitForServicesReady' in response.text
     assert '所有服务已加载成功，可执行相关操作' in response.text
-    assert '服务仍未全部就绪' not in response.text
     assert '/api/stop' in response.text
     assert 'stopProgram' in response.text
     assert '/api/restart' in response.text
@@ -421,16 +489,12 @@ def test_page_shows_console_without_login_form(tmp_path):
     assert 'pendingRestartUntil' in response.text
     assert '/api/service/restart' in response.text
     assert '位于同一容器，将被一并重启' in response.text
-    assert '导览讲解词' in response.text
-    assert response.text.index('服务状态') < response.text.index('导览讲解词')
-    assert '加载讲解词' in response.text
-    assert '保存讲解词' in response.text
-    assert '折叠讲解词' in response.text
-    assert '展开讲解词' in response.text
-    assert 'dialogueToggleBtn' in response.text
-    assert 'toggleDialogueEditor' in response.text
-    assert 'dialogueEditor' in response.text
+    assert '保存点位台词' in response.text
+    assert 'leaderCallingInput' in response.text
+    assert 'hotRowsTable' in response.text
     assert '/api/dialogue' in response.text
+    assert '/api/dialogue/leader-calling' in response.text
+    assert '/api/dialogue/hot-rows' in response.text
     assert '显示日志' in response.text
     assert '关闭日志' in response.text
     assert 'logsVisible=false' in response.text
@@ -454,6 +518,7 @@ def test_restart_preserves_no_robot_mode(tmp_path):
     content = config.map_env_file.read_text(encoding="utf-8")
     assert 'RABBITBOT_NAV_WORKFLOW_NO_ROBOT="1"' in content
     assert 'RABBITBOT_WORKFLOW_NON_INTEGRATION="1"' in content
+    assert 'RABBITBOT_NAV_WORKFLOW_VOICE_START="0"' in content
     record = config.project_root / "systemctl_args.txt"
     assert record.read_text(encoding="utf-8").splitlines() == ["restart", "rabbitbot-loop.service"]
 

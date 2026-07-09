@@ -157,6 +157,7 @@ from .workflow_data import (
     _docx_guide_dialogue_index,
     _docx_guide_dialogue_path,
     _load_docx_guide_dialogue,
+    reload_docx_guide_dialogue,
     _docx_guide_variables,
     _docx_guide_leader_calling,
     _docx_guide_map_file,

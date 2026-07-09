@@ -1,137 +1,84 @@
-# air_robot_gt_projects 交接报告
+# RobotAbrainOffline 交接报告
 
-生成时间：2026-07-07（Asia/Singapore）
-本轮工作目录：`/Users/firmiana/Desktop/air_robot_gt_projects`
-当前目标分支：`master`
-本轮主题：将 `refactor/service-internal-decoupling` 合并到 `master`，保留合并提交并详细记录改动项。
+生成时间：2026-07-09（Asia/Singapore）
+本轮工作目录：`/Users/firmiana/Desktop/RobotAbrainOffline`
+本轮主题：同步 fuxing 控制台能力与台词配置，保留本项目 portable 单镜像多容器部署结构。
 
 ## 项目整体描述
 
-`air_robot_gt_projects` 是 RabbitBot/Unitree 导览机器人项目集合，用于在 Orin/ROS2 环境中运行导览 workflow、语音交互、视觉识别、记忆检索、导航桥接、控制台和 portable 容器化部署。项目面向离线或半离线现场部署，核心链路是：控制台或脚本启动基础服务，STT 接收语音，workflow 解析导览/问答/控制意图，按剧本导航与播报，必要时调用 VLM、Embedding、Memory、Neo4j 和 Unitree 导航桥接。
+`RobotAbrainOffline` 是 RabbitBot/Unitree 导览机器人离线部署项目集合，用于在 Orin/ROS2 环境中运行导览 workflow、语音交互、视觉识别、记忆检索、导航桥接、Web 控制台和 portable 容器化服务。核心链路是：控制台或 systemd 启动主循环，workflow 加载 JSON 台词与点位，STT/命令触发导览、返航或无机器人模式到点确认，导航桥接连接 Unitree 导航，TTS 播报讲解，VLM/Embedding/Memory/Neo4j 提供扩展问答能力。
 
-核心功能：
-- 导览 workflow：DOCX/JSON 剧本、点位导航、返航、机械臂动作、QA/闲聊路径。
-- 语音服务：TTS `28185`、STT `28184`，当前重构分支已拆为独立容器。
-- 视觉与语义：VLM `8000`、Embedding `8005`。
-- 记忆服务：Memory Agent `28182`，依赖 Neo4j 与 Embedding。
-- 导航桥接：`humble_robot_agent_bridge.py` / portable nav 容器提供 `28180`，连接 Unitree 导航与自定义 action。
-- 控制台：`rabbitbot.control_console` 提供启动、停止、状态和日志查看能力。
-- 部署：`deploy/` 与 `docker/portable/` 支持镜像构建、导入、模型准备、自检、systemd/compose 启动。
+## 主要模块与目录
 
-## 主要目录
-
-- `README.md`：顶层部署和运行说明。
-- `deploy/`：portable 镜像、模型、宿主初始化、自检、基础栈启动脚本。
-- `rabbitbot-dev-ros2-master/`：主 Python 项目与 Docker/脚本/测试。
-- `rabbitbot-dev-ros2-master/rabbitbot/agno_agents/`：导览编排；本轮合入后 `workflow.py` 已拆出 `workflow_config.py`、`workflow_profiling.py`、`workflow_text.py`、`workflow_data.py`、`workflow_arm.py`。
-- `rabbitbot-dev-ros2-master/rabbitbot/guide/`：导览控制、对话、路由等纯逻辑模块。
-- `rabbitbot-dev-ros2-master/rabbitbot/audio/`：音频设备探测与 Unitree TTS 后端。
-- `rabbitbot-dev-ros2-master/rabbitbot/clients/`：TTS/STT HTTP 客户端。
-- `rabbitbot-dev-ros2-master/rabbitbot/runtime/`：运行配置读取工具与 portable env 示例。
-- `rabbitbot-dev-ros2-master/rabbitbot/control_console/`：控制台后端。
-- `rabbitbot-dev-ros2-master/docker/portable/`：portable core/nav Dockerfile、解耦 compose、PulseAudio 可选覆盖。
-- `rabbitbot-dev-ros2-master/scripts/`、`scripts_1/`：服务启动、workflow loop、统一/解耦容器入口。
-- `rabbitbot-dev-ros2-master/tests/`：audio、clients、control_console、guide 等测试。
+- `deploy/`：宿主初始化、portable 栈启动、自检、systemd 安装脚本。
+- `rabbitbot-dev-ros2-master/conf/`：导览台词、点位、地图等运行配置；本轮运行台词为 `dialogue_0.json`。
+- `rabbitbot-dev-ros2-master/rabbitbot/control_console/`：FastAPI 控制台后端、静态页面、台词热更新逻辑、服务状态与命令执行。
+- `rabbitbot-dev-ros2-master/rabbitbot/agno_agents/`：导览 workflow 编排、数据加载、机械臂动作、日志和 profiling。
+- `rabbitbot-dev-ros2-master/rabbitbot/guide/`：导览台词、控制命令和路由等纯逻辑。
+- `rabbitbot-dev-ros2-master/docker/portable/`：portable core/nav 镜像与解耦 compose；本项目保持单个 portable core 镜像复用为多容器角色，另配 nav 镜像和 Neo4j。
+- `rabbitbot-dev-ros2-master/scripts/`、`scripts_1/`：workflow 启动、主循环入口、控制命令脚本。
+- `models/`：模型缓存目录；现场部署要求实体复制，不使用符号链接。
 - `custom_action_ws/`、`unitree_slam_example_new/`：ROS2/Unitree 导航相关代码。
-- `memory/`、`third_party/`、`models/`：记忆资料、外部依赖清单与模型缓存；模型目录内容在当前工作区是否完整未确认。
 
-## 技术栈与依赖
+## 技术栈与运行入口
 
-- Python `>=3.10`，`pyproject.toml` 管理包元数据。
-- 主要依赖：`qwen-agent[gui,rag,code_interpreter,mcp]`、`opencv-python-headless`、`PyGObject==3.42.1`、`numpy`、`graphiti-core`。
-- 可选测试依赖：`pytest`、`fastapi`、`httpx`、`requests`。
-- Web/API：FastAPI/HTTP `/exec` 风格服务。
-- 容器：Docker Compose、host network、NVIDIA runtime。
-- 数据库：Neo4j。
-- 机器人：ROS2 Humble、Unitree SDK2、自定义 action、PCD 地图。
-- 音频：默认 ALSA/Unitree，本轮合入包含 PulseAudio/蓝牙实验入口；完整蓝牙后端未确认。
+- Python `>=3.10`，FastAPI 控制台，Docker Compose host network，NVIDIA runtime，ROS2 Humble，Neo4j。
+- 常用入口：
+  - portable 基础服务：`bash deploy/start_portable_stack.sh`
+  - 主循环：`bash rabbitbot-dev-ros2-master/scripts_1/start_loop_entry.sh`
+  - workflow 控制：`bash rabbitbot-dev-ros2-master/scripts_1/send_nav_workflow_command.sh go|arrive|back`
+  - 控制台：`rabbitbot.control_console` 或 systemd `rabbitbot-control-console.service`
+- 关键配置：
+  - `rabbitbot-dev-ros2-master/runtime/portable.env.example`
+  - `rabbitbot-dev-ros2-master/runtime/portable.env`（运行态，通常不提交）
+  - `rabbitbot-dev-ros2-master/docker/portable/docker-compose.decoupled.yaml`
+  - `rabbitbot-dev-ros2-master/conf/dialogue_0.json`
 
-## 运行入口与数据流
+## 本轮修改摘要
 
-常用入口：
-- portable 基础服务：`bash deploy/start_portable_stack.sh`
-- 主循环：`bash rabbitbot-dev-ros2-master/scripts_1/start_loop_entry.sh`
-- workflow 控制：`bash rabbitbot-dev-ros2-master/scripts_1/send_nav_workflow_command.sh go|arrive|back`
-- 控制台服务：systemd 或 `rabbitbot.control_console` 入口，具体部署方式以现场配置为准。
-
-核心数据流：
-1. 读取 `rabbitbot-dev-ros2-master/runtime/portable.env`，缺失时参考 `portable.env.example`。
-2. `docker/portable/docker-compose.decoupled.yaml` 拉起 Neo4j、VLM/Embedding、TTS、STT、Memory、workflow/navbridge 等服务。
-3. workflow 进入 QA/导览控制状态，经 STT 文本或控制命令进入导览、返航、闲聊或找物品路径。
-4. 导览路径加载剧本和点位，调用 TTS 播报、导航桥接移动、机械臂动作，并写入状态/日志。
-5. 闲聊路径可通过 Memory RAG 检索 Neo4j/Markdown 资料，再交给 VLM/LLM 生成回答。
-
-## 重要配置
-
-- `rabbitbot-dev-ros2-master/runtime/portable.env.example`：portable 配置模板。
-- `rabbitbot-dev-ros2-master/runtime/portable.env`：本机运行态配置，通常不提交；当前机器是否存在有效文件未确认。
-- `rabbitbot-dev-ros2-master/docker/portable/docker-compose.decoupled.yaml`：解耦基础栈。
-- `rabbitbot-dev-ros2-master/docker/portable/docker-compose.audio-pulse.yaml`：PulseAudio 可选覆盖。
-- `rabbitbot-dev-ros2-master/conf/`：导览点位、台词、地图等配置。
-- `third_party/manifest.lock`：外部依赖、镜像和模型来源清单。
-- 现场路径 `/mnt/disk1/gt/air_robot_gt_projects` 来自项目文档；本轮本地工作区为 `/Users/firmiana/Desktop/air_robot_gt_projects`，现场路径未在本机验证。
-
-## 当前状态
-
-- new-orin 目标目录为 `/mnt/disk1/gt/RobotAbrainOffline`，本轮已尝试 portable 启动验证。
-- 目标 Orin 已具备 Docker、Docker Compose、Python 3.10 和 portable core/nav/neo4j 镜像。
-- `models/` 已在 new-orin 新项目目录中复制为实体目录，不再使用符号链接；模型来源为旧目录的现有缓存。
-- 本轮修正 `docker-compose.decoupled.yaml` 的旧项目根硬编码，改为强制读取 `RABBITBOT_PROJECTS_DIR` / `RABBITBOT_MODELS_CACHE_DIR`；`bootstrap_host.sh` 会写入当前项目根和模型目录。
-- new-orin 旧目录 `/mnt/disk1/gt/air_robot_gt_projects` 已删除；当前运行容器只挂载 `/mnt/disk1/gt/RobotAbrainOffline` 与其 `models/`。
-
-## 本轮合并改动摘要
-
-- 导览 workflow：从 `workflow.py` 拆出配置、插装、文本解析、数据加载和机械臂模块，外部入口保持兼容。
-- 导览纯逻辑：新增 `rabbitbot/guide/controls.py`、`dialogue.py`、`routing.py` 及对应测试。
-- 音频服务：新增设备探测，TTS/STT 从 `rabbitbot-audio` 拆为 `rabbitbot-tts` 与 `rabbitbot-stt`。
-- 音频客户端：新增 `rabbitbot.clients.audio`，统一 `/exec` 请求、超时、异常和响应解析日志。
-- 运行配置：新增 `rabbitbot.runtime.config`，集中读取 URL 和浮点配置并记录非法配置回退。
-- 控制台：服务到容器映射改为 TTS/STT 独立容器，保留旧 `audio` 分组兼容。
-- 部署脚本：更新 portable compose、启动脚本、统一容器角色入口、TTS/STT 默认参数和启动日志。
-- 测试：新增 audio、clients、guide 测试，并调整 control_console 测试。
-- 文档：同步 README 与交接报告，说明解耦栈和运行路径。
+- 控制台页面以 fuxing 为基准同步深色任务控制页、点位台词热更新、嘉宾称呼、当前位置回填、开机自启动按钮和静态机器人图展示。
+- 控制台后端新增/合并 `/api/dialogue/leader-calling`、`/api/dialogue/hot-rows`、`/api/autostart`，并保留本项目 `/api/start-no-robot`、`/api/service/restart`、portable 服务状态和当前运行日志接口。
+- `rabbitbot-dev-ros2-master/conf/dialogue_0.json` 已替换为 fuxing 台词；`dialogue_fuxing.json` 同步为同内容备份留档。
+- workflow 数据层新增 `reload_docx_guide_dialogue()`，`run_kuavo_agno_workflow.py` 在 go 闸门释放后刷新台词缓存，确保热更新在下一次导览读取最新台词。
+- `deploy/install_air_project.sh` 生成的 sudoers 增加 `enable/disable/is-enabled rabbitbot-loop.service` 权限，未引入 fuxing 旧路径 unit。
+- 控制台测试补充 leader-calling、hot-rows、autostart、静态图和页面断言。
 
 ## 日志新增或调整
 
-- `rabbitbot.clients.audio` 新增 INFO 级客户端初始化日志，WARNING 级请求超时、请求失败、异常状态码、JSON 解析失败和响应字段缺失日志。
-- `rabbitbot.runtime.config` 对空 URL、非法浮点配置记录 WARNING 并回退默认值。
-- 音频设备探测与 TTS/STT 启动脚本增加设备、后端、启动策略等诊断输出。
-- 控制台容器映射变化不记录密钥、令牌、完整隐私数据或大体积原始输入输出。
-- 本轮未新增代码日志；部署脚本继续使用既有 INFO/OK/WARN/ERROR 输出记录初始化、模型检查和启动上下文。
+- `rabbitbot.control_console.commands` 新增开机自启动查询/设置 INFO 日志，失败记录 ERROR 并保留命令上下文。
+- `rabbitbot.control_console.dialogue` 同步 fuxing 的台词读写、备份、嘉宾称呼校验、点位热更新读写日志；不记录完整台词正文。
+- `rabbitbot.control_console.app` 对当前运行日志清空、服务容器后台重启提交/失败、开机自启动查询失败降级返回增加诊断日志。
+- `rabbitbot.agno_agents.workflow_data` 在台词缓存刷新时记录 reason、台词文件路径、steps/points 数量。
 
-## 验证事实
+## 已验证事实
 
-- new-orin 上 `deploy/bootstrap_host.sh` 成功生成 portable env 和控制台 venv。
-- new-orin 上 `PORTABLE_CHECK_MODE=clean_orin bash deploy/check_air_project.sh` 通过；仅提示 `/home/unitree/test9.pcd` 地图路径不可见。
-- new-orin 上 `deploy/start_portable_stack.sh` 成功拉起基础服务：neo4j、rabbitbot-vlm、rabbitbot-tts、rabbitbot-stt、rabbitbot-memory、rabbitbot-workflow；VLM 首次启动等待较久，最终 healthy。
-- 完全重建容器和可重建依赖卷后，new-orin 基础服务全部 healthy；`docker inspect` 确认 rabbitbot 容器只挂载新项目路径。
-- 旧目录删除后，短时无机器人模式主循环已完成 workflow 预启动，并停在 `go` 闸门等待命令；本轮随后清理了该短跑 workflow 进程，仅保留基础服务运行。
-- `git merge --no-ff --no-commit refactor/service-internal-decoupling` 无冲突。
-- 合并前 `git merge-tree --write-tree master refactor/service-internal-decoupling` 通过。
-- 合并前 `git diff --check master..refactor/service-internal-decoupling` 无输出。
-- 本机 `python` 命令不存在；`python3` 存在但缺少 `pytest`，因此未运行完整 pytest。
-- 已用 `python3 -m py_compile` 检查变更 Python 文件，通过。
-- 已用 `bash -n` 检查变更 shell 脚本，通过。
+- `python3 -m json.tool rabbitbot-dev-ros2-master/conf/dialogue_0.json` 通过。
+- `python3 -m json.tool rabbitbot-dev-ros2-master/conf/dialogue_fuxing.json` 通过。
+- `python3 -m py_compile` 已覆盖控制台、dialogue、commands、workflow 数据加载、workflow 入口和测试文件，通过。
+- `bash -n deploy/install_air_project.sh rabbitbot-dev-ros2-master/scripts/run_kuavo_agno_workflow.py` 通过。
+- 本机 `/Applications/Xcode.app/Contents/Developer/usr/bin/python3` 缺少 `pytest`，完整控制台 pytest 未运行。
+- 本机缺少 FastAPI 运行依赖，无法用 `TestClient` 做手工路由调用；仅完成语法/JSON/shell 静态验证。
+- GitHub `origin/air_robot_gt_projects-master` 已更新到本轮提交；new-orin 已通过 git bundle 同步到同一提交。
+- new-orin 上 `docker compose config --services` 显示 `neo4j,rabbitbot-vlm,rabbitbot-memory,rabbitbot-navbridge,rabbitbot-stt,rabbitbot-tts,rabbitbot-workflow`，配置中旧路径 `/mnt/ssd/navgation`、`/mnt/disk1/gt/air_robot_gt_projects` 和 `fuxing` 计数为 0。
+- new-orin 已重新安装正式 systemd unit/sudoers；`rabbitbot-control-console.service` 指向 `/mnt/disk1/gt/RobotAbrainOffline/rabbitbot-dev-ros2-master` 并处于 active。
+- new-orin 正式控制台 `127.0.0.1:8080` 页面包含“双足机器人导览系统”“点位台词热更新”和 `unitree-g1-dashboard.png`；静态图 HEAD 返回 `200 OK image/png`；`/api/status` 返回 `200 OK`。
+- new-orin `/api/start-no-robot` 短跑通过：`workflow.status=waiting_for_go`、`ready=true`、`no_robot_mode=true`；验证后已停止 `rabbitbot-loop.service`。
 
 ## 阻塞与风险
 
-- 完整 pytest 受本机缺少 `pytest` 阻塞。
-- Docker Compose、GPU、模型、Neo4j、TTS/STT HTTP 服务、导航桥接和真机导览闭环未在本轮本地验证。
-- PulseAudio/蓝牙音频仍是实验入口，完整可用性未确认。
-- 真实地图 `/home/unitree/test9.pcd`、DDS 网卡、机器人网络与真机导航桥接未在本轮验证。
-- 历史运行日志可能包含较完整文本或 payload，后续应继续治理隐私与日志体积。
+- 本地 Python 缺少 `pytest`、FastAPI 等测试依赖，`PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest rabbitbot-dev-ros2-master/tests/control_console` 未能运行。
+- 真机移动闭环、DDS 网卡、真实地图 `/home/unitree/test9.pcd`、TTS/STT/VLM/Memory 健康状态未在本轮本机验证。
+- `runtime/portable.env` 和模型缓存完整性未做逐项审计；现场基础服务在控制台状态接口中为在线。
 
-## 下一步建议
+## 下一步
 
-1. 在目标运行环境安装测试依赖后执行 `python3 -m pytest tests/audio tests/clients tests/control_console tests/guide`。
-2. 执行 `docker compose config` 与 portable 基础栈启动验证。
-3. 在无机器人模式验证控制台启动/停止、服务状态和 workflow 控制命令。
-4. 在真机环境验证 TTS/STT 互斥、导航桥接、点位到达、返航和异常恢复。
-5. 持续检查关键流程日志，保留上下文和异常链，避免记录密钥、令牌、完整隐私数据和大体积原始输入输出。
+1. 在可用 Python 环境安装测试依赖后运行 `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest rabbitbot-dev-ros2-master/tests/control_console`。
+2. 在 new-orin 继续验证 leader-calling、hot-rows 和 autostart API 的实际页面操作。
+3. 按现场需要再做真机环境验证；不做真实机器人移动闭环，除非另行要求。
 
 ## 注意事项
 
 - 修改代码优先遵守现有风格。
-- 关键流程、文件读写、网络请求、数据库、模型训练/推理、命令脚本、配置加载和异常处理应补充有诊断价值的日志。
+- 关键流程、文件读写、网络请求、数据库、模型推理、命令脚本、配置加载和异常处理应保留有诊断价值的日志。
 - 默认日志级别不得低于 INFO；DEBUG/TRACE 仅可短时诊断并必须有限量、限时、采样、轮转或降级机制。
-- 不要提交本机运行态配置、密钥、令牌、模型缓存或大体积日志。
+- 不要提交运行态配置、密钥、令牌、模型缓存或大体积日志。

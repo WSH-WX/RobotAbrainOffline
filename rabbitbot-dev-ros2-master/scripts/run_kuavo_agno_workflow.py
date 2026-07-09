@@ -15,7 +15,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from rabbitbot.agno_agents.workflow import create_main_workflow, guide_opening_speech
+from rabbitbot.agno_agents.workflow import create_main_workflow, guide_opening_speech, reload_docx_guide_dialogue
 from rabbitbot.context import AppContext
 from rabbitbot.robots.constants import MoveType
 from rabbitbot.tools.sound_agno import tts_sound
@@ -107,6 +107,7 @@ async def main(args):
                 _gate_log('voice_qa_mode', note='默认进入 QA，等待开始导览口令')
             else:
                 await _wait_for_start_gate()
+                reload_docx_guide_dialogue(reason='start_gate_released')
                 if os.getenv('RABBITBOT_ENABLE_GUIDE_OPENING', '1') == '1':
                     await guide_opening_speech(ctx)
                 else:
