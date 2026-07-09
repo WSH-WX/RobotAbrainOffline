@@ -58,7 +58,10 @@
 - `git diff --check` 通过。
 - 轻量脚本验证 `get_task_progress()` 可读取当前 run 的任务进度 JSON。
 - 轻量脚本确认控制台页面模板不再包含“开发中”和“预计状态”，并包含任务进度所需 DOM id。
-- 本机系统 Python 缺少 `fastapi` 和 `pytest`，因此未能在本机完整运行 `python3 -m pytest tests/control_console -q`。
+- 本机系统 Python 缺少 `fastapi` 和 `pytest`，因此未能在本机完整运行 `python3 -m pytest tests/control_console -q`；`new-orin` 的控制台虚拟环境也缺少 `pytest`。
+- 本轮提交已同步到 `new-orin:/mnt/disk1/gt/RobotAbrainOffline`，本机与服务器处于同一提交。
+- 已重启 `new-orin` 上的 `rabbitbot-control-console.service`，服务状态为 active。
+- 已请求 `http://127.0.0.1:8080/api/status`，返回 `ok=True`；因当前 `rabbitbot-loop.service` 未运行，`task_progress` 为空进度。
 
 ## 阻塞与风险
 
@@ -68,9 +71,8 @@
 
 ## 下一步
 
-1. 完成本轮 Git 提交并同步到 `new-orin:/mnt/disk1/gt/RobotAbrainOffline`。
-2. 重启 `new-orin` 上的 `rabbitbot-control-console.service`。
-3. 现场启动导览后，在任务控制页确认当前任务、进度条、当前站点和下一站点随 workflow 变化。
+1. 现场启动导览后，在任务控制页确认当前任务、进度条、当前站点和下一站点随 workflow 变化。
+2. 如需完整自动化验证，先在本机或 `new-orin` 安装测试依赖 `pytest`/`fastapi` 后运行 `python3 -m pytest tests/control_console -q`。
 
 ## 注意事项
 
