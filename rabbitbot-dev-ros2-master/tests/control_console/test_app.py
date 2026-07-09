@@ -561,6 +561,7 @@ def test_page_shows_console_without_login_form(tmp_path):
     assert 'unitree-g1-dashboard.png' in response.text
     assert '定位状态' in response.text
     assert '当前位姿' in response.text
+    assert 'robot-status-card' in response.text
     assert 'page-status' not in response.text
     assert 'data-page="status"' not in response.text
     assert 'primary-control-actions' in response.text

@@ -164,6 +164,9 @@ def _html() -> str:
   <style>
     .map-confirm-row{display:grid;grid-template-columns:minmax(180px,1fr) minmax(132px,auto);gap:10px;align-items:end}.map-confirm-row .refresh{min-height:44px}@media(max-width:620px){.map-confirm-row{grid-template-columns:1fr}}
   </style>
+  <style>
+    .robot-status-card .card{min-height:86px;background:rgba(3,16,29,.48);border-color:rgba(67,157,220,.34);box-shadow:inset 0 1px 0 rgba(124,206,255,.12)}.robot-status-card .field{padding:12px 14px;border:1px solid rgba(67,157,220,.34);border-radius:8px;background:rgba(3,16,29,.32)}.robot-status-card .label{color:#a9c9e8}.robot-status-card .value{color:#e9f7ff;font-size:18px;line-height:1.45;word-break:break-word}.robot-status-card .pose-line{color:#cfeeff}
+  </style>
 </head>
 <body>
   <div id="app" class="shell">
@@ -186,7 +189,7 @@ def _html() -> str:
             </div>
             <div class="control-layout">
               <div class="tech-stack">
-                <section class="tech-card">
+                <section class="tech-card robot-status-card">
                   <h3>机器人状态</h3>
                   <div class="tech-body">
                     <div class="cards">

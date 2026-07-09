@@ -2,7 +2,7 @@
 
 生成时间：2026-07-09（Asia/Singapore）
 本轮工作目录：`/Users/firmiana/Desktop/RobotAbrainOffline`
-本轮主题：将“机器人状态”独立页面内容迁移到“任务控制”页面的机器人状态板块，并删除独立页面入口。
+本轮主题：调整“任务控制”页面机器人状态板块配色，使其与周围深色科技风格一致。
 
 ## 项目整体描述
 
@@ -36,10 +36,10 @@
 
 ## 本轮修改摘要
 
-- 已把 `rabbitbot-dev-ros2-master/rabbitbot/control_console/app.py` 中原“机器人状态”页面的三项内容（开机自启动、定位状态、当前位姿）迁入“任务控制”页面左侧的“机器人状态”板块。
-- 已移除侧边栏“机器人状态”导航按钮和独立 `page-status` 页面。
-- 已替换“任务控制”页面机器人状态板块原有固定展示内容（92% 电量、空闲运行状态、自主导览模式）。
-- 已调整 `rabbitbot-dev-ros2-master/tests/control_console/test_app.py` 页面断言，覆盖独立页面入口删除和旧固定内容移除。
+- 已在 `rabbitbot-dev-ros2-master/rabbitbot/control_console/app.py` 为“任务控制”页面的机器人状态板块增加 `robot-status-card` 专用样式。
+- 已将机器人状态板块内的白底卡片改为深色半透明卡片、蓝色弱边框、浅色文字，避免与同页其他深色科技面板不一致。
+- 已保持开机自启动、定位状态、当前位姿的元素 ID 不变，现有状态刷新逻辑无需调整。
+- 已调整 `rabbitbot-dev-ros2-master/tests/control_console/test_app.py` 页面断言，确认页面包含新的专用样式类。
 
 ## 日志新增或调整
 
@@ -47,8 +47,8 @@
 
 ## 已验证事实
 
-- 本轮开始前本机与 `new-orin:/mnt/disk1/gt/RobotAbrainOffline` 均为提交 `3d42446e725353261525b68b91e6b7a79f2fff32`，分支 `air_robot_gt_projects-master`。
-- 本机与服务器均相对 `origin/air_robot_gt_projects-master` ahead 11。
+- 本轮开始前本机与 `new-orin:/mnt/disk1/gt/RobotAbrainOffline` 均为提交 `29743a67560d0ef133d012805c5efbc526cd5ab2`，分支 `air_robot_gt_projects-master`。
+- 本机与服务器均相对 `origin/air_robot_gt_projects-master` ahead 12。
 - 已执行 `python3 -m py_compile rabbitbot-dev-ros2-master/rabbitbot/control_console/app.py rabbitbot-dev-ros2-master/tests/control_console/test_app.py`，语法检查通过。
 - 尝试执行 `python -m pytest rabbitbot-dev-ros2-master/tests/control_console -q` 失败，因为本机没有 `python` 命令。
 - 尝试执行 `python3 -m pytest rabbitbot-dev-ros2-master/tests/control_console -q` 失败，因为本机 Python 环境未安装 `pytest`。
@@ -56,13 +56,13 @@
 ## 阻塞与风险
 
 - 本机缺少 `pytest`，未能运行完整控制台测试套件；只完成语法检查。
-- 本轮未在浏览器或服务器运行态控制台中做视觉验收；部署后若服务已运行，需要重启或重新加载控制台服务才能看到页面变更。
+- 本轮未在浏览器中做截图级视觉验收；主要通过代码检查确认白底卡片已被深色专用样式覆盖。
 
 ## 下一步
 
 1. 完成本轮 Git 提交。
 2. 同步到 `new-orin:/mnt/disk1/gt/RobotAbrainOffline`，保持本机与服务器同一提交。
-3. 如需现场立即生效，在服务器上重启 `rabbitbot-control-console.service` 或让控制台进程重新加载新代码。
+3. 在服务器上重启 `rabbitbot-control-console.service`，让控制台加载新样式。
 
 ## 注意事项
 
