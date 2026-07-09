@@ -22,6 +22,7 @@ from .commands import (
     start_loop_service,
     start_task,
     stop_loop_service,
+    write_map_path,
 )
 from .config import ConsoleConfig
 from .dialogue import (
@@ -64,6 +65,10 @@ class TaskRequest(BaseModel):
 
 class RestartRequest(BaseModel):
     map_path: str | None = None
+
+
+class MapRequest(BaseModel):
+    map_path: str
 
 
 class DialogueRequest(BaseModel):
@@ -151,6 +156,9 @@ def _html() -> str:
   </style>
   <style>
     .dashboard-service-list{display:grid;gap:10px}.dashboard-service-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;align-items:center;padding:8px 0;border-bottom:1px solid rgba(83,157,214,.22)}.dashboard-service-row:last-child{border-bottom:0}.dashboard-service-name{font-size:16px;font-weight:900;color:#e9f7ff}.dashboard-service-desc{font-size:12px;line-height:1.35;color:#a9c9e8;margin-top:2px}.dashboard-service-state{font-size:15px;font-weight:900;white-space:nowrap}.dashboard-service-state.online{color:#74f590}.dashboard-service-state.starting{color:#ffd666}.dashboard-service-state.offline{color:#ff8a8a}
+  </style>
+  <style>
+    .map-confirm-row{display:grid;grid-template-columns:minmax(180px,1fr) minmax(132px,auto);gap:10px;align-items:end}.map-confirm-row .refresh{min-height:44px}@media(max-width:620px){.map-confirm-row{grid-template-columns:1fr}}
   </style>
 </head>
 <body>
@@ -253,9 +261,12 @@ def _html() -> str:
               </div>
               </div>
               <div class="motion-field">
-                <div>
-                  <div class="label">重启地图</div>
-                  <input id="mapPathInput" class="text-input" type="text" value="/home/unitree/test9.pcd" oninput="mapPathTouched=true">
+                <div class="map-confirm-row">
+                  <div>
+                    <div class="label">重启地图</div>
+                    <input id="mapPathInput" class="text-input" type="text" value="/home/unitree/test9.pcd" oninput="mapPathTouched=true">
+                  </div>
+                  <button id="confirmMapBtn" class="refresh" onclick="confirmMap()">确认地图</button>
                 </div>
                 <p id="message" class="control-message"></p>
               </div>
@@ -857,6 +868,21 @@ function toggleAutostart(){
     refresh();
   });
 }
+function confirmMap(){
+  var button=document.getElementById('confirmMapBtn');
+  var mapPath=document.getElementById('mapPathInput').value;
+  button.disabled=true;
+  setMessage('正在确认地图...');
+  requestJson('POST','/api/map',{map_path:mapPath},function(error,body){
+    button.disabled=false;
+    if(error){setMessage(error.message);refresh();return;}
+    mapPathTouched=false;
+    setText('map','地图：'+body.map_path);
+    document.getElementById('mapPathInput').value=body.map_path;
+    setMessage(body.message||('已确认使用地图 '+body.map_path));
+    refresh();
+  });
+}
 function restartProgram(){
   if(!window.confirm('确定重新启动导航主程序吗？')){return;}
   var button=document.getElementById('restartBtn');
@@ -990,6 +1016,15 @@ def create_app(config: ConsoleConfig | None = None) -> FastAPI:
                 map_env_file=config.map_env_file,
                 no_robot_mode=current_no_robot_mode,
             )
+        except CommandError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/map")
+    def confirm_map(payload: MapRequest) -> dict:
+        try:
+            map_path = write_map_path(config.map_env_file, payload.map_path)
+            logger.info("控制台地图确认完成：map_path=%s, env_file=%s", map_path, config.map_env_file)
+            return {"ok": True, "map_path": map_path, "message": f"已确认使用地图 {map_path}"}
         except CommandError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 

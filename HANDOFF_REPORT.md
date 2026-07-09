@@ -2,7 +2,7 @@
 
 生成时间：2026-07-09（Asia/Singapore）
 本轮工作目录：`/Users/firmiana/Desktop/RobotAbrainOffline`
-本轮主题：让控制台任务控制页显示真实导览任务进度，并移除“开发中”标识。
+本轮主题：在控制台任务控制页的地图选择处增加“确认地图”按钮。
 
 ## 项目整体描述
 
@@ -36,43 +36,37 @@
 
 ## 本轮修改摘要
 
-- `rabbitbot-dev-ros2-master/rabbitbot/agno_agents/workflow.py` 新增导览任务进度写出：每个 workflow run 在控制目录生成 `<run_id>.task_progress.json`，记录是否有活动任务、当前/下一站点、已完成点位数、总点位数和更新时间。
-- 严格 DOCX 导览路径在导览开始、前往点位、到达点位、点位失败/跳过和导览结束时更新进度；旧脚本化导览路径也同步写出基本进度。
-- `rabbitbot-dev-ros2-master/rabbitbot/control_console/status.py` 新增任务进度读取，缺失、损坏或读取失败时回退为空进度并记录诊断日志。
-- `rabbitbot-dev-ros2-master/rabbitbot/control_console/app.py` 的 `/api/status` 返回 `task_progress`，任务控制页“任务信息”板块改为动态渲染：工作流未启动、待命、展厅导览、前往下一站点、当前站点、下一站点和真实进度条。
-- 删除任务控制页所有可见“开发中”标签，并删除“预计状态”行；服务状态摘要保留为“读取中/在线数量”样式。
-- `rabbitbot-dev-ros2-master/scripts_1/start_nav_bridge_workflow_loop.sh` 清理 workflow 控制目录时同步删除旧任务进度 JSON。
-- 新增控制台状态相关测试，覆盖任务进度文件读取和 `/api/status` 返回任务进度。
+- `rabbitbot-dev-ros2-master/rabbitbot/control_console/app.py` 在“重启地图”输入框旁新增“确认地图”按钮。
+- 新增 `POST /api/map` 接口，复用既有 `write_map_path()` 校验并写入 `runtime/rabbitbot-loop.env` 的 `NAV_PCD_PATH`，不启动、不停止、不重启 `rabbitbot-loop.service`。
+- 前端 `confirmMap()` 调用 `/api/map` 后显示“已确认使用地图 ...”，刷新顶部“地图：...”状态，并将输入框同步为后端确认后的路径。
+- 地图确认区域增加响应式布局样式，小屏下按钮自动换行。
+- `rabbitbot-dev-ros2-master/tests/control_console/test_app.py` 新增接口测试，确认地图写入不会触发 systemd；页面模板测试补充“确认地图”、`/api/map` 和 `confirmMap` 断言。
 
 ## 日志新增或调整
 
-- workflow 写任务进度成功时记录 INFO 级诊断日志，包含状态、完成点位数、当前/下一站点和进度文件路径。
-- workflow 写任务进度失败时记录路径、状态和原始异常类型/消息，导览流程继续运行。
-- 控制台读取任务进度 JSON 失败或格式非法时记录 warning/debug 级诊断日志，并回退为空进度，避免页面异常。
+- `write_map_path()` 已有 INFO 日志记录地图环境文件和确认路径。
+- `/api/map` 新增 INFO 日志，记录控制台地图确认完成的路径和 env 文件位置。
 
 ## 已验证事实
 
-- 本轮开始前本机与 `new-orin:/mnt/disk1/gt/RobotAbrainOffline` 均为提交 `a0dddc8`，分支 `air_robot_gt_projects-master`，工作区干净。
+- 本轮开始前本机与 `new-orin:/mnt/disk1/gt/RobotAbrainOffline` 均为提交 `4092ec2`，分支 `air_robot_gt_projects-master`。
 - `python3 -m py_compile rabbitbot/agno_agents/workflow.py rabbitbot/control_console/app.py rabbitbot/control_console/status.py` 通过。
 - `bash -n rabbitbot-dev-ros2-master/scripts_1/start_nav_bridge_workflow_loop.sh` 通过。
 - `git diff --check` 通过。
-- 轻量脚本验证 `get_task_progress()` 可读取当前 run 的任务进度 JSON。
-- 轻量脚本确认控制台页面模板不再包含“开发中”和“预计状态”，并包含任务进度所需 DOM id。
-- 本机系统 Python 缺少 `fastapi` 和 `pytest`，因此未能在本机完整运行 `python3 -m pytest tests/control_console -q`；`new-orin` 的控制台虚拟环境也缺少 `pytest`。
-- 本轮提交已同步到 `new-orin:/mnt/disk1/gt/RobotAbrainOffline`，本机与服务器处于同一提交。
-- 已重启 `new-orin` 上的 `rabbitbot-control-console.service`，服务状态为 active。
-- 已请求 `http://127.0.0.1:8080/api/status`，返回 `ok=True`；因当前 `rabbitbot-loop.service` 未运行，`task_progress` 为空进度。
+- 轻量脚本验证 `write_map_path()` 与 `read_map_path()` 可完成地图确认写入和读取。
+- 轻量脚本确认控制台页面模板包含“确认地图”、`/api/map`、`confirmMapBtn` 和 `confirmMap`。
+- 本机系统 Python 缺少 `pytest`，因此未能在本机完整运行 `python3 -m pytest tests/control_console -q`。
 
 ## 阻塞与风险
 
 - 本机缺少测试依赖，完整控制台 pytest 尚未在本机执行；服务器同步后可在具备项目运行环境的机器上补跑。
-- 任务进度依赖 workflow 正常写出 `<run_id>.task_progress.json`；若 workflow 未启动或尚未开始导览，控制台按需求显示“工作流未启动”或“待命”并保持空进度条。
-- 当前总点位数按 workflow 加载的导览步骤数计算，严格 DOCX 路径包含中转点位。
+- “确认地图”只更新下一次启动/重启主循环会读取的 `runtime/rabbitbot-loop.env`；若当前 `rabbitbot-loop.service` 已经运行，仍需“一键重启”才能让导航主程序切到新地图。
 
 ## 下一步
 
-1. 现场启动导览后，在任务控制页确认当前任务、进度条、当前站点和下一站点随 workflow 变化。
-2. 如需完整自动化验证，先在本机或 `new-orin` 安装测试依赖 `pytest`/`fastapi` 后运行 `python3 -m pytest tests/control_console -q`。
+1. 完成本轮提交后同步到 `new-orin:/mnt/disk1/gt/RobotAbrainOffline` 并重启 `rabbitbot-control-console.service`。
+2. 在控制台填写地图路径，点击“确认地图”，确认页面反馈和顶部地图路径同步更新。
+3. 如需让运行中的导航主程序使用新地图，继续点击“一键重启”。
 
 ## 注意事项
 

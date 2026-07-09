@@ -258,6 +258,19 @@ def test_restart_restarts_loop_service_without_login(tmp_path):
     assert record.read_text(encoding="utf-8").splitlines() == ["restart", "rabbitbot-loop.service"]
 
 
+def test_confirm_map_writes_map_without_restarting_loop_service(tmp_path):
+    config = make_config(tmp_path)
+    client = TestClient(create_app(config))
+
+    response = client.post("/api/map", json={"map_path": "/home/unitree/test13.pcd"})
+
+    assert response.status_code == 200
+    assert response.json()["map_path"] == "/home/unitree/test13.pcd"
+    assert response.json()["message"] == "已确认使用地图 /home/unitree/test13.pcd"
+    assert 'NAV_PCD_PATH="/home/unitree/test13.pcd"' in config.map_env_file.read_text(encoding="utf-8")
+    assert not (config.project_root / "systemctl_args.txt").exists()
+
+
 def test_stop_stops_loop_service_without_login(tmp_path):
     config = make_config(tmp_path)
     client = TestClient(create_app(config))
@@ -541,7 +554,11 @@ def test_page_shows_console_without_login_form(tmp_path):
     assert '/api/stop' in response.text
     assert 'stopProgram' in response.text
     assert '/api/restart' in response.text
+    assert '/api/map' in response.text
     assert '重启地图' in response.text
+    assert '确认地图' in response.text
+    assert 'confirmMap' in response.text
+    assert 'confirmMapBtn' in response.text
     assert 'mapPathInput' in response.text
     assert 'map_path' in response.text
     assert '服务状态' in response.text
