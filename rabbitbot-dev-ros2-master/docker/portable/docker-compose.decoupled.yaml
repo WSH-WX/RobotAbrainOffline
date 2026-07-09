@@ -53,8 +53,8 @@ services:
       RABBITBOT_UNIFIED_START_EMBEDDING: "1"
       WAIT_VLM_SECONDS: "600"
     volumes:
-      - /mnt/disk1/gt/air_robot_gt_projects:/workspace/projects
-      - ${RABBITBOT_MODELS_CACHE_DIR:-/mnt/disk1/gt/air_robot_gt_projects/models}:/models
+      - ${RABBITBOT_PROJECTS_DIR:?RABBITBOT_PROJECTS_DIR must be set}:/workspace/projects
+      - ${RABBITBOT_MODELS_CACHE_DIR:?RABBITBOT_MODELS_CACHE_DIR must be set}:/models
       - rabbitbot_portable_py310:/workspace/projects/rabbitbot-dev-ros2-master/py310
       - rabbitbot_portable_py38:/workspace/projects/rabbitbot-dev-ros2-master/py38
     healthcheck:
@@ -90,8 +90,8 @@ services:
       # 默认留空：不调用 Unitree SetVolume，始终使用设备当前音量。
       RABBITBOT_UNITREE_TTS_VOLUME: ${RABBITBOT_UNITREE_TTS_VOLUME:-}
     volumes:
-      - /mnt/disk1/gt/air_robot_gt_projects:/workspace/projects
-      - ${RABBITBOT_MODELS_CACHE_DIR:-/mnt/disk1/gt/air_robot_gt_projects/models}:/models
+      - ${RABBITBOT_PROJECTS_DIR:?RABBITBOT_PROJECTS_DIR must be set}:/workspace/projects
+      - ${RABBITBOT_MODELS_CACHE_DIR:?RABBITBOT_MODELS_CACHE_DIR must be set}:/models
       - /dev/snd:/dev/snd
       - rabbitbot_portable_py310:/workspace/projects/rabbitbot-dev-ros2-master/py310
       - rabbitbot_portable_py38:/workspace/projects/rabbitbot-dev-ros2-master/py38
@@ -128,8 +128,8 @@ services:
       RABBITBOT_ENABLE_PULSE_AUDIO: ${RABBITBOT_ENABLE_PULSE_AUDIO:-0}
       PULSE_SERVER: ${PULSE_SERVER:-unix:/run/user/1000/pulse/native}
     volumes:
-      - /mnt/disk1/gt/air_robot_gt_projects:/workspace/projects
-      - ${RABBITBOT_MODELS_CACHE_DIR:-/mnt/disk1/gt/air_robot_gt_projects/models}:/models
+      - ${RABBITBOT_PROJECTS_DIR:?RABBITBOT_PROJECTS_DIR must be set}:/workspace/projects
+      - ${RABBITBOT_MODELS_CACHE_DIR:?RABBITBOT_MODELS_CACHE_DIR must be set}:/models
       - /dev/snd:/dev/snd
       - rabbitbot_portable_py310:/workspace/projects/rabbitbot-dev-ros2-master/py310
       - rabbitbot_portable_py38:/workspace/projects/rabbitbot-dev-ros2-master/py38
@@ -159,8 +159,8 @@ services:
       NEO4J_USER: neo4j
       NEO4J_PASSWORD: neo4j_pass
     volumes:
-      - /mnt/disk1/gt/air_robot_gt_projects:/workspace/projects
-      - ${RABBITBOT_MODELS_CACHE_DIR:-/mnt/disk1/gt/air_robot_gt_projects/models}:/models
+      - ${RABBITBOT_PROJECTS_DIR:?RABBITBOT_PROJECTS_DIR must be set}:/workspace/projects
+      - ${RABBITBOT_MODELS_CACHE_DIR:?RABBITBOT_MODELS_CACHE_DIR must be set}:/models
       - rabbitbot_portable_py310:/workspace/projects/rabbitbot-dev-ros2-master/py310
       - rabbitbot_portable_py38:/workspace/projects/rabbitbot-dev-ros2-master/py38
     depends_on:
@@ -189,8 +189,8 @@ services:
       RABBITBOT_DIR: /workspace/projects/rabbitbot-dev-ros2-master
       RABBITBOT_MODELS_DIR: /models
     volumes:
-      - /mnt/disk1/gt/air_robot_gt_projects:/workspace/projects
-      - ${RABBITBOT_MODELS_CACHE_DIR:-/mnt/disk1/gt/air_robot_gt_projects/models}:/models
+      - ${RABBITBOT_PROJECTS_DIR:?RABBITBOT_PROJECTS_DIR must be set}:/workspace/projects
+      - ${RABBITBOT_MODELS_CACHE_DIR:?RABBITBOT_MODELS_CACHE_DIR must be set}:/models
       - rabbitbot_portable_py310:/workspace/projects/rabbitbot-dev-ros2-master/py310
       - rabbitbot_portable_py38:/workspace/projects/rabbitbot-dev-ros2-master/py38
       - rabbitbot_portable_vln:/workspace/projects/vln
@@ -214,8 +214,8 @@ services:
       RABBITBOT_NAV_MAP_PATH: ${RABBITBOT_NAV_MAP_PATH:-/home/unitree/test9.pcd}
       RABBITBOT_PORTABLE_PROJECT_ROOT: /workspace/projects/rabbitbot-dev-ros2-master
     volumes:
-      - /mnt/disk1/gt/air_robot_gt_projects/logs/nav_workflow_control:/workspace/projects/logs/nav_workflow_control
-      - /mnt/disk1/gt/air_robot_gt_projects/unitree_slam_example_new/example/run_logs:/workspace/projects/unitree_slam_example_new/example/run_logs
+      - ${RABBITBOT_PROJECTS_DIR:?RABBITBOT_PROJECTS_DIR must be set}/logs/nav_workflow_control:/workspace/projects/logs/nav_workflow_control
+      - ${RABBITBOT_PROJECTS_DIR:?RABBITBOT_PROJECTS_DIR must be set}/unitree_slam_example_new/example/run_logs:/workspace/projects/unitree_slam_example_new/example/run_logs
     restart: unless-stopped
 
 volumes:

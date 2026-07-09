@@ -73,11 +73,11 @@
 
 ## 当前状态
 
-- 已从远端拉取 `master` 与 `refactor/service-internal-decoupling`。
-- 远端实际只存在一个 `refactor/*` 分支：`refactor/service-internal-decoupling`。
-- 本轮已将该分支以非快进合并方式合入 `master`，等待本轮合并提交完成。
-- 合并内容共涉及 48 个文件，主要是 workflow 拆分、TTS/STT 解耦、音频客户端抽取、运行配置、控制台容器映射、测试和文档。
-- 工作区未运行真实机器人、Docker 服务或音频设备集成验证。
+- new-orin 目标目录为 `/mnt/disk1/gt/RobotAbrainOffline`，本轮已尝试 portable 启动验证。
+- 目标 Orin 已具备 Docker、Docker Compose、Python 3.10 和 portable core/nav/neo4j 镜像。
+- `models/` 已在 new-orin 新项目目录中复制为实体目录，不再使用符号链接；模型来源为旧目录的现有缓存。
+- 本轮修正 `docker-compose.decoupled.yaml` 的旧项目根硬编码，改为强制读取 `RABBITBOT_PROJECTS_DIR` / `RABBITBOT_MODELS_CACHE_DIR`；`bootstrap_host.sh` 会写入当前项目根和模型目录。
+- new-orin 旧目录 `/mnt/disk1/gt/air_robot_gt_projects` 已删除；当前运行容器只挂载 `/mnt/disk1/gt/RobotAbrainOffline` 与其 `models/`。
 
 ## 本轮合并改动摘要
 
@@ -97,9 +97,15 @@
 - `rabbitbot.runtime.config` 对空 URL、非法浮点配置记录 WARNING 并回退默认值。
 - 音频设备探测与 TTS/STT 启动脚本增加设备、后端、启动策略等诊断输出。
 - 控制台容器映射变化不记录密钥、令牌、完整隐私数据或大体积原始输入输出。
+- 本轮未新增代码日志；部署脚本继续使用既有 INFO/OK/WARN/ERROR 输出记录初始化、模型检查和启动上下文。
 
 ## 验证事实
 
+- new-orin 上 `deploy/bootstrap_host.sh` 成功生成 portable env 和控制台 venv。
+- new-orin 上 `PORTABLE_CHECK_MODE=clean_orin bash deploy/check_air_project.sh` 通过；仅提示 `/home/unitree/test9.pcd` 地图路径不可见。
+- new-orin 上 `deploy/start_portable_stack.sh` 成功拉起基础服务：neo4j、rabbitbot-vlm、rabbitbot-tts、rabbitbot-stt、rabbitbot-memory、rabbitbot-workflow；VLM 首次启动等待较久，最终 healthy。
+- 完全重建容器和可重建依赖卷后，new-orin 基础服务全部 healthy；`docker inspect` 确认 rabbitbot 容器只挂载新项目路径。
+- 旧目录删除后，短时无机器人模式主循环已完成 workflow 预启动，并停在 `go` 闸门等待命令；本轮随后清理了该短跑 workflow 进程，仅保留基础服务运行。
 - `git merge --no-ff --no-commit refactor/service-internal-decoupling` 无冲突。
 - 合并前 `git merge-tree --write-tree master refactor/service-internal-decoupling` 通过。
 - 合并前 `git diff --check master..refactor/service-internal-decoupling` 无输出。
@@ -112,7 +118,7 @@
 - 完整 pytest 受本机缺少 `pytest` 阻塞。
 - Docker Compose、GPU、模型、Neo4j、TTS/STT HTTP 服务、导航桥接和真机导览闭环未在本轮本地验证。
 - PulseAudio/蓝牙音频仍是实验入口，完整可用性未确认。
-- 真实现场路径、地图、DDS 网卡、机器人网络、模型缓存完整性未确认。
+- 真实地图 `/home/unitree/test9.pcd`、DDS 网卡、机器人网络与真机导航桥接未在本轮验证。
 - 历史运行日志可能包含较完整文本或 payload，后续应继续治理隐私与日志体积。
 
 ## 下一步建议
