@@ -74,9 +74,18 @@ INPUT_LATENCY = os.environ.get("STT_INPUT_LATENCY", "high")
 AUDIO_QUEUE_MAX_CHUNKS = int(os.environ.get("STT_AUDIO_QUEUE_MAX_CHUNKS", "160"))
 INPUT_GAIN = float(os.environ.get("STT_INPUT_GAIN", "0.75"))
 
-in_device_id = os.environ.get("INPUT_DEVICE_INDEX")
-in_device_id = int(in_device_id) if in_device_id and in_device_id.strip() else None
-print(f"in_device_id: {in_device_id}")
+input_device_name = os.environ.get("INPUT_DEVICE_NAME", "").strip()
+input_device_index = os.environ.get("INPUT_DEVICE_INDEX", "").strip()
+if input_device_name:
+    in_device_id = input_device_name
+    input_device_source = "name"
+elif input_device_index:
+    in_device_id = int(input_device_index)
+    input_device_source = "index"
+else:
+    in_device_id = None
+    input_device_source = "default"
+LOGGER.info("STT 输入设备选择器已解析：source=%s, selector=%s", input_device_source, in_device_id)
 
 # ===== 模型路径配置 =====
 DEFAULT_MODELS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "models"))
@@ -138,14 +147,22 @@ _ = vad_model.generate(input=dummy_audio, chunk_size=320)
 print("Models warmed up!")
 
 # ===== 麦克风配置 =====
-if in_device_id is not None:
-    device_info = sd.query_devices(in_device_id, 'input')
-    device_max_input_channels = int(device_info.get("max_input_channels", INPUT_CHANNELS) or INPUT_CHANNELS)
-    STREAM_INPUT_CHANNELS = max(1, min(INPUT_CHANNELS, device_max_input_channels))
-else:
-    device_info = sd.query_devices(None, 'input')
-    device_max_input_channels = int(device_info.get("max_input_channels", INPUT_CHANNELS) or INPUT_CHANNELS)
-    STREAM_INPUT_CHANNELS = max(1, min(INPUT_CHANNELS, device_max_input_channels))
+try:
+    if in_device_id is not None:
+        device_info = sd.query_devices(in_device_id, 'input')
+    else:
+        device_info = sd.query_devices(None, 'input')
+except Exception as exc:
+    LOGGER.exception(
+        "STT 输入设备初始化失败：source=%s, selector=%s, error_type=%s",
+        input_device_source,
+        in_device_id,
+        type(exc).__name__,
+    )
+    raise RuntimeError(f"无法初始化 STT 输入设备：source={input_device_source}") from exc
+
+device_max_input_channels = int(device_info.get("max_input_channels", INPUT_CHANNELS) or INPUT_CHANNELS)
+STREAM_INPUT_CHANNELS = max(1, min(INPUT_CHANNELS, device_max_input_channels))
 
 try:
     sd.check_input_settings(device=in_device_id, samplerate=SAMPLE_RATE_MODEL, channels=STREAM_INPUT_CHANNELS)

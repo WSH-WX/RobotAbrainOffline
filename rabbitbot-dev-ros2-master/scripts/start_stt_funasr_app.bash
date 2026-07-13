@@ -58,7 +58,9 @@ DEVICE_AVAILABLE=$(echo "${DEVICE_INFO}" | cut -d'|' -f5)
 
 if [ "${DEVICE_AVAILABLE}" = "1" ] && [ -n "${DEVICE_INDEX}" ]; then
     export INPUT_DEVICE_INDEX="${DEVICE_INDEX}"
-    echo "使用输入音频设备 ${DEVICE_FOUND_NAME}，index=${INPUT_DEVICE_INDEX}，kind=${DEVICE_KIND}，reason=${DEVICE_SELECT_REASON}"
+    # PortAudio 的数字索引可能在探测子进程与 STT 主进程之间变化；名称可由主进程重新解析为稳定设备。
+    export INPUT_DEVICE_NAME="${DEVICE_FOUND_NAME}"
+    echo "使用输入音频设备 ${DEVICE_FOUND_NAME}，index=${INPUT_DEVICE_INDEX}，selector=name，kind=${DEVICE_KIND}，reason=${DEVICE_SELECT_REASON}"
     DEVICE_CARD=$(echo "${DEVICE_FOUND_NAME}" | sed -n 's/.*(hw:\([0-9][0-9]*\),[0-9][0-9]*).*/\1/p')
     if [ -n "${DEVICE_CARD}" ] && command -v amixer >/dev/null 2>&1; then
         if amixer -c "${DEVICE_CARD}" sset Mic "${STT_INPUT_VOLUME_PERCENT}%" >/dev/null 2>&1; then

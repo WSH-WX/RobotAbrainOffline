@@ -214,6 +214,7 @@ services:
       RABBITBOT_NAV_MAP_PATH: ${RABBITBOT_NAV_MAP_PATH:-/home/unitree/test9.pcd}
       RABBITBOT_PORTABLE_PROJECT_ROOT: /workspace/projects/rabbitbot-dev-ros2-master
     volumes:
+      - ${RABBITBOT_NAV_MAP_PATH:-/home/unitree/test9.pcd}:${RABBITBOT_NAV_MAP_PATH:-/home/unitree/test9.pcd}:ro
       - ${RABBITBOT_PROJECTS_DIR:?RABBITBOT_PROJECTS_DIR must be set}/logs/nav_workflow_control:/workspace/projects/logs/nav_workflow_control
       - ${RABBITBOT_PROJECTS_DIR:?RABBITBOT_PROJECTS_DIR must be set}/unitree_slam_example_new/example/run_logs:/workspace/projects/unitree_slam_example_new/example/run_logs
     restart: unless-stopped
