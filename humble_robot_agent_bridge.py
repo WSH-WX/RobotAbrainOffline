@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import ast
 import asyncio
+import json
+import math
 import os
 import threading
 import time
@@ -44,8 +46,55 @@ class RobotBridgeNode(Node):
         self.nav_server_timeout = 5.0
         self.nav_goal_timeout = 15.0
         self.nav_lock = threading.Lock()
+        self.pose_lock = threading.Lock()
+        self.current_pose = None
+        self.current_pose_received_at = None
+        self.pose_invalid_logged = False
         self.create_subscription(UInt8, '/kuavo_navigation_state', self._nav_state_cb, 10)
         self.create_subscription(String, '/nav_status', self._nav_status_cb, 10)
+        self.create_subscription(String, '/current_pose', self._current_pose_cb, 10)
+
+    def _current_pose_cb(self, msg):
+        try:
+            payload = json.loads(msg.data)
+            required = ('x', 'y', 'z', 'ox', 'oy', 'oz', 'ow')
+            normalized = {key: float(payload[key]) for key in required}
+            if not all(math.isfinite(value) for value in normalized.values()):
+                raise ValueError('pose contains non-finite values')
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+            if not self.pose_invalid_logged:
+                self.get_logger().warning(
+                    f'Ignored invalid /current_pose message: error_type={type(exc).__name__} error={exc}'
+                )
+                self.pose_invalid_logged = True
+            return
+        first_pose = False
+        with self.pose_lock:
+            first_pose = self.current_pose is None
+            self.current_pose = normalized
+            self.current_pose_received_at = time.time()
+            self.pose_invalid_logged = False
+        if first_pose:
+            self.get_logger().info(
+                f'Current pose available through HTTP: x={normalized["x"]:.3f} y={normalized["y"]:.3f}'
+            )
+
+    def get_current_pose_payload(self):
+        with self.pose_lock:
+            pose = dict(self.current_pose) if self.current_pose is not None else None
+            received_at = self.current_pose_received_at
+        if pose is None or received_at is None:
+            return {'localized': False, 'message': 'current pose has not been published'}
+        age_seconds = max(0.0, time.time() - received_at)
+        max_age_seconds = float(os.getenv('ROBOT_BRIDGE_POSE_MAX_AGE_SECONDS', '30'))
+        if age_seconds > max_age_seconds:
+            return {
+                'localized': False,
+                'message': f'current pose is stale ({age_seconds:.1f}s)',
+                'age_seconds': round(age_seconds, 3),
+            }
+        pose.update({'localized': True, 'age_seconds': round(age_seconds, 3)})
+        return pose
 
     def _nav_state_cb(self, msg):
         with self.nav_lock:
@@ -294,6 +343,11 @@ app = FastAPI()
 @app.get('/health')
 def health():
     return {'ok': True, 'service': 'humble_robot_agent_bridge'}
+
+
+@app.get('/current_pose')
+def current_pose():
+    return node.get_current_pose_payload()
 
 
 @app.post('/do_arm_async')

@@ -47,6 +47,8 @@ sudo systemctl restart rabbitbot-loop.service
 
 “服务状态管理”会显示 NavBridge 的 `28180` 端口状态和 `rabbitbot-navbridge` 容器名。点击其“重启”后，后端通过解耦 Compose 执行 `up -d --force-recreate rabbitbot-navbridge`；因此容器仍存在时会重建，容器已经退出或缺失时也会重新创建。该操作只处理 NavBridge，不重启 VLM、TTS、STT、Memory 或 Workflow。
 
+NavBridge 还提供 `GET /current_pose`，从容器内 ROS2 `/current_pose` 订阅返回最近一次有效七元组位姿；尚未定位或位姿超过默认 30 秒未更新时返回 `localized=false`。RobotMapPlanner 使用该接口读取机器人起点，无需在宿主机运行 ROS2 CLI。
+
 网页后端以 `pc` 用户运行，启动/停止/重启 systemd 服务需要 sudoers 免密授权。交付部署时应安装仓库内的模板：
 
 ```bash

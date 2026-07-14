@@ -53,6 +53,7 @@
 - 服务状态列表新增 NavBridge（`127.0.0.1:28180` / `rabbitbot-navbridge`）卡片，可在控制台独立确认并重启。
 - NavBridge 重启使用解耦 Compose `up -d --force-recreate rabbitbot-navbridge`，在线时重建、容器缺失或离线时重新创建，不依赖 `rabbitbot-loop.service` 已运行。
 - 服务 key、容器映射和重启宽限状态均增加 `navbridge`，控制台首页避免重复显示同一 NavBridge 状态。
+- NavBridge 订阅容器内 ROS2 `/current_pose` 并提供 `GET /current_pose`；解耦 Compose 将仓库内桥接脚本只读挂载进容器，宿主应用无需 ROS2 CLI 即可读取带时效校验的七元组位姿。
 - 两份 portable Compose 为 nav 容器增加现场地图的同路径只读 bind mount，解决宿主地图存在但容器内不可见的问题。
 - `deploy/check_air_project.sh` 新增地图挂载策略检查，单 nav 与解耦 Compose 缺少挂载时快速失败并输出具体文件。
 - STT 启动脚本不再只跨进程传递易漂移的 PortAudio 数字索引，同时传递稳定设备名称。
@@ -61,6 +62,7 @@
 ## 日志新增或调整
 
 - NavBridge 重启新增 INFO 日志，记录服务名、Compose 文件、Docker 路径和完成状态；超时或失败使用 ERROR 记录退出码与限量输出并保留超时异常链。
+- NavBridge 首次取得有效位姿时以 INFO 记录有限的 x/y 上下文；无效位姿仅首次 WARNING，避免持续话题造成日志膨胀。
 - 新增 INFO 日志：STT 输入设备选择器来源（name/index/default）和已解析选择器。
 - 新增异常日志：STT 输入设备初始化失败时记录必要上下文并保留原始异常链。
 - 部署和自检继续使用现有 `[INFO]/[OK]/[WARN]/[ERROR]` 体系；未记录密码、令牌、完整隐私数据或大体积输入输出。
@@ -69,6 +71,7 @@
 
 - 本轮新增 NavBridge 命令、API、状态和容器映射定向测试 4/4 通过；本机和 Orin 控制台完整测试均为 92/92 通过，并固定了既有启动宽限窗口和主循环探测用例的环境依赖。
 - Orin 实际调用 `POST /api/service/restart` 成功创建此前缺失的 `rabbitbot-navbridge`；容器保持 running，`GET 127.0.0.1:28180/health` 返回 `ok=true`，22 秒保护窗口后控制台卡片从“启动中”转为“在线”。
+- 重新创建后的 NavBridge 已加载宿主桥接脚本，`GET /current_pose` 持续返回 `localized=true`、七元组和位姿年龄；首次有效位姿 INFO 日志已验证。
 - 三个离线 tar 的 SHA-256 全部通过；导入后镜像 ID 与 `images.lock.json` 一致。
 - `PORTABLE_CHECK_MODE=clean_orin bash deploy/check_air_project.sh` 在 AGX-orin 通过。
 - 两份 Compose 均通过 `docker compose config -q`；地图挂载策略自检通过。
