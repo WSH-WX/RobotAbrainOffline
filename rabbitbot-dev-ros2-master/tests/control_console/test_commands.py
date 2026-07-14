@@ -1,6 +1,31 @@
 import pytest
 
-from rabbitbot.control_console.commands import CommandError, read_loop_no_robot_mode, read_map_path, restart_loop_service, send_workflow_command, start_loop_service, start_task, stop_loop_service, write_loop_mode, write_map_path
+from rabbitbot.control_console.commands import CommandError, read_loop_no_robot_mode, read_map_path, restart_loop_service, restart_nav_bridge, send_workflow_command, start_loop_service, start_task, stop_loop_service, write_loop_mode, write_map_path
+
+
+def test_restart_nav_bridge_uses_compose_force_recreate(tmp_path):
+    docker = tmp_path / "docker"
+    record = tmp_path / "docker_args.txt"
+    compose = tmp_path / "docker-compose.decoupled.yaml"
+    compose.write_text("services:\n  rabbitbot-navbridge:\n    image: test\n", encoding="utf-8")
+    docker.write_text(
+        f"#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > {record}\necho navbridge-started\n",
+        encoding="utf-8",
+    )
+    docker.chmod(0o755)
+
+    result = restart_nav_bridge(docker_path=docker, compose_file=compose)
+
+    assert result == "navbridge-started"
+    assert record.read_text(encoding="utf-8").splitlines() == [
+        "compose",
+        "-f",
+        str(compose),
+        "up",
+        "-d",
+        "--force-recreate",
+        "rabbitbot-navbridge",
+    ]
 
 
 def test_send_workflow_command_allows_go_and_invokes_script(tmp_path):

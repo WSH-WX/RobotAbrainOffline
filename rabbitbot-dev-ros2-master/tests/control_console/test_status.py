@@ -330,6 +330,11 @@ def test_service_status_marks_offline_outside_startup_window(monkeypatch):
     from rabbitbot.control_console import status as status_mod
 
     monkeypatch.setattr(status_mod, "get_main_loop_start_epoch", lambda: None)
+    monkeypatch.setattr(
+        status_mod,
+        "_console_process_start_epoch",
+        time.time() - status_mod.SERVICE_STARTUP_GRACE_SECONDS - 1,
+    )
     monkeypatch.setattr(status_mod, "is_port_open", lambda host, port, timeout=0.12: False)
     statuses = status_mod.get_runtime_service_statuses()
     assert statuses
@@ -359,6 +364,7 @@ def test_resolve_service_container_compose_groups(monkeypatch):
     assert status_mod.resolve_service_container("embedding") == "rabbitbot-vlm"
     assert status_mod.resolve_service_container("memory") == "rabbitbot-memory"
     assert status_mod.resolve_service_container("neo4j") == "neo4j"
+    assert status_mod.resolve_service_container("navbridge") == "rabbitbot-navbridge"
     assert status_mod.resolve_service_container("nope") is None
 
 
@@ -368,6 +374,11 @@ def test_service_status_marks_starting_after_container_restart(monkeypatch):
 
     monkeypatch.setenv("RABBITBOT_BASE_RUNTIME", "compose")
     monkeypatch.setattr(status_mod, "get_main_loop_start_epoch", lambda: None)
+    monkeypatch.setattr(
+        status_mod,
+        "_console_process_start_epoch",
+        time.time() - status_mod.SERVICE_STARTUP_GRACE_SECONDS - 1,
+    )
     monkeypatch.setattr(status_mod, "is_port_open", lambda host, port, timeout=0.12: False)
     monkeypatch.setattr(status_mod, "_recent_container_restarts", {"rabbitbot-tts": time.time()})
     by_key = {item.key: item for item in status_mod.get_runtime_service_statuses()}

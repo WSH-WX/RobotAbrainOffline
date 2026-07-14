@@ -89,9 +89,10 @@ def test_status_does_not_require_login(tmp_path, monkeypatch):
     body = response.json()
     assert body["map_path"] == "/home/unitree/test9.pcd"
     service_by_key = {item["key"]: item for item in body["services"]}
-    assert {"tts", "stt", "memory", "neo4j", "vlm", "embedding"}.issubset(service_by_key)
+    assert {"tts", "stt", "memory", "neo4j", "vlm", "embedding", "navbridge"}.issubset(service_by_key)
     assert service_by_key["vlm"]["required"] is True
     assert service_by_key["embedding"]["required"] is True
+    assert service_by_key["navbridge"]["container"] == "rabbitbot-navbridge"
     assert body["speech"]["listening"] is False
     assert body["speech"]["message"] == "未在监听"
 
@@ -108,7 +109,10 @@ def test_status_prefers_runtime_map_env_file(tmp_path):
     assert response.json()["map_path"] == "/home/unitree/new_map.pcd"
 
 
-def test_status_returns_map_and_pose_without_login(tmp_path):
+def test_status_returns_map_and_pose_without_login(tmp_path, monkeypatch):
+    from rabbitbot.control_console import app as app_mod
+
+    monkeypatch.setattr(app_mod, "detect_main_loop_running", lambda: "running")
     config = make_config(tmp_path)
     nav_log = config.nav_log_dir / "nav_bridge_20260609.log"
     nav_log.write_text(
@@ -683,6 +687,26 @@ def test_service_restart_restarts_tts_container_for_tts(tmp_path, monkeypatch):
     assert response.json()["container"] == "rabbitbot-tts"
     record = config.project_root / "docker_args.txt"
     assert record.read_text(encoding="utf-8").splitlines() == ["restart", "-t", "20", "rabbitbot-tts"]
+
+
+def test_service_restart_recreates_navbridge_with_compose(tmp_path, monkeypatch):
+    from rabbitbot.control_console import status as status_mod
+
+    monkeypatch.setenv("RABBITBOT_BASE_RUNTIME", "compose")
+    monkeypatch.setenv("RABBITBOT_DECOUPLED_COMPOSE_FILE", "")
+    monkeypatch.setattr(status_mod, "_recent_container_restarts", {})
+    config = make_config(tmp_path)
+    client = TestClient(create_app(config))
+
+    response = client.post("/api/service/restart", json={"key": "navbridge"})
+
+    assert response.status_code == 200
+    assert response.json()["container"] == "rabbitbot-navbridge"
+    assert response.json()["message"] == "已提交重启 rabbitbot-navbridge"
+    record = config.project_root / "docker_args.txt"
+    args = record.read_text(encoding="utf-8").splitlines()
+    assert args[0:2] == ["compose", "-f"]
+    assert args[-4:] == ["up", "-d", "--force-recreate", "rabbitbot-navbridge"]
 
 
 def test_service_restart_rejects_unknown_service(tmp_path):

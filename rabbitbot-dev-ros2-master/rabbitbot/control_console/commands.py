@@ -18,6 +18,10 @@ MAP_ENV_KEY = "NAV_PCD_PATH"
 NO_ROBOT_ENV_KEY = "RABBITBOT_NAV_WORKFLOW_NO_ROBOT"
 WORKFLOW_MANUAL_ENV_KEY = "RABBITBOT_WORKFLOW_NON_INTEGRATION"
 WORKFLOW_VOICE_START_ENV_KEY = "RABBITBOT_NAV_WORKFLOW_VOICE_START"
+DEFAULT_DECOUPLED_COMPOSE_FILE = (
+    Path(__file__).resolve().parents[2] / "docker" / "portable" / "docker-compose.decoupled.yaml"
+)
+NAV_BRIDGE_SERVICE_NAME = "rabbitbot-navbridge"
 
 COMPOSE_PROJECT_CONTAINER_ENVS = [
     ("RABBITBOT_NEO4J_CONTAINER_NAME", "neo4j"),
@@ -317,6 +321,70 @@ def restart_service_container(container_name: str, docker_path: Path = Path("/us
         logger.error("重启服务容器失败：container=%s, returncode=%s, output=%s", container_name, result.returncode, output)
         raise CommandError(output or f"重启容器 {container_name} 失败，退出码：{result.returncode}")
     logger.info("重启服务容器完成：container=%s", container_name)
+    return output
+
+
+def restart_nav_bridge(
+    docker_path: Path = Path("/usr/bin/docker"),
+    compose_file: Path | None = None,
+    service_name: str | None = None,
+    timeout: float = 120.0,
+) -> str:
+    """通过解耦 Compose 重建 NavBridge；容器缺失时也会重新创建。"""
+    if not docker_path.exists():
+        raise CommandError(f"docker 不存在：{docker_path}")
+    configured_compose = os.environ.get("RABBITBOT_DECOUPLED_COMPOSE_FILE", "").strip()
+    active_compose = compose_file or (Path(configured_compose) if configured_compose else DEFAULT_DECOUPLED_COMPOSE_FILE)
+    if not active_compose.is_file():
+        raise CommandError(f"NavBridge compose 文件不存在：{active_compose}")
+    active_service = (service_name or os.environ.get("RABBITBOT_NAVBRIDGE_SERVICE", NAV_BRIDGE_SERVICE_NAME)).strip()
+    if active_service != NAV_BRIDGE_SERVICE_NAME:
+        raise CommandError(f"不支持的 NavBridge compose 服务：{active_service}")
+    args = [
+        str(docker_path),
+        "compose",
+        "-f",
+        str(active_compose),
+        "up",
+        "-d",
+        "--force-recreate",
+        active_service,
+    ]
+    logger.info(
+        "准备通过 Compose 重启 NavBridge：service=%s, compose=%s, docker=%s, timeout=%s",
+        active_service,
+        active_compose,
+        docker_path,
+        timeout,
+    )
+    try:
+        result = subprocess.run(
+            args,
+            check=False,
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+            cwd=active_compose.parent,
+        )
+    except subprocess.TimeoutExpired as exc:
+        logger.error(
+            "Compose 重启 NavBridge 超时：service=%s, compose=%s, timeout=%s",
+            active_service,
+            active_compose,
+            timeout,
+        )
+        raise CommandError(f"重启 NavBridge 超时（{timeout:.0f}s）") from exc
+    output = "\n".join(part.strip() for part in (result.stdout, result.stderr) if part.strip())
+    if result.returncode != 0:
+        logger.error(
+            "Compose 重启 NavBridge 失败：service=%s, compose=%s, returncode=%s, output=%s",
+            active_service,
+            active_compose,
+            result.returncode,
+            output[-1000:],
+        )
+        raise CommandError(output or f"重启 NavBridge 失败，退出码：{result.returncode}")
+    logger.info("Compose 重启 NavBridge 已提交：service=%s, compose=%s", active_service, active_compose)
     return output
 
 

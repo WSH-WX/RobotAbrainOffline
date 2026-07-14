@@ -16,6 +16,7 @@ from .commands import (
     read_map_path,
     read_loop_no_robot_mode,
     restart_loop_service,
+    restart_nav_bridge,
     restart_service_container,
     send_workflow_command,
     set_loop_service_autostart,
@@ -103,7 +104,10 @@ def clear_current_runtime_log(path: Path, reason: str) -> None:
 
 def _restart_service_container_bg(container_name: str, service_key: str, docker_path: Path) -> None:
     try:
-        restart_service_container(container_name, docker_path=docker_path)
+        if service_key == "navbridge":
+            restart_nav_bridge(docker_path=docker_path)
+        else:
+            restart_service_container(container_name, docker_path=docker_path)
     except CommandError:
         logger.exception("后台重启服务容器失败：service_key=%s, container=%s", service_key, container_name)
 
@@ -465,8 +469,6 @@ function renderDashboardServiceStatus(data){
   });
   var workflowState=(data&&data.main_loop==='running')?(data.workflow&&data.workflow.ready?'online':'starting'):'offline';
   rows.push({key:'workflow',label:'Workflow',state:workflowState,message:data&&data.workflow?guideStateLabel(data.workflow.status):'',desc:serviceDescriptions.workflow});
-  var navState=(data&&data.nav_bridge&&data.nav_bridge.ready)?'online':'offline';
-  rows.push({key:'navbridge',label:'NavBridge',state:navState,message:data&&data.nav_bridge?data.nav_bridge.message:'',desc:serviceDescriptions.navbridge});
   var onlineCount=0;
   list.innerHTML='';
   for(var i=0;i<rows.length;i++){

@@ -539,6 +539,7 @@ SERVICE_CONTAINER_GROUP = {
     "memory": "memory",
     "vlm": "vlm",
     "embedding": "vlm",
+    "navbridge": "navbridge",
 }
 
 # 最近一次“服务容器重启”的时间戳(容器名 -> epoch)，用于在重启宽限期内把该容器的服务显示为“启动中”。
@@ -565,6 +566,8 @@ def resolve_service_container(key: str) -> str | None:
         return None
     if group == "neo4j":
         return os.environ.get("RABBITBOT_NEO4J_CONTAINER_NAME", "neo4j")
+    if group == "navbridge":
+        return os.environ.get("RABBITBOT_NAV_BRIDGE_CONTAINER_NAME", "rabbitbot-navbridge")
     base_runtime = os.environ.get("RABBITBOT_BASE_RUNTIME", "compose").strip().lower()
     if base_runtime == "compose":
         compose_container = {
@@ -655,6 +658,7 @@ def get_runtime_service_statuses() -> list[ServiceStatus]:
         ("memory", "Memory", 28182, True),
         ("vlm", "VLM", 8000, True),
         ("embedding", "Embedding", 8005, True),
+        ("navbridge", "NavBridge", 28180, True),
     ]
     # 主循环刚启动后的一段时间内，未就绪的服务视为“启动中”而非“离线”，便于前端用黄色提示；
     # 控制台进程自身刚启动/重启后的同一宽限期内同样生效，覆盖主循环未运行时的整机重启场景
