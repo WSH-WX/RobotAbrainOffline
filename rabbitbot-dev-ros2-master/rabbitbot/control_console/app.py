@@ -99,7 +99,8 @@ def clear_current_runtime_log(path: Path, reason: str) -> None:
         path.write_text(f"[INFO] 已清空当前运行日志：reason={reason}\n", encoding="utf-8")
         logger.info("已清空当前运行日志：path=%s, reason=%s", path, reason)
     except OSError as exc:
-        logger.warning("清空当前运行日志失败：path=%s, reason=%s, error=%s", path, reason, exc)
+        logger.exception("清空当前运行日志失败：path=%s, reason=%s", path, reason)
+        raise CommandError(f"运行日志不可写：{path}；请检查部署目录所有权") from exc
 
 
 def _restart_service_container_bg(

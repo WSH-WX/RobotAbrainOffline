@@ -44,7 +44,7 @@
 - `portable.env` 已生成；其中旧的 Orin 地图值只作为启动回退，控制台确认值持久化在 `runtime/rabbitbot-loop.env` 并在重建 NavBridge 时显式覆盖。
 - NetworkManager 连接 `rabbitbot-dds-eno1` 配置为 `192.168.123.222/24`；现场验证时 `eno1` 已连接机器人网络。
 - `neo4j`、`rabbitbot-vlm`、`rabbitbot-tts`、`rabbitbot-stt`、`rabbitbot-memory`、`rabbitbot-workflow` 已运行且健康。
-- `rabbitbot-control-console.service` 已安装并运行；`rabbitbot-loop.service` 已安装但保持 inactive。两个服务按现有安装策略均为 disabled；控制台重启功能已独立创建并运行 `rabbitbot-navbridge`。
+- `rabbitbot-control-console.service` 与 `rabbitbot-loop.service` 均已安装并运行；两个服务按现有安装策略均为 disabled，导航主循环由控制台按需启动。
 - systemd 与 sudoers 已全部切换到新路径，不再引用 `/mnt/ssd/navgation/projects/rabbitbot-dev-ros2-master`。
 - 旧项目目录、旧 RabbitBot 容器/镜像和旧 Neo4j 卷已删除；用户随后明确要求无需恢复、继续部署新项目。
 
@@ -61,6 +61,8 @@
 - NavBridge 订阅容器内 ROS2 `/current_pose` 并提供 `GET /current_pose`；解耦 Compose 将仓库内桥接脚本只读挂载进容器，宿主应用无需 ROS2 CLI 即可读取带时效校验的七元组位姿。
 - 控制台“确认地图”现在持久化前端路径后同步重建 NavBridge，并通过 Compose 子进程环境显式传入 `RABBITBOT_NAV_MAP_PATH`；单独重启 NavBridge 也读取同一持久化值。
 - 两份 portable Compose 移除错误的机器人地图 bind mount；`deploy/check_air_project.sh` 改为校验路径传递存在且禁止把机器人侧路径作为 Orin bind mount。
+- 新增 `deploy/runtime_permissions.sh`，让 bootstrap 与 systemd 安装流程幂等修复仓库根 `logs/`、控制台 `runtime/` 和导航 run_logs 的服务用户所有权、组写权限及 setgid；修正旧 bootstrap 创建错误嵌套日志目录的问题。
+- clean-Orin 自检新增运行目录所有者/可写性检查；主循环启动前输出权限诊断，控制台发现当前日志不可写时保留异常链并直接向前端报错，不再继续提交必然失败的 systemd 重启。
 - STT 启动脚本不再只跨进程传递易漂移的 PortAudio 数字索引，同时传递稳定设备名称。
 - `stt_app_funasr.py` 优先使用设备名称，保留数字索引回退；设备初始化失败时记录来源、选择器和异常类型，并用异常链抛出。
 
@@ -70,6 +72,7 @@
 - 唤醒词命中和忽略均使用 INFO 日志，只记录称呼、输入长度、请求长度和匹配状态，不记录完整语音文本。
 - NavBridge 重启新增 INFO 日志，记录服务名、Compose 文件、Docker 路径和完成状态；超时或失败使用 ERROR 记录退出码与限量输出并保留超时异常链。
 - 控制台确认地图成功新增 INFO 日志，记录有限的地图路径、环境文件和 NavBridge 容器上下文；不记录密钥或大体积输入。
+- 部署权限修复逐目录输出 INFO/OK 所有者和权限；主循环启动前记录日志目录检查结果，失败时记录路径、所有者、模式和服务用户。
 - NavBridge 首次取得有效位姿时以 INFO 记录有限的 x/y 上下文；无效位姿仅首次 WARNING，避免持续话题造成日志膨胀。
 - 新增 INFO 日志：STT 输入设备选择器来源（name/index/default）和已解析选择器。
 - 新增异常日志：STT 输入设备初始化失败时记录必要上下文并保留原始异常链。
@@ -84,6 +87,8 @@
 - 本轮新增 NavBridge 命令、API、状态和容器映射定向测试 4/4 通过；本机和 Orin 控制台完整测试均为 92/92 通过，并固定了既有启动宽限窗口和主循环探测用例的环境依赖。
 - Orin 实际调用 `POST /api/service/restart` 成功创建此前缺失的 `rabbitbot-navbridge`；容器保持 running，`GET 127.0.0.1:28180/health` 返回 `ok=true`，22 秒保护窗口后控制台卡片从“启动中”转为“在线”。
 - 本轮 Orin 控制台测试 94/94 通过，两份 Compose `config -q` 与 `PORTABLE_CHECK_MODE=clean_orin` 自检通过。
+- 运行目录权限修复后 Orin 控制台测试 95/95 通过；实际重新安装 systemd 后四个目录均为 `pc:pc` 且可写，clean-Orin 自检通过。
+- 现场调用“一键重启”对应 `/api/restart` 成功，`rabbitbot-loop.service` 为 active，`logs/current_runtime.log` 由 `pc:pc` 创建；近两分钟无 `Permission denied` 或日志目录不可写错误。
 - 现场调用 `POST /api/map` 输入 `/home/unitree/test7.pcd` 后返回成功；容器环境确认同值且无地图 bind mount，NavBridge 健康接口正常，原 `507 Load pcd failed` 已消失。
 - 重新创建后的 NavBridge 已加载宿主桥接脚本，`GET /current_pose` 持续返回 `localized=true`、七元组和位姿年龄；首次有效位姿 INFO 日志已验证。
 - 三个离线 tar 的 SHA-256 全部通过；导入后镜像 ID 与 `images.lock.json` 一致。

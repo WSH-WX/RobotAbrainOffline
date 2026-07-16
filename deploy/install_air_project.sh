@@ -8,6 +8,7 @@ AIR_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO_DIR="${AIR_ROOT}/rabbitbot-dev-ros2-master"
 RESTART_CONTROL_CONSOLE="${RESTART_CONTROL_CONSOLE:-1}"
 PORTABLE_ENV_FILE="${REPO_DIR}/runtime/portable.env"
+RUNTIME_PERMISSIONS_SCRIPT="${AIR_ROOT}/deploy/runtime_permissions.sh"
 SERVICE_USER="${RABBITBOT_SERVICE_USER:-${SUDO_USER:-$(id -un)}}"
 SERVICE_GROUP="${RABBITBOT_SERVICE_GROUP:-$(id -gn "${SERVICE_USER}")}"
 GENERATED_DIR=""
@@ -35,6 +36,9 @@ require_path "${REPO_DIR}/scripts_1/start_nav_bridge_workflow_loop.sh"
 require_path "${REPO_DIR}/scripts_1/start_nav_bridge_portable.sh"
 require_path "${REPO_DIR}/scripts_1/start_control_console.sh"
 require_path "${AIR_ROOT}/deploy/bootstrap_host.sh"
+require_path "${RUNTIME_PERMISSIONS_SCRIPT}"
+# shellcheck source=deploy/runtime_permissions.sh
+source "${RUNTIME_PERMISSIONS_SCRIPT}"
 # systemd 通过 EnvironmentFile 加载本机 portable.env；该文件不进入 Git，必须先由 bootstrap 生成。
 if [ ! -f "${PORTABLE_ENV_FILE}" ]; then
     log_error "缺少本机运行配置：${PORTABLE_ENV_FILE}。该文件不随仓库迁移，请先执行 deploy/bootstrap_host.sh 在本机生成后再安装 systemd 服务。"
@@ -119,6 +123,9 @@ generate_install_templates
 
 log_info "停止旧的 rabbitbot-loop.service（如正在运行）"
 "${SUDO[@]}" systemctl stop rabbitbot-loop.service 2>/dev/null || true
+
+# 即使旧版 bootstrap 或 Docker 曾以 root 创建日志目录，安装/升级服务时也必须幂等修复。
+ensure_rabbitbot_runtime_permissions "${AIR_ROOT}" "${SERVICE_USER}" "${SERVICE_GROUP}"
 
 log_info "安装 systemd unit"
 "${SUDO[@]}" install -m 0644 "${GENERATED_DIR}/rabbitbot-loop.service" /etc/systemd/system/rabbitbot-loop.service

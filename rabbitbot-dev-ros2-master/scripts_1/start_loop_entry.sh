@@ -6,8 +6,17 @@ PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 PORTABLE_ENV_FILE="${RABBITBOT_PORTABLE_ENV_FILE:-${PROJECT_DIR}/runtime/portable.env}"
 CURRENT_RUNTIME_LOG="${RABBITBOT_CURRENT_RUNTIME_LOG:-$(cd "${PROJECT_DIR}/.." && pwd)/logs/current_runtime.log}"
 
-mkdir -p "$(dirname "${CURRENT_RUNTIME_LOG}")"
+CURRENT_RUNTIME_LOG_DIR="$(dirname "${CURRENT_RUNTIME_LOG}")"
+mkdir -p "${CURRENT_RUNTIME_LOG_DIR}"
+if [ ! -w "${CURRENT_RUNTIME_LOG_DIR}" ]; then
+    owner="$(stat -c '%U:%G' "${CURRENT_RUNTIME_LOG_DIR}" 2>/dev/null || echo unknown)"
+    mode="$(stat -c '%A' "${CURRENT_RUNTIME_LOG_DIR}" 2>/dev/null || echo unknown)"
+    echo "[ERROR] 主循环日志目录不可写：path=${CURRENT_RUNTIME_LOG_DIR}, owner=${owner}, mode=${mode}, user=$(id -un)" >&2
+    echo "[ERROR] 请重新执行 deploy/bootstrap_host.sh 或 deploy/install_air_project.sh 修复运行目录权限。" >&2
+    exit 1
+fi
 : > "${CURRENT_RUNTIME_LOG}"
+echo "[INFO] 主循环日志目录检查通过：path=${CURRENT_RUNTIME_LOG_DIR}, user=$(id -un)"
 
 if [ -f "${PORTABLE_ENV_FILE}" ]; then
     set -a

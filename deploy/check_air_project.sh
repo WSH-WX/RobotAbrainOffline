@@ -348,6 +348,8 @@ require_path "${REPO_DIR}/docker/portable/nav_entrypoint.sh"
 require_path "${REPO_DIR}/scripts_1/start_loop_entry.sh"
 require_path "${REPO_DIR}/scripts_1/start_nav_bridge_portable.sh"
 require_path "${PROJECTS_DIR}/deploy/bootstrap_host.sh"
+require_path "${PROJECTS_DIR}/deploy/runtime_permissions.sh"
+require_path "${PROJECTS_DIR}/deploy/install_air_project.sh"
 require_path "${PROJECTS_DIR}/deploy/ensure_models.sh"
 require_path "${PROJECTS_DIR}/deploy/build_or_pull_images.sh"
 require_path "${PROJECTS_DIR}/deploy/start_portable_stack.sh"
@@ -366,8 +368,16 @@ check_portable_nav_map_path
 check_portable_unitree_tts_policy
 check_port_topology_runtime
 
+if ! grep -q 'ensure_rabbitbot_runtime_permissions' "${PROJECTS_DIR}/deploy/bootstrap_host.sh" \
+    || ! grep -q 'ensure_rabbitbot_runtime_permissions' "${PROJECTS_DIR}/deploy/install_air_project.sh"; then
+    log_error "bootstrap 或 systemd 安装流程缺少 RabbitBot 运行目录权限修复"
+    exit 1
+fi
+log_ok "部署流程已接入幂等运行目录权限修复"
+
 log_info "检查脚本语法"
 scripts=(
+    "${PROJECTS_DIR}/deploy/runtime_permissions.sh"
     "${REPO_DIR}/scripts_1/start_nav_bridge_workflow_loop.sh"
     "${REPO_DIR}/scripts_1/start_unified_integration_workflow.sh"
     "${REPO_DIR}/scripts_1/stop_unified_workflow.sh"
@@ -432,8 +442,9 @@ else
 fi
 
 log_info "检查旧路径硬编码（共享）"
-if grep -RIn "/mnt/ssd/navgation/projects/rabbitbot-dev-ros2-master" \
-    "${REPO_DIR}/rabbitbot" "${REPO_DIR}/scripts" "${REPO_DIR}/scripts_1" "${REPO_DIR}/deploy" \
+legacy_project_root="/mnt/ssd/navgation/projects""/rabbitbot-dev-ros2-master"
+if grep -RIn "${legacy_project_root}" \
+    "${REPO_DIR}/rabbitbot" "${REPO_DIR}/scripts" "${REPO_DIR}/scripts_1" "${PROJECTS_DIR}/deploy" \
     --exclude-dir=__pycache__ --exclude='*.pyc'; then
     log_error "仍存在旧项目根硬编码，请先处理。"
     exit 1
@@ -555,6 +566,34 @@ run_clean_orin_checks() {
     else
         log_warn "未发现控制台轻量虚拟环境：${REPO_DIR}/runtime/control_console_venv；请先执行 deploy/bootstrap_host.sh。"
     fi
+
+    local service_user="${RABBITBOT_SERVICE_USER:-${SUDO_USER:-$(id -un)}}"
+    local service_group="${RABBITBOT_SERVICE_GROUP:-$(id -gn "${service_user}")}"
+    local runtime_dir runtime_owner runtime_group runtime_mode
+    local runtime_dirs=(
+        "${PROJECTS_DIR}/logs"
+        "${PROJECTS_DIR}/logs/nav_workflow_control"
+        "${REPO_DIR}/runtime"
+        "${PROJECTS_DIR}/unitree_slam_example_new/example/run_logs"
+    )
+    for runtime_dir in "${runtime_dirs[@]}"; do
+        if [ ! -d "${runtime_dir}" ]; then
+            log_error "RabbitBot 运行目录不存在：${runtime_dir}；请重新执行 deploy/bootstrap_host.sh 或 deploy/install_air_project.sh。"
+            exit 1
+        fi
+        runtime_owner="$(stat -c '%U' "${runtime_dir}")"
+        runtime_group="$(stat -c '%G' "${runtime_dir}")"
+        runtime_mode="$(stat -c '%A' "${runtime_dir}")"
+        if [ "${runtime_owner}" != "${service_user}" ] || [ "${runtime_group}" != "${service_group}" ]; then
+            log_error "RabbitBot 运行目录所有权错误：path=${runtime_dir}, actual=${runtime_owner}:${runtime_group}, expected=${service_user}:${service_group}"
+            exit 1
+        fi
+        if [ "$(id -un)" = "${service_user}" ] && [ ! -w "${runtime_dir}" ]; then
+            log_error "RabbitBot 服务用户无法写入运行目录：path=${runtime_dir}, user=${service_user}, mode=${runtime_mode}"
+            exit 1
+        fi
+        log_ok "RabbitBot 运行目录可写：path=${runtime_dir}, owner=${runtime_owner}:${runtime_group}, mode=${runtime_mode}"
+    done
 
     local map_path="${RABBITBOT_NAV_MAP_PATH:-}"
     if [ -z "${map_path}" ]; then

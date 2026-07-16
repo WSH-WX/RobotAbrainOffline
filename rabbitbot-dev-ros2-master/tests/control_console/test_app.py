@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 
 from fastapi.testclient import TestClient
 
@@ -301,6 +302,20 @@ def test_confirm_map_writes_map_and_recreates_navbridge(tmp_path):
     args = (config.project_root / "docker_args.txt").read_text(encoding="utf-8").splitlines()
     assert args[-4:] == ["up", "-d", "--force-recreate", "rabbitbot-navbridge"]
     assert (config.project_root / "nav_map_path.txt").read_text(encoding="utf-8").strip() == "/home/unitree/test13.pcd"
+
+
+def test_restart_reports_unwritable_runtime_log_before_systemctl(tmp_path):
+    config = make_config(tmp_path)
+    blocked_parent = config.project_root / "blocked-log-parent"
+    blocked_parent.write_text("not-a-directory\n", encoding="utf-8")
+    config = replace(config, current_runtime_log=blocked_parent / "current_runtime.log")
+    client = TestClient(create_app(config))
+
+    response = client.post("/api/restart", json={"map_path": "/home/unitree/test7.pcd"})
+
+    assert response.status_code == 400
+    assert "运行日志不可写" in response.json()["detail"]
+    assert not (config.project_root / "systemctl_args.txt").exists()
 
 
 def test_stop_stops_loop_service_without_login(tmp_path):

@@ -80,7 +80,7 @@ git checkout feature/portable-deploy
 # 2) 导入 portable 镜像（先校验 sha256 再 docker load；含 core / nav / neo4j 三个镜像）
 IMAGE_DIR=/path/to/portable-images bash deploy/import_portable_images.sh
 
-# 3) 最小宿主初始化（检查工具与 venv 能力、从 portable.env.example 生成本机 portable.env、创建控制台轻量 venv）
+# 3) 最小宿主初始化（检查工具与 venv 能力、生成 portable.env/控制台 venv，并修正运行目录所有权）
 bash deploy/bootstrap_host.sh
 #    宿主缺少 python3-venv 时脚本会快速失败并给出安装建议；允许自动安装时：
 #    INSTALL_HOST_PACKAGES=1 bash deploy/bootstrap_host.sh
@@ -99,6 +99,7 @@ MODE=check bash deploy/build_or_pull_images.sh
 bash deploy/start_portable_stack.sh
 
 # 7) 安装 systemd 服务
+#    安装过程会再次幂等修复 logs、runtime 与导航运行日志目录，兼容旧部署或 Docker/root 创建的目录。
 bash deploy/install_air_project.sh
 ```
 
@@ -148,7 +149,7 @@ PORTABLE_CHECK_MODE=clean_orin bash deploy/check_air_project.sh
 模式差异：
 
 - `builder`：额外要求外部构建源（`unitree_sdk2`/`vln`/`pyorbbecsdk`/`py38`/`py310`/导航构建产物/`dfx`）与 `core` 基础镜像存在。
-- `clean_orin`：允许上述外部目录缺失，转而要求已导入的 `core`/`nav` 镜像、控制台轻量 venv 与 `RABBITBOT_NAV_MAP_PATH` 配置存在。
+- `clean_orin`：允许上述外部目录缺失，转而要求已导入的 `core`/`nav` 镜像、控制台轻量 venv、`RABBITBOT_NAV_MAP_PATH` 配置及 systemd 服务用户可写的运行目录存在。
 
 ## 控制台与主循环
 

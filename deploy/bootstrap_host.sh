@@ -6,6 +6,7 @@ REPO_DIR="${AIR_ROOT}/rabbitbot-dev-ros2-master"
 PORTABLE_ENV_FILE="${REPO_DIR}/runtime/portable.env"
 PORTABLE_ENV_EXAMPLE_FILE="${PORTABLE_ENV_FILE}.example"
 CONTROL_CONSOLE_VENV="${REPO_DIR}/runtime/control_console_venv"
+RUNTIME_PERMISSIONS_SCRIPT="${AIR_ROOT}/deploy/runtime_permissions.sh"
 MODELS_CACHE_DIR_DEFAULT="${AIR_ROOT}/models"
 DDS_INTERFACE_DEFAULT="${RABBITBOT_DDS_INTERFACE:-eno1}"
 DDS_HOST_CIDR_DEFAULT="${RABBITBOT_DDS_HOST_CIDR:-192.168.123.222/24}"
@@ -13,6 +14,15 @@ NAV_MAP_PATH_DEFAULT="${RABBITBOT_NAV_MAP_PATH:-/home/unitree/test9.pcd}"
 APPLY_ROBOT_NETWORK="${APPLY_ROBOT_NETWORK:-0}"
 # INSTALL_HOST_PACKAGES=1 时，允许本脚本通过 sudo apt-get 自动安装缺失的宿主依赖（当前仅 venv 能力）。
 INSTALL_HOST_PACKAGES="${INSTALL_HOST_PACKAGES:-0}"
+SERVICE_USER="${RABBITBOT_SERVICE_USER:-${SUDO_USER:-$(id -un)}}"
+SERVICE_GROUP="${RABBITBOT_SERVICE_GROUP:-$(id -gn "${SERVICE_USER}")}"
+
+if [ ! -f "${RUNTIME_PERMISSIONS_SCRIPT}" ]; then
+    echo "[ERROR] 缺少运行目录权限脚本：${RUNTIME_PERMISSIONS_SCRIPT}" >&2
+    exit 1
+fi
+# shellcheck source=deploy/runtime_permissions.sh
+source "${RUNTIME_PERMISSIONS_SCRIPT}"
 
 log_info() { echo "[INFO] $1"; }
 log_ok() { echo "[OK] $1"; }
@@ -114,7 +124,7 @@ fi
 log_ok "docker compose 可用"
 ensure_python_venv_capability
 
-mkdir -p "${REPO_DIR}/runtime" "${AIR_ROOT}/unitree_slam_example_new/example/run_logs" "${REPO_DIR}/logs/nav_workflow_control"
+ensure_rabbitbot_runtime_permissions "${AIR_ROOT}" "${SERVICE_USER}" "${SERVICE_GROUP}"
 
 # 本机 portable.env 不进入 Git：不存在时先从随仓库迁移的模板复制生成，再增量写入本机配置。
 if [ ! -f "${PORTABLE_ENV_FILE}" ]; then
@@ -147,6 +157,9 @@ python3 -m venv "${CONTROL_CONSOLE_VENV}"
 "${CONTROL_CONSOLE_VENV}/bin/pip" install --upgrade pip >/dev/null
 "${CONTROL_CONSOLE_VENV}/bin/pip" install -r "${AIR_ROOT}/deploy/portable_host_requirements.txt" >/dev/null
 log_ok "控制台轻量虚拟环境已就绪"
+
+# bootstrap 可能通过 sudo 执行；venv 和 pip 文件会因此归 root，再次收敛为 systemd 服务用户。
+ensure_rabbitbot_runtime_permissions "${AIR_ROOT}" "${SERVICE_USER}" "${SERVICE_GROUP}"
 
 if [ "${APPLY_ROBOT_NETWORK}" = "1" ]; then
     log_info "根据 portable env 配置机器人 DDS 网卡"
