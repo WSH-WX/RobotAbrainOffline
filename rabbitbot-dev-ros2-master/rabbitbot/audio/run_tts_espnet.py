@@ -226,10 +226,12 @@ class EspnetTTS(object):
         else:
             self.text2speech = None
         self.device_id = device_id
+        self.output_device_name = ""
         self.target_sr = self.orig_sr
         self.sd_stream = None
         if self.device_id is not None and self.device_id >= 0:
             info = sd.query_devices(self.device_id, 'output')
+            self.output_device_name = str(info.get("name") or f"音频输出设备 {self.device_id}")
             self.target_sr = info["default_samplerate"]
             self.sd_stream = SDOutputStream(self.device_id, self.target_sr)
         else:

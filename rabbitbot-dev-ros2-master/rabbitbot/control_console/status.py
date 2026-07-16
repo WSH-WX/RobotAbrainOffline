@@ -92,6 +92,8 @@ class ServiceStatus:
     message: str | None = None
     state: str = "offline"
     container: str | None = None
+    device_name: str | None = None
+    device_detail: str | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -440,6 +442,33 @@ def is_port_open(host: str, port: int, timeout: float = 0.25) -> bool:
         return False
 
 
+def get_audio_device_status(host: str, port: int, timeout: float = 0.35) -> tuple[str | None, str | None]:
+    url = f"http://{host}:{port}/device"
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as response:
+            body = response.read(4096).decode("utf-8", errors="replace")
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        logger.debug("查询音频设备接口失败：url=%s, error_type=%s, error=%s", url, type(exc).__name__, exc)
+        return None, None
+    try:
+        parsed = json.loads(body)
+    except json.JSONDecodeError as exc:
+        logger.warning(
+            "音频设备接口返回非 JSON：url=%s, line=%s, column=%s, body_len=%s",
+            url,
+            exc.lineno,
+            exc.colno,
+            len(body),
+        )
+        return None, None
+    if not isinstance(parsed, dict):
+        logger.warning("音频设备接口返回结构非法：url=%s, actual_type=%s", url, type(parsed).__name__)
+        return None, None
+    device_name = str(parsed.get("name") or "").strip()[:200] or None
+    device_detail = str(parsed.get("detail") or "").strip()[:300] or None
+    return device_name, device_detail
+
+
 def _post_stt_exec(host: str, port: int, task: str, timeout: float = 0.35) -> tuple[str, int]:
     url = f"http://{host}:{port}/exec"
     payload = json.dumps({"task": task, "lang": "zh", "text": "", "timeout": 1}, ensure_ascii=False)
@@ -694,6 +723,10 @@ def get_runtime_service_statuses() -> list[ServiceStatus]:
             state, state_text = "starting", "启动中"
         else:
             state, state_text = "offline", "离线"
+        device_name = None
+        device_detail = None
+        if online and key in {"tts", "stt"}:
+            device_name, device_detail = get_audio_device_status("127.0.0.1", port)
         statuses.append(
             ServiceStatus(
                 key=key,
@@ -705,6 +738,8 @@ def get_runtime_service_statuses() -> list[ServiceStatus]:
                 state=state,
                 container=container,
                 message=f"{port} {state_text}",
+                device_name=device_name,
+                device_detail=device_detail,
             )
         )
     online_count = sum(1 for item in statuses if item.online)

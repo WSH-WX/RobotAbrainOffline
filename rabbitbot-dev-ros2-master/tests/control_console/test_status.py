@@ -11,7 +11,35 @@ from rabbitbot.control_console.status import (
     get_tail_lines,
     parse_latest_pose,
     strip_ansi,
+    get_audio_device_status,
 )
+
+
+class _DeviceResponse:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def read(self, limit):
+        return self.payload
+
+
+def test_get_audio_device_status_reads_name_and_detail(monkeypatch):
+    payload = b'{"name":"DJI MIC MINI","detail":"2 channels / 48000Hz"}'
+    monkeypatch.setattr("urllib.request.urlopen", lambda url, timeout: _DeviceResponse(payload))
+
+    assert get_audio_device_status("127.0.0.1", 28184) == ("DJI MIC MINI", "2 channels / 48000Hz")
+
+
+def test_get_audio_device_status_rejects_invalid_payload(monkeypatch):
+    monkeypatch.setattr("urllib.request.urlopen", lambda url, timeout: _DeviceResponse(b"[]"))
+
+    assert get_audio_device_status("127.0.0.1", 28184) == (None, None)
 
 
 def test_strip_ansi_removes_terminal_color_sequences():
@@ -348,9 +376,14 @@ def test_service_status_marks_online_when_port_open(monkeypatch):
 
     monkeypatch.setattr(status_mod, "get_main_loop_start_epoch", lambda: time.time())
     monkeypatch.setattr(status_mod, "is_port_open", lambda host, port, timeout=0.12: True)
+    monkeypatch.setattr(status_mod, "get_audio_device_status", lambda host, port: ("测试设备", "测试详情"))
     statuses = status_mod.get_runtime_service_statuses()
     assert statuses
     assert all(item.state == "online" for item in statuses)
+    by_key = {item.key: item for item in statuses}
+    assert by_key["tts"].device_name == "测试设备"
+    assert by_key["stt"].device_detail == "测试详情"
+    assert by_key["vlm"].device_name is None
 
 
 def test_resolve_service_container_compose_groups(monkeypatch):

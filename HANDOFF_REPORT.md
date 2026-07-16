@@ -3,7 +3,7 @@
 更新时间：2026-07-16（Asia/Singapore）
 本机工作目录：`/Users/firmiana/Desktop/RobotAbrainOffline`
 部署主机：`AGX-orin:/mnt/ssd/gt/RobotAbrainOffline`
-本轮主题：为自由问答和语音控制增加“小智”句首称呼门控，并将默认导览口令改为“小智，开始导览”。
+本轮主题：让控制台 TTS/STT 状态卡片显示服务实际使用的输出与输入设备。
 
 ## 项目整体描述
 
@@ -50,6 +50,8 @@
 
 ## 本轮代码修改
 
+- TTS/STT 服务新增只读 `/device` 接口，分别返回实际输出设备或本体扬声器、实际输入麦克风，以及后端、声道、采样率等有限诊断信息。
+- 控制台服务状态新增 `device_name`、`device_detail`，仅在 TTS/STT 在线时查询并在对应前端卡片显示“设备”行；展示使用 `textContent`，避免设备名称注入 HTML。
 - `rabbitbot/guide/controls.py` 新增句首唤醒词校验与称呼剥离；未称呼“小智”的自由问答不会进入模型或 TTS，命中后仅把称呼后的请求交给原问答流程。
 - `rabbitbot/agno_agents/workflow.py` 在普通 QA、连续追问、导览开场/途中自由提问和语音控制入口应用门控；机器人主动提问所等待的剧本回答不受影响。
 - 默认导览注入口令改为“小智, 开始导览”，预导览超时提示同步说明称呼要求；可用 `RABBITBOT_GUIDE_WAKE_WORDS` 配置替代称呼。
@@ -64,6 +66,7 @@
 
 ## 日志新增或调整
 
+- TTS/STT 初始化完成时新增 INFO 设备状态日志，记录后端、设备名称、声道、采样率或 Unitree 网卡/扬声器 ID；设备接口请求失败仅记 DEBUG，非法响应记 WARNING。
 - 唤醒词命中和忽略均使用 INFO 日志，只记录称呼、输入长度、请求长度和匹配状态，不记录完整语音文本。
 - NavBridge 重启新增 INFO 日志，记录服务名、Compose 文件、Docker 路径和完成状态；超时或失败使用 ERROR 记录退出码与限量输出并保留超时异常链。
 - NavBridge 首次取得有效位姿时以 INFO 记录有限的 x/y 上下文；无效位姿仅首次 WARNING，避免持续话题造成日志膨胀。
@@ -73,6 +76,8 @@
 
 ## 已验证事实
 
+- 提交归档在 Orin 的控制台定向测试 65/65 通过；本机 Python 语法编译和设备状态解析/序列化轻量校验通过。
+- Orin 已重启 TTS、STT 和控制台完成现场验证：`/device` 与 `/api/status` 显示 TTS 为 `NVIDIA Jetson AGX Orin HDA: HDMI 0 (hw:1,3)`，STT 为 `Wireless Mic Rx: USB Audio (hw:0,0)`；两容器均 healthy，控制台 active。
 - 唤醒词纯逻辑新增用例 7/7、`tests/guide` 全量 `unittest` 23/23 通过，覆盖带/不带“小智”、句首限制、标点、空请求及自定义称呼；变更 Python 文件通过 `py_compile`，workflow loop 脚本通过 `bash -n`。
 - Orin 的 `runtime/portable.env` 未显式覆盖导览口令、唤醒词或预导览提示，代码默认值同步后可直接生效。
 - 本轮新增 NavBridge 命令、API、状态和容器映射定向测试 4/4 通过；本机和 Orin 控制台完整测试均为 92/92 通过，并固定了既有启动宽限窗口和主循环探测用例的环境依赖。

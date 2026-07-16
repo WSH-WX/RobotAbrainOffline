@@ -1,5 +1,6 @@
 
 import os
+import logging
 from fastapi import FastAPI, Form
 from fastapi.responses import JSONResponse
 
@@ -21,6 +22,7 @@ from openai_chat_app import (
 
 
 app = FastAPI()
+LOGGER = logging.getLogger(__name__)
 
 
 def env_enabled(name, default):
@@ -47,6 +49,30 @@ else:
     print(f"out_device_id: {out_device_id}")
     print("Initilize EspnetTTS ...")
     tts_engine = EspnetTTS(lang=lang, device_id=out_device_id, debug_mode=False)
+
+if tts_backend == "unitree":
+    tts_device_status = {
+        "service": "tts",
+        "direction": "output",
+        "name": "Unitree G1 本体扬声器",
+        "detail": f"后端=unitree / 网卡={tts_engine.network_interface} / 扬声器ID={tts_engine.speaker_id}",
+    }
+else:
+    output_device_name = getattr(tts_engine, "output_device_name", "") or "未配置本地输出设备"
+    sample_rate = int(getattr(tts_engine, "target_sr", 0) or 0)
+    sample_rate_text = f" / 采样率={sample_rate}Hz" if sample_rate else ""
+    tts_device_status = {
+        "service": "tts",
+        "direction": "output",
+        "name": output_device_name,
+        "detail": f"后端={tts_backend} / 索引={out_device_id if out_device_id is not None else '未配置'}{sample_rate_text}",
+    }
+LOGGER.info(
+    "TTS 输出设备状态已就绪：backend=%s, device=%s, detail=%s",
+    tts_backend,
+    tts_device_status["name"],
+    tts_device_status["detail"],
+)
 tts_engine.init_async_workers()
 preload_fast_sound = env_enabled("RABBITBOT_TTS_FAST_SOUND_PRELOAD", True)
 startup_speech = env_enabled("RABBITBOT_TTS_STARTUP_SPEECH", True)
@@ -220,6 +246,11 @@ elif startup_speech and lang == "en":
     tts_engine.put_text("P4-28: Sound module setup completed")
 
 print("Initilization completed!")
+
+
+@app.get("/device")
+async def device_api():
+    return tts_device_status
 
 async def _exec(task, lang, text, timeout) -> str:
     if task == "set_language":

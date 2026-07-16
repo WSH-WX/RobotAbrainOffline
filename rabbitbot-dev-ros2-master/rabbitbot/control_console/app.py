@@ -555,6 +555,12 @@ function renderServiceStatus(services){
     var note=document.createElement('div');
     note.className='service-note';
     note.textContent=(svc.host||'127.0.0.1')+':'+svc.port+(svc.container?' / '+svc.container:'')+(svc.message?' / '+svc.message:'');
+    var deviceNote=null;
+    if(svc.device_name){
+      deviceNote=document.createElement('div');
+      deviceNote.className='service-note service-device';
+      deviceNote.textContent='设备：'+svc.device_name+(svc.device_detail?' / '+svc.device_detail:'');
+    }
     var btn=document.createElement('button');
     btn.className='svc-restart';
     btn.type='button';
@@ -562,6 +568,7 @@ function renderServiceStatus(services){
     btn.onclick=(function(key,container){return function(){restartService(key,container);};})(svc.key,svc.container);
     card.appendChild(head);
     card.appendChild(note);
+    if(deviceNote){card.appendChild(deviceNote);}
     card.appendChild(btn);
     grid.appendChild(card);
   }

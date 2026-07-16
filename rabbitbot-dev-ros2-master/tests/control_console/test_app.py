@@ -602,6 +602,8 @@ def test_page_shows_console_without_login_form(tmp_path):
     assert '导航桥接服务，连接控制台/workflow 与机器人导航' in response.text
     assert 'serviceStatusGrid' in response.text
     assert 'renderServiceStatus' in response.text
+    assert "设备：" in response.text
+    assert "svc.device_name" in response.text
     assert 'restartService' in response.text
     assert 'pendingRestartUntil' in response.text
     assert '/api/service/restart' in response.text

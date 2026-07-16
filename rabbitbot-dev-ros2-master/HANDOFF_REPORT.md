@@ -3,7 +3,7 @@
 更新时间：2026-07-16（Asia/Singapore）
 所属仓库：`/Users/firmiana/Desktop/RobotAbrainOffline`
 子项目目录：`rabbitbot-dev-ros2-master`
-本轮主题：自由问答和语音控制必须以“小智”作为句首称呼，默认导览口令改为“小智，开始导览”。
+本轮主题：控制台 TTS/STT 状态卡片显示服务当前实际使用的音频设备。
 
 ## 项目整体描述
 
@@ -63,6 +63,7 @@
 
 ## 本轮状态
 
+- TTS/STT 新增设备状态接口，控制台后端已聚合设备名称与详情，前端服务卡片已增加“设备”行。
 - 自由问答、连续追问、导览开场/途中提问和语音控制已增加“小智”称呼门控；剧本主动提问后的回答保持原逻辑。
 - 默认导览注入口令和待命提示已同步更新；现场 `portable.env` 未覆盖相关默认值。
 - 已随上层仓库合并 `refactor/service-internal-decoupling` 到 `master`。
@@ -72,6 +73,8 @@
 
 ## 本轮主要改动
 
+- `tts_app.py` 与 `stt_app_funasr.py` 新增 `/device`；`control_console/status.py` 查询在线音频服务并返回 `device_name/device_detail`，`app.py` 安全渲染设备信息。
+- 本地 TTS 记录 PortAudio 实际输出名称；Unitree 后端报告本体扬声器、DDS 网卡和扬声器 ID；STT 报告实际输入名称、声道和采样率。
 - `rabbitbot/guide/controls.py` 新增句首唤醒词校验和称呼剥离，支持 `RABBITBOT_GUIDE_WAKE_WORDS` 自定义称呼。
 - `rabbitbot/agno_agents/workflow.py` 忽略未称呼“小智”的自由输入，命中后只将称呼后的请求交给模型；`scripts_1/start_nav_bridge_workflow_loop.sh` 默认注入“小智, 开始导览”。
 - 拆分 `workflow.py` 上帝模块，降低单文件复杂度并保持外部入口兼容。
@@ -86,6 +89,7 @@
 
 ## 日志新增或调整
 
+- TTS/STT 初始化新增 INFO 设备状态日志；控制台设备接口请求失败使用 DEBUG，响应解析或结构非法使用 WARNING，不记录音频内容。
 - 唤醒词匹配使用 INFO，记录称呼、文本长度、请求长度和匹配结果，不记录完整用户语音文本。
 - 音频客户端初始化使用 INFO，网络超时、请求失败、异常状态、响应解析失败和缺字段使用 WARNING。
 - runtime 配置读取对空 URL、非法浮点配置使用 WARNING 并记录变量名、回退值等必要上下文。
@@ -94,6 +98,8 @@
 
 ## 已验证事实
 
+- 提交归档在 Orin 的控制台定向 pytest 65/65 通过；本机变更 Python 文件通过 `py_compile`，设备状态解析和序列化轻量校验通过。
+- Orin 现场 `/device` 和控制台 `/api/status` 已验证：TTS 使用 HDA HDMI 0，STT 重启后按自动选择策略使用 Wireless Mic Rx USB 输入；TTS/STT 均 healthy，控制台 active。
 - 唤醒词新增用例 7/7、`tests/guide` 全量 `unittest` 23/23 通过；变更 Python 文件通过 `py_compile`，workflow loop 通过 `bash -n`。
 - 合并前 `git merge-tree --write-tree master refactor/service-internal-decoupling` 通过。
 - 合并前 `git diff --check master..refactor/service-internal-decoupling` 无空白错误。

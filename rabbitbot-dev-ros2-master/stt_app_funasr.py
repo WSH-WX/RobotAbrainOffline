@@ -179,6 +179,22 @@ print(
     f"device_max_channels={device_max_input_channels}, stream_channels={STREAM_INPUT_CHANNELS}, "
     f"select_mode={INPUT_CHANNEL_SELECT_MODE}, fixed_channel={INPUT_CHANNEL_INDEX}"
 )
+stt_device_name = str(device_info.get("name") or in_device_id or "系统默认输入设备")
+stt_audio_backend = os.environ.get("RABBITBOT_STT_AUDIO_BACKEND", "alsa").strip().lower() or "alsa"
+stt_device_status = {
+    "service": "stt",
+    "direction": "input",
+    "name": stt_device_name,
+    "detail": f"后端={stt_audio_backend} / {STREAM_INPUT_CHANNELS}声道 / 采样率={DEVICE_SR}Hz",
+}
+LOGGER.info(
+    "STT 输入设备状态已就绪：source=%s, device=%s, channels=%s, sample_rate=%s, backend=%s",
+    input_device_source,
+    stt_device_name,
+    STREAM_INPUT_CHANNELS,
+    DEVICE_SR,
+    stt_audio_backend,
+)
 
 # ===== 录音状态管理 =====
 class AudioRecorder:
@@ -594,6 +610,11 @@ async def _exec(task, lang, text, timeout):
 
 
 # ===== FastAPI 接口 =====
+@app.get("/device")
+async def device_api():
+    return stt_device_status
+
+
 @app.post("/exec")
 async def exec_api(task: str = Form(...)):
     try:
