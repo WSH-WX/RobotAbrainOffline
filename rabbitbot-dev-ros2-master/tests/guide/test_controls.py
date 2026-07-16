@@ -5,6 +5,7 @@ from rabbitbot.guide.controls import (
     is_continue_text,
     matches_control_command,
     normalize_control_text,
+    strip_leading_wake_word,
 )
 
 
@@ -24,6 +25,18 @@ class GuideControlsTest(unittest.TestCase):
 
     def test_empty_command_config_falls_back_to_default(self):
         self.assertEqual(build_control_commands("", ["返回起点"]), ["返回起点"])
+
+    def test_strip_leading_wake_word_returns_request(self):
+        self.assertEqual(strip_leading_wake_word("小智, 今天天气怎么样"), "今天天气怎么样")
+        self.assertEqual(strip_leading_wake_word("  小智！开始导览。"), "开始导览")
+
+    def test_strip_leading_wake_word_rejects_unaddressed_text(self):
+        self.assertIsNone(strip_leading_wake_word("今天天气怎么样"))
+        self.assertIsNone(strip_leading_wake_word("请问小智今天天气怎么样"))
+
+    def test_strip_leading_wake_word_allows_custom_wake_words(self):
+        self.assertEqual(strip_leading_wake_word("Robot, hello", ["Robot"]), "hello")
+        self.assertEqual(strip_leading_wake_word("小智"), "")
 
 
 if __name__ == "__main__":

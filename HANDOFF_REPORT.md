@@ -1,9 +1,9 @@
 # RobotAbrainOffline 交接报告
 
-更新时间：2026-07-14（Asia/Singapore）
-工作目录：`/home/u12297/projects/RobotAbrainOffline`
+更新时间：2026-07-16（Asia/Singapore）
+本机工作目录：`/Users/firmiana/Desktop/RobotAbrainOffline`
 部署主机：`AGX-orin:/mnt/ssd/gt/RobotAbrainOffline`
-本轮主题：为控制台服务状态管理增加 NavBridge 状态卡片及可恢复缺失容器的独立重启功能。
+本轮主题：为自由问答和语音控制增加“小智”句首称呼门控，并将默认导览口令改为“小智，开始导览”。
 
 ## 项目整体描述
 
@@ -50,6 +50,9 @@
 
 ## 本轮代码修改
 
+- `rabbitbot/guide/controls.py` 新增句首唤醒词校验与称呼剥离；未称呼“小智”的自由问答不会进入模型或 TTS，命中后仅把称呼后的请求交给原问答流程。
+- `rabbitbot/agno_agents/workflow.py` 在普通 QA、连续追问、导览开场/途中自由提问和语音控制入口应用门控；机器人主动提问所等待的剧本回答不受影响。
+- 默认导览注入口令改为“小智, 开始导览”，预导览超时提示同步说明称呼要求；可用 `RABBITBOT_GUIDE_WAKE_WORDS` 配置替代称呼。
 - 服务状态列表新增 NavBridge（`127.0.0.1:28180` / `rabbitbot-navbridge`）卡片，可在控制台独立确认并重启。
 - NavBridge 重启使用解耦 Compose `up -d --force-recreate rabbitbot-navbridge`，在线时重建、容器缺失或离线时重新创建，不依赖 `rabbitbot-loop.service` 已运行。
 - 服务 key、容器映射和重启宽限状态均增加 `navbridge`，控制台首页避免重复显示同一 NavBridge 状态。
@@ -61,6 +64,7 @@
 
 ## 日志新增或调整
 
+- 唤醒词命中和忽略均使用 INFO 日志，只记录称呼、输入长度、请求长度和匹配状态，不记录完整语音文本。
 - NavBridge 重启新增 INFO 日志，记录服务名、Compose 文件、Docker 路径和完成状态；超时或失败使用 ERROR 记录退出码与限量输出并保留超时异常链。
 - NavBridge 首次取得有效位姿时以 INFO 记录有限的 x/y 上下文；无效位姿仅首次 WARNING，避免持续话题造成日志膨胀。
 - 新增 INFO 日志：STT 输入设备选择器来源（name/index/default）和已解析选择器。
@@ -69,6 +73,8 @@
 
 ## 已验证事实
 
+- 唤醒词纯逻辑新增用例 7/7、`tests/guide` 全量 `unittest` 23/23 通过，覆盖带/不带“小智”、句首限制、标点、空请求及自定义称呼；变更 Python 文件通过 `py_compile`，workflow loop 脚本通过 `bash -n`。
+- Orin 的 `runtime/portable.env` 未显式覆盖导览口令、唤醒词或预导览提示，代码默认值同步后可直接生效。
 - 本轮新增 NavBridge 命令、API、状态和容器映射定向测试 4/4 通过；本机和 Orin 控制台完整测试均为 92/92 通过，并固定了既有启动宽限窗口和主循环探测用例的环境依赖。
 - Orin 实际调用 `POST /api/service/restart` 成功创建此前缺失的 `rabbitbot-navbridge`；容器保持 running，`GET 127.0.0.1:28180/health` 返回 `ok=true`，22 秒保护窗口后控制台卡片从“启动中”转为“在线”。
 - 重新创建后的 NavBridge 已加载宿主桥接脚本，`GET /current_pose` 持续返回 `localized=true`、七元组和位姿年龄；首次有效位姿 INFO 日志已验证。
@@ -83,6 +89,7 @@
 
 ## 阻塞、风险与未完成事项
 
+- 唤醒门控尚未使用现场麦克风和真实 STT 做端到端语音验证；需确认 ASR 对“小智”及其后停顿、逗号的识别稳定性。
 - NavBridge 和 28180 已启动，导航核心日志持续输出 Pose；本轮未下发运动、机械臂或真实导览指令，完整机器人动作链路仍需现场安全监护下验证。
 - 系统根分区仍约 98%，虽然 Docker 在 SSD，但系统日志、apt 或临时文件仍有满盘风险，应继续排查 `/home/pc` 和系统盘占用。
 - 本机 Python 未安装 pytest（`No module named pytest`），本轮未运行 pytest 套件；已完成 Bash、Python 编译、Compose、自检和 AGX 运行验证。

@@ -79,6 +79,7 @@ from rabbitbot.guide.controls import (
     is_continue_text,
     matches_control_command,
     normalize_control_text,
+    strip_leading_wake_word,
 )
 from rabbitbot.guide.routing import (
     classify_task_by_rule as guide_classify_task_by_rule,
@@ -893,8 +894,20 @@ def create_main_workflow(ctx: Any) -> Workflow:
         raw_value = os.getenv("RABBITBOT_GUIDE_START_COMMANDS", "开始导览,开始讲解,开始参观,开始流程,启动导览")
         return build_control_commands(raw_value, ["开始导览"])
 
+    def guide_wake_words():
+        raw_value = os.getenv("RABBITBOT_GUIDE_WAKE_WORDS", "小智")
+        wake_words = [item.strip() for item in raw_value.split(",") if item.strip()]
+        if wake_words:
+            return wake_words
+        _workflow_log("唤醒词配置为空，使用默认称呼：小智")
+        return ["小智"]
+
+    def addressed_user_text(text):
+        return strip_leading_wake_word(text, guide_wake_words())
+
     def is_guide_start_command(text):
-        return matches_control_command(text, guide_start_commands())
+        command_text = addressed_user_text(text)
+        return command_text is not None and matches_control_command(command_text, guide_start_commands())
 
     def guide_return_commands():
         raw_value = os.getenv("RABBITBOT_GUIDE_RETURN_COMMANDS", "返回起点,返航,回到起点,回起点,返回原点")
@@ -945,7 +958,17 @@ def create_main_workflow(ctx: Any) -> Workflow:
         opening_enabled = os.getenv("RABBITBOT_ENABLE_GUIDE_OPENING", "1")
         _workflow_log(f"语音口令启动导览: trigger_len={trigger_len}, opening_enabled={opening_enabled}")
         if opening_enabled == "1":
-            await guide_opening_speech(ctx, answer_interrupt=lambda q: chat_execute(q, ChatSessionInfo.sess_idx))
+            async def answer_opening_interrupt(question):
+                addressed_question = addressed_user_text(question)
+                if addressed_question is None or not addressed_question:
+                    _workflow_log(
+                        "导览开场忽略未称呼小智或缺少请求内容的打断输入: "
+                        f"text_len={len(question or '')}, wake_word_matched={addressed_question is not None}"
+                    )
+                    return
+                await chat_execute(addressed_question, ChatSessionInfo.sess_idx)
+
+            await guide_opening_speech(ctx, answer_interrupt=answer_opening_interrupt)
         else:
             tts_sound(ctx.tts_agent, f"{before_text}好的，开始导览。", "zh")
             tts_wait(ctx.tts_agent)
@@ -1764,7 +1787,7 @@ def create_main_workflow(ctx: Any) -> Workflow:
             _profile_end(audio_span, source=source, timeout=30)
         while out_text == "<REC_TIMEOUT>" or out_text == "<REC_DUPLICATE>":
             if prompt_on_timeout:
-                prompt_text = os.getenv("RABBITBOT_PRE_GUIDE_QA_PROMPT", "你好，请问你需要我做什么吗？听到开始导览后，我会开始讲解。")
+                prompt_text = os.getenv("RABBITBOT_PRE_GUIDE_QA_PROMPT", "你好，请先称呼小智再告诉我您的问题。听到小智，开始导览后，我会开始讲解。")
                 tts_sound(tts_agent, f"{before_text}{prompt_text}", "zh")
             audio_span = _profile_start("audio_input", source=f"{source}_retry", timeout=30)
             try:
@@ -1827,6 +1850,15 @@ def create_main_workflow(ctx: Any) -> Workflow:
                     time.sleep(1)
                     #out_text = audio_input_execute(stt_agent, "speech_to_text", timeout=300)
                     out_text = await listen_user_input_for_workflow("main_loop")
+        addressed_text = addressed_user_text(out_text)
+        if addressed_text is None or not addressed_text:
+            _workflow_log(
+                "忽略未称呼小智或缺少请求内容的语音输入: "
+                f"text_len={len(out_text or '')}, wake_word_matched={addressed_text is not None}"
+            )
+            WorkflowTimePoints.PLAN_START = time.time()
+            _profile_end(loop_span, step="audio_input_step", result="wake_word_required")
+            return StepOutput(content=f"{SCRIPTED_TOUR_STEP_DONE}")
         if guide_started() and is_guide_start_command(out_text):
             _workflow_log(f"忽略重复开始导览口令: text_len={len(out_text or '')}")
             WorkflowTimePoints.PLAN_START = time.time()
@@ -1846,6 +1878,7 @@ def create_main_workflow(ctx: Any) -> Workflow:
             _profile_end(loop_span, step="audio_input_step", result="return_to_start_ignored_before_finished")
             return StepOutput(content=f"{SCRIPTED_TOUR_STEP_DONE}")
 
+        out_text = addressed_text
         chat_queue.put(out_text, "用户")
 
         #tts_sound(tts_agent, f"{before_text}我听到了，但是可能要思考一会。请稍等片刻", "zh")
@@ -2249,7 +2282,7 @@ def create_main_workflow(ctx: Any) -> Workflow:
     class ChatSessionInfo:
         sess_idx: int = CHAT_SESSION_ID
 
-    async def chat_loop_execute(text, navi_tools=None):
+    async def chat_loop_execute(text, navi_tools=None, *, initial_text_addressed=False):
         max_chat_steps = workflow_configs["max_chat_steps"]
         for i in range(max_chat_steps):
             if text is None:
@@ -2257,6 +2290,24 @@ def create_main_workflow(ctx: Any) -> Workflow:
                     text = audio_input_execute_timeout(stt_agent, timeout=60)
                 else:
                     text = await audio_input_execute_timeout_navi(stt_agent, 60, navi_tools)
+                if text not in {"<REC_TIMEOUT>", "<NAVI_REACH>", "<REC_DUPLICATE>"}:
+                    addressed_text = addressed_user_text(text)
+                    if addressed_text is None or not addressed_text:
+                        _workflow_log(
+                            "聊天追问忽略未称呼小智或缺少请求内容的语音输入: "
+                            f"text_len={len(text or '')}, wake_word_matched={addressed_text is not None}"
+                        )
+                        break
+                    text = addressed_text
+            elif i == 0 and not initial_text_addressed:
+                addressed_text = addressed_user_text(text)
+                if addressed_text is None or not addressed_text:
+                    _workflow_log(
+                        "聊天入口忽略未称呼小智或缺少请求内容的语音输入: "
+                        f"text_len={len(text or '')}, wake_word_matched={addressed_text is not None}"
+                    )
+                    break
+                text = addressed_text
             if text == "<REC_TIMEOUT>" or text == "<NAVI_REACH>" or text == "<REC_DUPLICATE>":
                 break
             if "停止聊天" in text:
@@ -2296,7 +2347,7 @@ def create_main_workflow(ctx: Any) -> Workflow:
         #print("text:", text)
 
         #out_text = await chat_execute(text)
-        out_text = await chat_loop_execute(text)
+        out_text = await chat_loop_execute(text, initial_text_addressed=True)
 
         return StepOutput(content=f"{out_text}")
 

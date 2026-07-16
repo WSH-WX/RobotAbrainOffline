@@ -7,6 +7,7 @@ from typing import Iterable
 logger = logging.getLogger(__name__)
 
 _CONTROL_PUNCT_RE = re.compile(r"[\s，。！？?、,.!；;：:\"'“”‘’（）()\[\]【】]+")
+_EDGE_PUNCTUATION = " \\t\\r\\n，。！？?、,.!；;：:\"'“”‘’（）()[]【】"
 
 DEFAULT_CONTINUE_TEXTS = {
     "好", "好的", "好啊", "好呀", "嗯", "嗯嗯", "可以", "行", "行的",
@@ -38,6 +39,24 @@ def matches_control_command(text: str | None, commands: Iterable[str]) -> bool:
     matched = any(command in normalized_text for command in commands)
     logger.debug("控制词匹配完成：text_len=%s, matched=%s", len(text or ""), matched)
     return matched
+
+
+def strip_leading_wake_word(text: str | None, wake_words: Iterable[str] = ("小智",)) -> str | None:
+    """校验句首唤醒词并返回去除称呼后的用户请求；未命中返回 ``None``。"""
+    raw_text = (text or "").lstrip(_EDGE_PUNCTUATION)
+    for wake_word in wake_words:
+        normalized_wake_word = (wake_word or "").strip(_EDGE_PUNCTUATION)
+        if normalized_wake_word and raw_text.lower().startswith(normalized_wake_word.lower()):
+            payload = raw_text[len(normalized_wake_word):].strip(_EDGE_PUNCTUATION)
+            logger.info(
+                "语音输入命中唤醒词：wake_word=%s, text_len=%s, payload_len=%s",
+                normalized_wake_word,
+                len(text or ""),
+                len(payload),
+            )
+            return payload
+    logger.info("语音输入未命中唤醒词，忽略本轮：text_len=%s", len(text or ""))
+    return None
 
 
 def is_continue_text(text: str | None, continue_texts: Iterable[str] = DEFAULT_CONTINUE_TEXTS) -> bool:
