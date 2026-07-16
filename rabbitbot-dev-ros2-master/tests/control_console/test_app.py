@@ -13,6 +13,7 @@ def make_config(tmp_path):
     docker_path = project_root / "bin" / "docker"
     systemctl_record = project_root / "systemctl_args.txt"
     docker_record = project_root / "docker_args.txt"
+    nav_map_record = project_root / "nav_map_path.txt"
     map_env_file = project_root / "runtime" / "rabbitbot-loop.env"
     workflow_control_dir = project_root / "logs" / "nav_workflow_control" / "workflow_control"
     nav_log_dir = project_root / "logs" / "nav_workflow_control"
@@ -44,6 +45,7 @@ def make_config(tmp_path):
         "  printf '%s\\n' service-log-one service-log-two\n"
         "  exit 0\n"
         "fi\n"
+        f"printf '%s\\n' \"$RABBITBOT_NAV_MAP_PATH\" > {nav_map_record}\n"
         f"printf '%s\n' \"$@\" > {docker_record}\n"
         "printf '%s\\n' rabbitbot-vlm rabbitbot-tts rabbitbot-stt rabbitbot-memory rabbitbot-workflow rabbitbot-navbridge neo4j\n",
         encoding="utf-8",
@@ -285,7 +287,7 @@ def test_restart_restarts_loop_service_without_login(tmp_path):
     assert record.read_text(encoding="utf-8").splitlines() == ["restart", "rabbitbot-loop.service"]
 
 
-def test_confirm_map_writes_map_without_restarting_loop_service(tmp_path):
+def test_confirm_map_writes_map_and_recreates_navbridge(tmp_path):
     config = make_config(tmp_path)
     client = TestClient(create_app(config))
 
@@ -293,9 +295,12 @@ def test_confirm_map_writes_map_without_restarting_loop_service(tmp_path):
 
     assert response.status_code == 200
     assert response.json()["map_path"] == "/home/unitree/test13.pcd"
-    assert response.json()["message"] == "已确认使用地图 /home/unitree/test13.pcd"
+    assert response.json()["message"] == "已确认使用地图 /home/unitree/test13.pcd，NavBridge 已按该路径重建"
     assert 'NAV_PCD_PATH="/home/unitree/test13.pcd"' in config.map_env_file.read_text(encoding="utf-8")
     assert not (config.project_root / "systemctl_args.txt").exists()
+    args = (config.project_root / "docker_args.txt").read_text(encoding="utf-8").splitlines()
+    assert args[-4:] == ["up", "-d", "--force-recreate", "rabbitbot-navbridge"]
+    assert (config.project_root / "nav_map_path.txt").read_text(encoding="utf-8").strip() == "/home/unitree/test13.pcd"
 
 
 def test_stop_stops_loop_service_without_login(tmp_path):
@@ -698,6 +703,8 @@ def test_service_restart_recreates_navbridge_with_compose(tmp_path, monkeypatch)
     monkeypatch.setenv("RABBITBOT_DECOUPLED_COMPOSE_FILE", "")
     monkeypatch.setattr(status_mod, "_recent_container_restarts", {})
     config = make_config(tmp_path)
+    config.map_env_file.parent.mkdir(parents=True, exist_ok=True)
+    config.map_env_file.write_text('NAV_PCD_PATH="/home/unitree/test7.pcd"\n', encoding="utf-8")
     client = TestClient(create_app(config))
 
     response = client.post("/api/service/restart", json={"key": "navbridge"})
@@ -709,6 +716,7 @@ def test_service_restart_recreates_navbridge_with_compose(tmp_path, monkeypatch)
     args = record.read_text(encoding="utf-8").splitlines()
     assert args[0:2] == ["compose", "-f"]
     assert args[-4:] == ["up", "-d", "--force-recreate", "rabbitbot-navbridge"]
+    assert (config.project_root / "nav_map_path.txt").read_text(encoding="utf-8").strip() == "/home/unitree/test7.pcd"
 
 
 def test_service_restart_rejects_unknown_service(tmp_path):

@@ -202,19 +202,25 @@ check_portable_models_policy() {
     log_ok "portable 模型策略正确：启用服务前会自动检查/下载 VLM/Embedding/STT 模型"
 }
 
-check_portable_nav_map_mount() {
-    # nav 镜像不会包含现场地图；两条 compose 路径都必须把宿主配置的地图按原绝对路径只读挂载进容器。
+check_portable_nav_map_path() {
+    # 地图由机器人本体上的 Unitree SLAM 服务读取；Compose 只需把机器人侧绝对路径传给 NavBridge，
+    # 不得尝试把同一路径作为 Orin bind mount，否则机器人侧存在、Orin 不存在时容器无法创建。
     local portable_compose="${REPO_DIR}/docker/portable/compose.yaml"
     local decoupled_compose="${REPO_DIR}/docker/portable/docker-compose.decoupled.yaml"
-    local expected_mount='${RABBITBOT_NAV_MAP_PATH:-/home/unitree/test9.pcd}:${RABBITBOT_NAV_MAP_PATH:-/home/unitree/test9.pcd}:ro'
+    local expected_env='RABBITBOT_NAV_MAP_PATH: ${RABBITBOT_NAV_MAP_PATH:-/home/unitree/test9.pcd}'
+    local invalid_mount='${RABBITBOT_NAV_MAP_PATH:-/home/unitree/test9.pcd}:${RABBITBOT_NAV_MAP_PATH:-/home/unitree/test9.pcd}:ro'
     local compose_file
     for compose_file in "${portable_compose}" "${decoupled_compose}"; do
-        if ! grep -Fq -- "${expected_mount}" "${compose_file}"; then
-            log_error "portable nav 未只读挂载现场地图，容器内将无法读取 RABBITBOT_NAV_MAP_PATH：${compose_file}"
+        if ! grep -Fq -- "${expected_env}" "${compose_file}"; then
+            log_error "portable nav 未向容器传递机器人侧地图路径：${compose_file}"
+            exit 1
+        fi
+        if grep -Fq -- "${invalid_mount}" "${compose_file}"; then
+            log_error "portable nav 错误地把机器人侧地图路径作为 Orin bind mount：${compose_file}"
             exit 1
         fi
     done
-    log_ok "portable nav 地图挂载策略正确：单 nav 与解耦 compose 均按配置路径只读挂载"
+    log_ok "portable nav 地图路径策略正确：仅向容器传递机器人侧路径，不创建 Orin 地图 bind mount"
 }
 
 check_python_venv_capability() {
@@ -356,7 +362,7 @@ check_portable_env_keys
 check_dockerignore_rules
 check_core_skips_internal_28180
 check_portable_models_policy
-check_portable_nav_map_mount
+check_portable_nav_map_path
 check_portable_unitree_tts_policy
 check_port_topology_runtime
 

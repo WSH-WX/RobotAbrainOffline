@@ -102,10 +102,15 @@ def clear_current_runtime_log(path: Path, reason: str) -> None:
         logger.warning("清空当前运行日志失败：path=%s, reason=%s, error=%s", path, reason, exc)
 
 
-def _restart_service_container_bg(container_name: str, service_key: str, docker_path: Path) -> None:
+def _restart_service_container_bg(
+    container_name: str,
+    service_key: str,
+    docker_path: Path,
+    nav_map_path: str | None = None,
+) -> None:
     try:
         if service_key == "navbridge":
-            restart_nav_bridge(docker_path=docker_path)
+            restart_nav_bridge(docker_path=docker_path, map_path=nav_map_path)
         else:
             restart_service_container(container_name, docker_path=docker_path)
     except CommandError:
@@ -1028,8 +1033,18 @@ def create_app(config: ConsoleConfig | None = None) -> FastAPI:
     def confirm_map(payload: MapRequest) -> dict:
         try:
             map_path = write_map_path(config.map_env_file, payload.map_path)
-            logger.info("控制台地图确认完成：map_path=%s, env_file=%s", map_path, config.map_env_file)
-            return {"ok": True, "map_path": map_path, "message": f"已确认使用地图 {map_path}"}
+            restart_nav_bridge(docker_path=config.docker_path, map_path=map_path)
+            logger.info(
+                "控制台地图确认并同步 NavBridge 完成：map_path=%s, env_file=%s, container=%s",
+                map_path,
+                config.map_env_file,
+                config.nav_container_name,
+            )
+            return {
+                "ok": True,
+                "map_path": map_path,
+                "message": f"已确认使用地图 {map_path}，NavBridge 已按该路径重建",
+            }
         except CommandError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -1052,7 +1067,14 @@ def create_app(config: ConsoleConfig | None = None) -> FastAPI:
         if not container_name:
             raise HTTPException(status_code=400, detail=f"不支持的服务：{payload.key}")
         mark_container_restarted(container_name)
-        background_tasks.add_task(_restart_service_container_bg, container_name, payload.key, config.docker_path)
+        nav_map_path = read_map_path(config.map_env_file, config.map_path) if payload.key == "navbridge" else None
+        background_tasks.add_task(
+            _restart_service_container_bg,
+            container_name,
+            payload.key,
+            config.docker_path,
+            nav_map_path,
+        )
         logger.info("已提交服务容器后台重启：service_key=%s, container=%s", payload.key, container_name)
         return {
             "ok": True,

@@ -328,6 +328,7 @@ def restart_nav_bridge(
     docker_path: Path = Path("/usr/bin/docker"),
     compose_file: Path | None = None,
     service_name: str | None = None,
+    map_path: str | None = None,
     timeout: float = 120.0,
 ) -> str:
     """通过解耦 Compose 重建 NavBridge；容器缺失时也会重新创建。"""
@@ -340,6 +341,9 @@ def restart_nav_bridge(
     active_service = (service_name or os.environ.get("RABBITBOT_NAVBRIDGE_SERVICE", NAV_BRIDGE_SERVICE_NAME)).strip()
     if active_service != NAV_BRIDGE_SERVICE_NAME:
         raise CommandError(f"不支持的 NavBridge compose 服务：{active_service}")
+    active_map_path = validate_map_path(
+        map_path or os.environ.get("RABBITBOT_NAV_MAP_PATH", "/home/unitree/test9.pcd")
+    )
     args = [
         str(docker_path),
         "compose",
@@ -351,12 +355,15 @@ def restart_nav_bridge(
         active_service,
     ]
     logger.info(
-        "准备通过 Compose 重启 NavBridge：service=%s, compose=%s, docker=%s, timeout=%s",
+        "准备通过 Compose 重启 NavBridge：service=%s, compose=%s, docker=%s, map_path=%s, timeout=%s",
         active_service,
         active_compose,
         docker_path,
+        active_map_path,
         timeout,
     )
+    compose_env = os.environ.copy()
+    compose_env["RABBITBOT_NAV_MAP_PATH"] = active_map_path
     try:
         result = subprocess.run(
             args,
@@ -365,6 +372,7 @@ def restart_nav_bridge(
             capture_output=True,
             timeout=timeout,
             cwd=active_compose.parent,
+            env=compose_env,
         )
     except subprocess.TimeoutExpired as exc:
         logger.error(
@@ -384,7 +392,12 @@ def restart_nav_bridge(
             output[-1000:],
         )
         raise CommandError(output or f"重启 NavBridge 失败，退出码：{result.returncode}")
-    logger.info("Compose 重启 NavBridge 已提交：service=%s, compose=%s", active_service, active_compose)
+    logger.info(
+        "Compose 重启 NavBridge 已完成：service=%s, compose=%s, map_path=%s",
+        active_service,
+        active_compose,
+        active_map_path,
+    )
     return output
 
 

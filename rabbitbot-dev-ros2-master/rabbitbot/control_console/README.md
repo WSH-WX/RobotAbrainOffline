@@ -47,6 +47,8 @@ sudo systemctl restart rabbitbot-loop.service
 
 “服务状态管理”会显示 NavBridge 的 `28180` 端口状态和 `rabbitbot-navbridge` 容器名。点击其“重启”后，后端通过解耦 Compose 执行 `up -d --force-recreate rabbitbot-navbridge`；因此容器仍存在时会重建，容器已经退出或缺失时也会重新创建。该操作只处理 NavBridge，不重启 VLM、TTS、STT、Memory 或 Workflow。
 
+地图输入框旁的“确认地图”会把机器人本体上的绝对路径写入 `runtime/rabbitbot-loop.env`，随后以同一路径重建 NavBridge。地图由机器人本体的 Unitree SLAM 服务读取，Orin 和 NavBridge 容器只传递路径，不要求该文件存在于 Orin，也不会把该路径作为宿主 bind mount。之后单独重启 NavBridge 时仍会读取已确认的路径，不会回退到控制台启动时的旧值。
+
 TTS 与 STT 在线时，其服务状态卡片会额外显示当前实际使用的输出/输入设备。控制台分别读取 TTS `28185/device` 与 STT `28184/device`；本地音频后端显示声卡或麦克风名称、声道及采样率，Unitree TTS 后端显示本体扬声器、DDS 网卡和扬声器 ID。
 
 NavBridge 还提供 `GET /current_pose`，从容器内 ROS2 `/current_pose` 订阅返回最近一次有效七元组位姿；尚未定位或位姿超过默认 30 秒未更新时返回 `localized=false`。RobotMapPlanner 使用该接口读取机器人起点，无需在宿主机运行 ROS2 CLI。
@@ -79,15 +81,15 @@ sudo systemctl disable rabbitbot-loop.service
 
 ## 地图切换和一键重启
 
-页面左侧有“重启地图”输入框。
+页面左侧有“重启地图”输入框，可只重建 NavBridge，也可重启整个导航主程序。
 
 操作步骤：
 
 1. 在“重启地图”中填写地图绝对路径，例如 `/home/unitree/test9.pcd`。
-2. 点击“一键重启”。
+2. 点击“确认地图”只同步并重建 NavBridge；点击“一键重启”则重启整个导航主程序。
 3. 后端会先校验地图路径必须是绝对路径。
 4. 校验通过后写入 `runtime/rabbitbot-loop.env`。
-5. 后端重启 `rabbitbot-loop.service`，导航主程序启动时读取新地图。
+5. “确认地图”会直接重建 `rabbitbot-navbridge`；“一键重启”会重启 `rabbitbot-loop.service`，两条路径均使用已输入的新地图。
 
 运行时地图环境文件格式：
 
